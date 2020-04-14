@@ -9,7 +9,7 @@ def bin_concrete(temperature, alpha, x):
 
     :param temperature: temperature of the concrete density function (in (0, inf))
     :param alpha: location (in (0, inf))
-    :param x: binary concrete random variables (data points) (in (0, 1)). Bernoulli random variables when the
+    :param x: binary concrete random variables (in (0, 1)). Bernoulli random variables when the
               temperature converges to 0.
     :return: the (binary concrete) probability of x given the temperature and location alpha
     """
@@ -20,15 +20,15 @@ def bin_concrete(temperature, alpha, x):
 def log_bin_concrete(temperature, alpha, x):
     """
     Binary concrete log-probability
-
+    TODO: change alpha in log_alpha -> directly compute log in the stochastic graph to avoid underflow
     :param temperature: temperature of the concrete density function (in (0, inf))
     :param alpha: location (in (0, inf))
-    :param x: binary concrete random variables (data points) (in (0, 1))
+    :param x: binary concrete random variables (in (0, 1))
     :return: the (binary concrete) log-probability of x given the temperature and location alpha
     """
     return np.log(temperature) + np.log(alpha) - (temperature + 1) * (np.log(x) + np.log(1 - x)) + \
            2 * temperature * np.log(1 - x) - \
-           2 * np.log1p(alpha * np.power(1 - x, temperature) / np.power(x, temperature))
+           2 * np.log1p(np.exp(np.log(alpha) - temperature * np.log(x / (1 - x))))
 
 
 def log_diff_bin_concrete(temperature, alpha_0, alpha_1, x):
@@ -38,7 +38,7 @@ def log_diff_bin_concrete(temperature, alpha_0, alpha_1, x):
     :param temperature: temperature of both concrete density functions (in (0, inf))
     :param alpha_0: location of the first probability density function (in (0, inf))
     :param alpha_1: location of the (substracted) second density function (in (0, inf))
-    :param x: binary concrete random variables (data points) (in (0, 1))
+    :param x: binary concrete random variables (in (0, 1))
     :return: compute log p_0(x) - log p_1(x) where p_i is a binary concrete density function with location a_i
     """
     heated_x = np.power(1 - x, temperature) / np.power(x, temperature)
@@ -55,4 +55,4 @@ def sample_bin_concrete(temperature, alpha, logistic_noise):
     :return: a sampled binary concrete random variable from the corresponding density function with temperature and
              location alpha
     """
-    return sp.expit(logistic_noise + np.log(alpha) / temperature)
+    return sp.expit((np.log(alpha) + logistic_noise) / temperature)
