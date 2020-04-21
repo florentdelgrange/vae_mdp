@@ -20,7 +20,7 @@ class VariationalMDPStateAbstraction(Model):
     def __init__(self, state_shape: Tuple[int, ...], action_shape: Tuple[int], reward_shape: Tuple[int],
                  label_shape: Tuple[int], encoder_network: Model, transition_network: Model, reward_network: Model,
                  decoder_network: Model, latent_state_size: int = 128, temperature_1: float = 2 / 3,
-                 temperature_2: float = 1 / 2, nb_gaussian_posteriors: int = 3,
+                 temperature_2: float = 1 / 2, nb_gaussian_posterior: int = 3,
                  action_pre_processing_network: Model = None, state_pre_processing_network: Model = None,
                  state_post_processing_network: Model = None, name: str = 'vae_mdp'):
         super(VariationalMDPStateAbstraction, self).__init__()
@@ -101,15 +101,15 @@ class VariationalMDPStateAbstraction(Model):
         if state_post_processing_network is not None:
             decoder = state_post_processing_network(decoder)
         # 1 mean per dimension, nb Normal Gaussian
-        decoder_output_mean = Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear')(decoder)
+        decoder_output_mean = Dense(nb_gaussian_posterior * np.prod(state_shape), activation='linear')(decoder)
         decoder_output_mean = \
-            Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_means")(decoder_output_mean)
+            Reshape((nb_gaussian_posterior,) + state_shape, name="GMM_means")(decoder_output_mean)
         # 1 var per dimension, nb Normal Gaussian
-        decoder_output_log_var = Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear')(decoder)
+        decoder_output_log_var = Dense(nb_gaussian_posterior * np.prod(state_shape), activation='linear')(decoder)
         decoder_output_log_var = \
-            Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_log_vars")(decoder_output_log_var)
+            Reshape((nb_gaussian_posterior,) + state_shape, name="GMM_log_vars")(decoder_output_log_var)
         # prior over Normal Gaussian
-        decoder_prior = Dense(nb_gaussian_posteriors, activation='softmax', name="GMM_priors")(decoder)
+        decoder_prior = Dense(nb_gaussian_posterior, activation='softmax', name="GMM_priors")(decoder)
         self.reconstruction_network = Model(inputs=next_latent_state,
                                             outputs=[decoder_output_mean, decoder_output_log_var, decoder_prior],
                                             name='reconstruction_network')
@@ -173,24 +173,24 @@ class VariationalMDPStateAbstraction(Model):
 @tf.function
 def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x):
     # inputs are assumed to have shape
-    # [(?, 2,)+state_shape, (?, 2,)+action_shape, (?, 2,)+reward_shape, (?, 2,)+state_shape, (?, 2)+label_shape]
+    # [(?, 2, state_shape), (?, 2, action_shape), (?, 2, reward_shape), (?, 2, state_shape), (?, 2, label_shape)]
     s_0, a_0, r_0, _, l_1 = (input[i][:, 0] for i, input in enumerate(x))
     s_1, a_1, r_1, s_2, l_2 = (input[i][:, 1] for i, input in enumerate(x))
     [log_alpha, label] = vae_mdp.encoder_network([s_0, a_0, r_0, s_1, l_1])
     [log_alpha_prime, label_prime] = vae_mdp.encoder_network([s_1, a_1, r_1, s_2, l_2])
 
-    # z ~ Logistic(alpha), z' ~ Logistic(alpha')
+    # z ~ sigmoid(Logistic(alpha)), z' ~ sigmoid(Logistic(alpha'))
     logistic_z, logistic_z_prime = vae_mdp.sample_logistic(log_alpha), vae_mdp.sample_logistic(log_alpha_prime)
     z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1)
     z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1)
 
-    # change label l'=1 to max_val and label l'=0 to min_val so that
-    # sigmoid(z'[label]) ~= 1 if l'=1 and sigmoid(z'[label]) ~=0 if l'=0
+    # change label l'=1 to 100 and label l'=0 to -1000 so that
+    # sigmoid(logistic_z'[label]) = 1 if l'=1 and sigmoid(logistic_z'[label]) = 0 if l'=0
     logistic_label_prime = tf.cond(tf.greater(label_prime, tf.zeros(vae_mdp.label_shape)),
-                                   lambda x: x * max_val, lambda x: x - min_val)
+                                   lambda x: x * 1e2, lambda x: x - 1e3)
     logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1)
 
-    # binary-concrete log-logistic probability Q(z'|s_1, a_1, r_1, s_2, l_2), z' ~ Logistic(alpha')
+    # binary-concrete log-logistic probability Q(logistic_z'|s_1, a_1, r_1, s_2, l_2), logistic_z' ~ Logistic(alpha')
     log_q_z_prime = tf.clip_by_value(
         binary_concrete.log_logistic_density(vae_mdp.temperature[0], log_alpha_prime, logistic_z_prime,
                                              tf.math.log, tf.math.exp, tf.math.log1p),
@@ -215,11 +215,19 @@ def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x):
             mixture_distribution=tfp.distributions.Categorical(probs=reconstruction_prior_components),
             components_distribution=tfp.distributions.MultivariateNormalDiag(
                 loc=reconstruction_mean, scale_diag=tf.math.exp(reconstruction_log_var))
-        )
+        ).log_prob(s_2)
 
-    return -tf.reduce_mean(
+    return - tf.reduce_mean(
         log_p_rewards + log_p_reconstruction - tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
     )
+
+
+@tf.function
+def compute_apply_gradients(vae_mdp: VariationalMDPStateAbstraction, x, optimizer):
+    with tf.GradientTape() as tape:
+        loss = compute_loss(vae_mdp, x)
+    gradients = tape.gradient(loss, vae_mdp.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, vae_mdp.trainable_variables))
 
 
 if __name__ == '__main__':
