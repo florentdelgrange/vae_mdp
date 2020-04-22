@@ -115,7 +115,7 @@ class VariationalMDPStateAbstraction(Model):
                                             name='reconstruction_network')
         self._vae = None
 
-    def sample_logistic(self, log_alpha: tf.python.framework_ops.Tensor):
+    def sample_logistic(self, log_alpha: tf.Tensor):
         """
         Reparameterization trick for sampling binary concrete random variables.
         The logistic random variable with location log_alpha is a binary concrete random variable before applying the
