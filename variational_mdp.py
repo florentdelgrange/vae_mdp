@@ -20,7 +20,7 @@ class VariationalMDPStateAbstraction(Model):
     def __init__(self, state_shape: Tuple[int, ...], action_shape: Tuple[int], reward_shape: Tuple[int],
                  label_shape: Tuple[int], encoder_network: Model, transition_network: Model, reward_network: Model,
                  decoder_network: Model, latent_state_size: int = 128, temperature_1: float = 2 / 3,
-                 temperature_2: float = 1 / 2, nb_gaussian_posterior: int = 3,
+                 temperature_2: float = 1 / 2, nb_gaussian_posteriors: int = 3,
                  action_pre_processing_network: Model = None, state_pre_processing_network: Model = None,
                  state_post_processing_network: Model = None, name: str = 'vae_mdp'):
         super(VariationalMDPStateAbstraction, self).__init__()
@@ -101,15 +101,15 @@ class VariationalMDPStateAbstraction(Model):
         if state_post_processing_network is not None:
             decoder = state_post_processing_network(decoder)
         # 1 mean per dimension, nb Normal Gaussian
-        decoder_output_mean = Dense(nb_gaussian_posterior * np.prod(state_shape), activation='linear')(decoder)
+        decoder_output_mean = Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear')(decoder)
         decoder_output_mean = \
-            Reshape((nb_gaussian_posterior,) + state_shape, name="GMM_means")(decoder_output_mean)
+            Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_means")(decoder_output_mean)
         # 1 var per dimension, nb Normal Gaussian
-        decoder_output_log_var = Dense(nb_gaussian_posterior * np.prod(state_shape), activation='linear')(decoder)
+        decoder_output_log_var = Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear')(decoder)
         decoder_output_log_var = \
-            Reshape((nb_gaussian_posterior,) + state_shape, name="GMM_log_vars")(decoder_output_log_var)
+            Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_log_vars")(decoder_output_log_var)
         # prior over Normal Gaussian
-        decoder_prior = Dense(nb_gaussian_posterior, activation='softmax', name="GMM_priors")(decoder)
+        decoder_prior = Dense(nb_gaussian_posteriors, activation='softmax', name="GMM_priors")(decoder)
         self.reconstruction_network = Model(inputs=next_latent_state,
                                             outputs=[decoder_output_mean, decoder_output_log_var, decoder_prior],
                                             name='reconstruction_network')
@@ -127,14 +127,49 @@ class VariationalMDPStateAbstraction(Model):
         L = K.log(U) - K.log(K.ones(shape=(batch, dim,)) - U)
         return logistic.sample(self.temperature[0], log_alpha, L)
 
+    def encode(self, state, action, reward, label, state_prime):
+        """
+        Encode the sample (s, a, r, l, s') into a Bernouilli probability distribution over binary latent states z
+        """
+        [log_alpha, label] = self.encoder_network([state, action, reward, label, state_prime])
+        return tf.concat([tf.exp(log_alpha) / (tf.ones(tf.shape(log_alpha)) + tf.exp(log_alpha)), label], axis=-1)
+
+    def decode(self, latent_state) -> tfp.distributions.Distribution:
+        """
+        Decode a binary latent state into a probability distribution over original states of the MDP, modeled by a GMM
+        """
+        [reconstruction_mean, reconstruction_log_var, reconstruction_prior_components] = \
+            self.reconstruction_network(latent_state)
+        return tfp.distributions.MixtureSameFamily(
+            mixture_distribution=tfp.distributions.Categorical(probs=reconstruction_prior_components),
+            components_distribution=tfp.distributions.MultivariateNormalDiag(
+                loc=reconstruction_mean, scale_diag=tf.math.exp(reconstruction_log_var)))
+
+    def latent_transition_probability_distribution(self, latent_state, action):
+        """
+        Retrieves a Bernouilli probability distribution P(z'|z, a) over successor latent states z', given a binary
+        latent state z and action a.
+        """
+        log_alpha = self.transition_network([latent_state, action])
+        return tf.exp(log_alpha) / (tf.ones(tf.shape(latent_state)) + tf.exp(log_alpha))
+
+    def reward_probability_distribution(self, latent_state, action, next_latent_state) \
+            -> tfp.distributions.Distribution:
+        """
+        Retrieves a probability distribution P(r|z, a, z') over rewards obtained when the latent transition z -> z' is
+        encountered when action a is chosen
+        """
+        [reward_mean, reward_log_var] = self.reward_network([latent_state, action, next_latent_state])
+        return tfp.distributions.MultivariateNormalDiag(loc=reward_mean, scale_diag=tf.math.exp(reward_log_var))
+
     @property
     def vae(self) -> Model:
         """
         VAE-MDP network
-        Make the VAE input time distributed so that the encoder provides z, z' with
-        z ~ Q(z_t|s_{t-1},a_{t-1},r_{t-1}, s_t, l_t) and z' ~ Q(z_{t+1}|s_t, a_t, r_t, s_{t+1}, l_{t+1})
-        Time distributed layers do not support multiple outputs or inputs.
         """
+        # Make the VAE input time distributed so that the encoder provides z, z' with
+        # z ~ Q(z_t|s_{t-1},a_{t-1},r_{t-1}, s_t, l_t) and z' ~ Q(z_{t+1}|s_t, a_t, r_t, s_{t+1}, l_{t+1})
+        # Time distributed layers do not support multiple outputs or inputs.
         if self._vae is None:
             vae_input = [Input(shape=(2,) + self.state_shape, name="incident_states"),
                          Input(shape=(2,) + self.action_shape, name="actions"),
@@ -203,19 +238,10 @@ def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x):
         clip_value_min=min_val, clip_value_max=max_val)
 
     # Normal log-probability P(r_1 | z, a_1, z')
-    [reward_mean, reward_log_var] = vae_mdp.reward_network([z, a_1, z_prime])
-    log_p_rewards = \
-        tfp.distributions.MultivariateNormalDiag(loc=reward_mean, scale_diag=tf.math.exp(reward_log_var)).log_prob(r_1)
+    log_p_rewards = vae_mdp.reward_probability_distribution(z, a_1, z_prime).log_prob(r_1)
 
     # Reconstruction P(s_2 | z'), modeled by a GMM
-    [reconstruction_mean, reconstruction_log_var, reconstruction_prior_components] = \
-        vae_mdp.reconstruction_network(z_prime)
-    log_p_reconstruction = \
-        tfp.distributions.MixtureSameFamily(
-            mixture_distribution=tfp.distributions.Categorical(probs=reconstruction_prior_components),
-            components_distribution=tfp.distributions.MultivariateNormalDiag(
-                loc=reconstruction_mean, scale_diag=tf.math.exp(reconstruction_log_var))
-        ).log_prob(s_2)
+    log_p_reconstruction = vae_mdp.decode(z_prime).log_prob(s_2)
 
     return - tf.reduce_mean(
         log_p_rewards + log_p_reconstruction - tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
