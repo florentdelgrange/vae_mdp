@@ -173,33 +173,33 @@ class VariationalMDPStateAbstraction(Model):
 @tf.function
 def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x):
     # inputs are assumed to have shape
-    # [(?, 2, state_shape), (?, 2, action_shape), (?, 2, reward_shape), (?, 2, state_shape), (?, 2, label_shape)]
+    # x = [(?, 2, state_shape), (?, 2, action_shape), (?, 2, reward_shape), (?, 2, state_shape), (?, 2, label_shape)]
     s_0, a_0, r_0, _, l_1 = (input[i][:, 0] for i, input in enumerate(x))
     s_1, a_1, r_1, s_2, l_2 = (input[i][:, 1] for i, input in enumerate(x))
     [log_alpha, label] = vae_mdp.encoder_network([s_0, a_0, r_0, s_1, l_1])
     [log_alpha_prime, label_prime] = vae_mdp.encoder_network([s_1, a_1, r_1, s_2, l_2])
 
-    # z ~ sigmoid(Logistic(alpha)), z' ~ sigmoid(Logistic(alpha'))
+    # z ~ BinConcrete(alpha) = sigmoid(Logistic(alpha)), z' ~ BinConcrete(alpha') = sigmoid(Logistic(alpha'))
     logistic_z, logistic_z_prime = vae_mdp.sample_logistic(log_alpha), vae_mdp.sample_logistic(log_alpha_prime)
     z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1)
     z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1)
 
     # change label l'=1 to 100 and label l'=0 to -1000 so that
-    # sigmoid(logistic_z'[label]) = 1 if l'=1 and sigmoid(logistic_z'[label]) = 0 if l'=0
+    # sigmoid(logistic_z'[l']) = 1 if l'=1 and sigmoid(logistic_z'[l']) = 0 if l'=0
     logistic_label_prime = tf.cond(tf.greater(label_prime, tf.zeros(vae_mdp.label_shape)),
                                    lambda x: x * 1e2, lambda x: x - 1e3)
     logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1)
 
     # binary-concrete log-logistic probability Q(logistic_z'|s_1, a_1, r_1, s_2, l_2), logistic_z' ~ Logistic(alpha')
     log_q_z_prime = tf.clip_by_value(
-        binary_concrete.log_logistic_density(vae_mdp.temperature[0], log_alpha_prime, logistic_z_prime,
-                                             tf.math.log, tf.math.exp, tf.math.log1p),
+        binary_concrete.log_logistic_density(vae_mdp.temperature[0], log_alpha_prime,
+                                             tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime),
         clip_value_min=min_val, clip_value_max=max_val)
 
-    # logistic log probability P(z'|z, a_1)
+    # logistic log probability P(logistic_z'|z, a_1)
     log_p_z_prime = tf.clip_by_value(
-        logistic.log_density(vae_mdp.temperature[1], vae_mdp.transition_network([z, a_1]), logistic_z_prime,
-                             tf.math.log, tf.math.exp, tf.math.log1p),
+        logistic.log_density(vae_mdp.temperature[1], vae_mdp.transition_network([z, a_1]),
+                             tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime),
         clip_value_min=min_val, clip_value_max=max_val)
 
     # Normal log-probability P(r_1 | z, a_1, z')

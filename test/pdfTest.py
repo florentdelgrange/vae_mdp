@@ -23,9 +23,9 @@ class PdfTestCase(unittest.TestCase):
                 alpha_1 = np.random.uniform(1e-12, 1e5)
                 for x in X:
                     self.assertAlmostEqual(
-                        np.log(binary_concrete.density(temperature, alpha, x)) -
-                        np.log(binary_concrete.density(temperature, alpha_1, x)),
-                        binary_concrete.log_diff(temperature, np.log(alpha), np.log(alpha_1), x))
+                        np.log(binary_concrete.density(temperature, alpha)(x)) -
+                        np.log(binary_concrete.density(temperature, alpha_1)(x)),
+                        binary_concrete.log_diff(temperature, np.log(alpha), np.log(alpha_1))(x))
 
     def test_log_logistic_diff(self):
         for temperature in self.temperatures:
@@ -35,9 +35,9 @@ class PdfTestCase(unittest.TestCase):
                 log_alpha_1 = np.log(np.random.uniform(1e-12, 1e5))
                 for x in X:
                     self.assertAlmostEqual(
-                        np.log(logistic.density(temperature, log_alpha, x)) -
-                        np.log(logistic.density(temperature, log_alpha_1, x)),
-                        logistic.log_diff(temperature, log_alpha, log_alpha_1, x))
+                        np.log(logistic.density(temperature, log_alpha)(x)) -
+                        np.log(logistic.density(temperature, log_alpha_1)(x)),
+                        logistic.log_diff(temperature, log_alpha, log_alpha_1)(x))
 
     def test_log_logistic(self):
         for log_alpha in [np.log(np.random.uniform(1e-12, 1e5)) for _ in range(100)]:
@@ -50,10 +50,10 @@ class PdfTestCase(unittest.TestCase):
                 large error is possible.
                 """
                 self.assertAlmostEqual(
-                    binary_concrete.log_density(self.temperatures[0], log_alpha, sp.expit(x)) -
-                    binary_concrete.log_density(self.temperatures[1], log_alpha_1, sp.expit(x)),
-                    binary_concrete.log_logistic_density(self.temperatures[0], log_alpha, x) -
-                    logistic.log_density(self.temperatures[1], log_alpha_1, x), 2)
+                    binary_concrete.log_density(self.temperatures[0], log_alpha)(sp.expit(x)) -
+                    binary_concrete.log_density(self.temperatures[1], log_alpha_1)(sp.expit(x)),
+                    binary_concrete.log_logistic_density(self.temperatures[0], log_alpha)(x) -
+                    logistic.log_density(self.temperatures[1], log_alpha_1,)(x), 2)
 
 
 if __name__ == '__main__':
