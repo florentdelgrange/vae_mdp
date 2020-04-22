@@ -119,7 +119,7 @@ class VariationalMDPStateAbstraction(Model):
         """
         Reparameterization trick for sampling binary concrete random variables.
         The logistic random variable with location log_alpha is a binary concrete random variable before applying the
-        sigmoid function
+        sigmoid function.
         """
         batch = K.shape(log_alpha)[0]
         dim = K.int_shape(log_alpha)[1]
@@ -127,12 +127,13 @@ class VariationalMDPStateAbstraction(Model):
         L = K.log(U) - K.log(K.ones(shape=(batch, dim,)) - U)
         return logistic.sample(self.temperature[0], log_alpha, L)
 
-    def encode(self, state, action, reward, label, state_prime):
+    def encode(self, state, action, reward, label, state_prime) -> tfp.distributions.Distribution:
         """
-        Encode the sample (s, a, r, l, s') into a Bernouilli probability distribution over binary latent states z
+        Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states z
         """
         [log_alpha, label] = self.encoder_network([state, action, reward, label, state_prime])
-        return tf.concat([tf.exp(log_alpha) / (tf.ones(tf.shape(log_alpha)) + tf.exp(log_alpha)), label], axis=-1)
+        return tfp.distributions.Bernoulli(
+            probs=tf.concat([tf.exp(log_alpha) / (tf.ones(tf.shape(log_alpha)) + tf.exp(log_alpha)), label], axis=-1))
 
     def decode(self, latent_state) -> tfp.distributions.Distribution:
         """
@@ -145,13 +146,14 @@ class VariationalMDPStateAbstraction(Model):
             components_distribution=tfp.distributions.MultivariateNormalDiag(
                 loc=reconstruction_mean, scale_diag=tf.math.exp(reconstruction_log_var)))
 
-    def latent_transition_probability_distribution(self, latent_state, action):
+    def latent_transition_probability_distribution(self, latent_state, action) -> tfp.distributions.Distribution:
         """
-        Retrieves a Bernouilli probability distribution P(z'|z, a) over successor latent states z', given a binary
+        Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states z', given a binary
         latent state z and action a.
         """
         log_alpha = self.transition_network([latent_state, action])
-        return tf.exp(log_alpha) / (tf.ones(tf.shape(latent_state)) + tf.exp(log_alpha))
+        return tfp.distributions.Bernoulli(
+            probs=(tf.exp(log_alpha) / (tf.ones(tf.shape(latent_state)) + tf.exp(log_alpha))))
 
     def reward_probability_distribution(self, latent_state, action, next_latent_state) \
             -> tfp.distributions.Distribution:
