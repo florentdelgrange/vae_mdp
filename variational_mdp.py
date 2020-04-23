@@ -1,15 +1,16 @@
+import time
 from typing import Tuple
+import numpy as np
 
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow.keras import backend as K, Sequential
 from tensorflow.keras import Model
 from tensorflow.keras.models import clone_model
-from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense, Lambda, \
-    Conv2D, Conv2DTranspose, BatchNormalization, Flatten, MaxPooling2D
-from tensorflow.keras.utils import plot_model
+from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense, Lambda
+from tensorflow.keras.utils import Progbar
+
 from util.pdf import logistic, binary_concrete
-import numpy as np
 
 epsilon = 1e-12
 max_val = 1e9
@@ -130,6 +131,8 @@ class VariationalMDPStateAbstraction(Model):
     def encode(self, state, action, reward, label, state_prime) -> tfp.distributions.Distribution:
         """
         Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states z
+        Note: the Bernoulli distribution is constructed via the Binary Concrete distribution learned by the encoder with
+              a temperature that converges to 0.
         """
         [log_alpha, label] = self.encoder_network([state, action, reward, label, state_prime])
         return tfp.distributions.Bernoulli(
@@ -150,6 +153,8 @@ class VariationalMDPStateAbstraction(Model):
         """
         Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states z', given a binary
         latent state z and action a.
+        Note: the Bernoulli distribution is constructed via the Binary Concrete distribution learned by the encoder with
+              a temperature that converges to 0.
         """
         log_alpha = self.transition_network([latent_state, action])
         return tfp.distributions.Bernoulli(
@@ -216,15 +221,14 @@ def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x):
     [log_alpha, label] = vae_mdp.encoder_network([s_0, a_0, r_0, s_1, l_1])
     [log_alpha_prime, label_prime] = vae_mdp.encoder_network([s_1, a_1, r_1, s_2, l_2])
 
-    # z ~ BinConcrete(alpha) = sigmoid(Logistic(alpha)), z' ~ BinConcrete(alpha') = sigmoid(Logistic(alpha'))
+    # z, z' ~ BinConcrete = sigmoid(BinConcreteLogistic)
     logistic_z, logistic_z_prime = vae_mdp.sample_logistic(log_alpha), vae_mdp.sample_logistic(log_alpha_prime)
     z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1)
     z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1)
 
     # change label l'=1 to 100 and label l'=0 to -1000 so that
     # sigmoid(logistic_z'[l']) = 1 if l'=1 and sigmoid(logistic_z'[l']) = 0 if l'=0
-    logistic_label_prime = tf.cond(tf.greater(label_prime, tf.zeros(vae_mdp.label_shape)),
-                                   lambda x: x * 1e2, lambda x: x - 1e3)
+    logistic_label_prime = ((log_alpha_prime * 1.1) - tf.ones(tf.shape(log_alpha_prime))) * 1e3
     logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1)
 
     # binary-concrete log-logistic probability Q(logistic_z'|s_1, a_1, r_1, s_2, l_2), logistic_z' ~ Logistic(alpha')
@@ -242,7 +246,7 @@ def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x):
     # Normal log-probability P(r_1 | z, a_1, z')
     log_p_rewards = vae_mdp.reward_probability_distribution(z, a_1, z_prime).log_prob(r_1)
 
-    # Reconstruction P(s_2 | z'), modeled by a GMM
+    # Reconstruction P(s_2 | z')
     log_p_reconstruction = vae_mdp.decode(z_prime).log_prob(s_2)
 
     return - tf.reduce_mean(
@@ -256,69 +260,19 @@ def compute_apply_gradients(vae_mdp: VariationalMDPStateAbstraction, x, optimize
         loss = compute_loss(vae_mdp, x)
     gradients = tape.gradient(loss, vae_mdp.trainable_variables)
     optimizer.apply_gradients(zip(gradients, vae_mdp.trainable_variables))
+    return loss
 
 
-if __name__ == '__main__':
-    # Example
-    state_dim = (4,)
-    # state_dim = (128, 128, 3,)
-    action_dim = (2,)
-    reward_dim = (1,)
-    label_dim = (3,)
+def train(vae_mdp: VariationalMDPStateAbstraction, dataset: tf.data.Dataset,
+          epochs: int = 32, batch_size: int = 64,
+          optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4)):
 
-    #  input_pre_processing_network = Input(shape=state_dim)
-    #  pre_processing_network = Conv2D(filters=16, kernel_size=5, activation='relu', strides=(2, 2)) \
-    #      (input_pre_processing_network)
-    #  pre_processing_network = Conv2D(filters=32, kernel_size=3, activation='relu', strides=(2, 2)) \
-    #      (pre_processing_network)
-    #  pre_processing_network = BatchNormalization()(pre_processing_network)
-    #  pre_processing_network = MaxPooling2D()(pre_processing_network)
-    #  pre_processing_network = Flatten()(pre_processing_network)
-    #  pre_processing_network = Model(inputs=input_pre_processing_network, outputs=pre_processing_network)
-
-    # Encoder body
-    encoder_input = Input(shape=(np.prod(state_dim) * 2 + np.prod(action_dim) + np.prod(reward_dim),))
-    # x = Input(shape=(np.prod(tuple(filter(lambda dim: dim is not None, pre_processing_network.output.shape))) * 2 +
-    #                 np.prod(action_dim) + np.prod(reward_dim),))
-    q = Dense(32, activation='relu')(encoder_input)
-    q = Dense(64, activation='relu')(q)
-    q = Model(inputs=encoder_input, outputs=q, name="encoder_network_body")
-
-    # Transition network body
-    transition_input = Input(shape=(256,))
-    p_t = Dense(128, activation='relu')(transition_input)
-    p_t = Dense(128, activation='relu')(p_t)
-    p_t = Model(inputs=transition_input, outputs=p_t, name="transition_network_body")
-
-    # Reward network body
-    p_r_input = Input(shape=(384,))
-    p_r = Dense(128, activation='relu')(p_r_input)
-    p_r = Dense(64, activation='relu')(p_r)
-    p_r = Model(inputs=p_r_input, outputs=p_r, name="reward_network_body")
-
-    # Decoder network body
-    p_decoder_input = Input(shape=(128,))
-    p_decode = Dense(64, activation='relu')(p_decoder_input)
-    p_decode = Dense(32, activation='relu')(p_decode)
-    p_decode = Model(inputs=p_decoder_input, outputs=p_decode, name="decoder_body")
-
-    #  p_deconv_input = Input(tuple(filter(lambda dim: dim is not None, p_decode.output.shape)))
-    #  p_deconv = Dense(units=np.prod(tuple(filter(lambda dim: dim is not None, pre_processing_network.output.shape))))\
-    #      (p_deconv_input)
-    #  p_deconv = Reshape((32, 32, 32))(p_deconv)
-    #  p_deconv = \
-    #      Conv2DTranspose(filters=32, kernel_size=3, activation='relu', strides=(2, 2), padding='SAME')(p_deconv)
-    #  p_deconv = \
-    #      Conv2DTranspose(filters=16, kernel_size=5, activation='relu', strides=(2, 2), padding='SAME')(p_deconv)
-    #  p_deconv = \
-    #      Conv2DTranspose(filters=3, kernel_size=3, padding='SAME')(p_deconv)
-    #  p_deconv = Model(inputs=p_deconv_input, outputs=p_deconv)
-
-    action_processor = Sequential(name='action_processor')
-    action_processor.add(Dense(32, activation='sigmoid', name="process_action"))
-    action_processor.add(Dense(128, activation='sigmoid', name="process_action"))
-    model = VariationalMDPStateAbstraction(state_dim, action_dim, reward_dim, label_dim, q, p_t, p_r, p_decode,
-                                           action_pre_processing_network=action_processor)
-    # state_pre_processing_network=pre_processing_network,
-    # state_post_processing_network=p_deconv)
-    plot_model(model.vae, dpi=300, expand_nested=True, show_shapes=True)
+    for epoch in range(epochs):
+        progressbar = Progbar(target=None, stateful_metrics=['epoch_time', 'ELBO'])
+        loss = tf.keras.metrics.Mean()
+        print("Epoch: {}/{}".format(epoch + 1, epochs))
+        start_time = time.time()
+        for x in dataset:
+            loss(compute_apply_gradients(vae_mdp, x, optimizer))
+            end_time = time.time()
+            progressbar.add(batch_size, values=[('epoch_time', end_time - start_time), ('ELBO', - loss.result())])
