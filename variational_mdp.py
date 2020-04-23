@@ -263,7 +263,7 @@ def compute_apply_gradients(vae_mdp: VariationalMDPStateAbstraction, x, optimize
 
 
 def train(vae_mdp: VariationalMDPStateAbstraction, dataset: tf.data.Dataset,
-          epochs: int = 32, batch_size: int = 64,
+          epochs: int = 8, batch_size: int = 32,
           optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
           checkpoint: tf.train.Checkpoint = None, manager: tf.train.CheckpointManager = None,
           logs: bool = True):
@@ -301,4 +301,4 @@ def train(vae_mdp: VariationalMDPStateAbstraction, dataset: tf.data.Dataset,
             if logs:
                 with train_summary_writer.as_default():
                     tf.summary.scalar('ELBO', loss.result(), step=epoch * dataset_size + step)
-            dataset_size = min([dataset_size, (step + 1) * batch_size])
+            dataset_size = max([dataset_size, (step + 1) * batch_size])
