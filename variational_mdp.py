@@ -1,4 +1,3 @@
-import time
 from typing import Tuple
 import numpy as np
 
@@ -265,14 +264,41 @@ def compute_apply_gradients(vae_mdp: VariationalMDPStateAbstraction, x, optimize
 
 def train(vae_mdp: VariationalMDPStateAbstraction, dataset: tf.data.Dataset,
           epochs: int = 32, batch_size: int = 64,
-          optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4)):
+          optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
+          checkpoint: tf.train.Checkpoint = None, manager: tf.train.CheckpointManager = None,
+          logs: bool = True):
+    import time
 
+    if checkpoint is not None and manager is not None:
+        checkpoint.restore(manager.latest_checkpoint)
+        if manager.latest_checkpoint:
+            print("Restored from {}".format(manager.latest_checkpoint))
+        else:
+            print("Initializing from scratch.")
+    if logs:
+        import datetime
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
+        train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+
+    dataset_size = 0
     for epoch in range(epochs):
-        progressbar = Progbar(target=None, stateful_metrics=['epoch_time', 'ELBO'])
+        progressbar = Progbar(target=None if not dataset_size else dataset_size,
+                              stateful_metrics=['epoch_time', 'ELBO'])
         loss = tf.keras.metrics.Mean()
+        best = - np.inf
         print("Epoch: {}/{}".format(epoch + 1, epochs))
         start_time = time.time()
-        for x in dataset:
+        for step, x in enumerate(dataset):
             loss(compute_apply_gradients(vae_mdp, x, optimizer))
             end_time = time.time()
             progressbar.add(batch_size, values=[('epoch_time', end_time - start_time), ('ELBO', - loss.result())])
+            if checkpoint is not None and manager is not None:
+                checkpoint.step.assign_add(1)
+                if loss.result().numpy() > best:
+                    manager.save()
+                    best = loss.result().numpy()
+            if logs:
+                with train_summary_writer.as_default():
+                    tf.summary.scalar('ELBO', loss.result(), step=epoch * dataset_size + step)
+            dataset_size = min([dataset_size, (step + 1) * batch_size])
