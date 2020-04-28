@@ -1,43 +1,38 @@
-import base64
 import os
 
 import imageio
-import matplotlib
 import matplotlib.pyplot as plt
-import numpy as np
-import PIL.Image
 import datetime
 
 import tensorflow as tf
+
+import pybullet_envs
+import pybullet
+import pybullet_data
 
 from tf_agents.agents.sac import sac_agent
 from tf_agents.agents.ddpg import critic_network
 
 from tf_agents.drivers import dynamic_step_driver
 from tf_agents.drivers import dynamic_episode_driver
-from tf_agents.environments import suite_pybullet
 from tf_agents.environments import tf_py_environment
-from tf_agents.eval import metric_utils
+from tf_agents.environments import suite_pybullet
 from tf_agents.metrics import tf_metrics
 from tf_agents.networks import actor_distribution_network
 from tf_agents.networks import normal_projection_network
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.utils import common
-from tf_agents.policies import policy_saver, greedy_policy
+from tf_agents.policies import policy_saver, greedy_policy, random_tf_policy
 
-import pybulletgym
-
-env_name = "HumanoidPyBulletEnv-v0"  # @param {type:"string"}
-
-fc_layer_params = (256, 128)
+env_name = "HumanoidBulletEnv-v0"  # @param {type:"string"}
+# env_name = "MinitaurBulletEnv-v0"
 
 # use "num_iterations = 1e6" for better results,
 # 1e5 is just so this doesn't take too long.
-num_iterations = 100000  # @param {type:"integer"}
+num_iterations = int(3e6)  # @param {type:"integer"}
 
 initial_collect_steps = 10000  # @param {type:"integer"}
 collect_steps_per_iteration = 1  # @param {type:"integer"}
-collect_episodes_per_iteration = 2  # @param {type:"integer"}
 replay_buffer_capacity = 1000000  # @param {type:"integer"}
 
 batch_size = 256  # @param {type:"integer"}
@@ -54,13 +49,14 @@ gradient_clipping = None  # @param
 actor_fc_layer_params = (256, 256)
 critic_joint_fc_layer_params = (256, 256)
 
-log_interval = 5000  # @param {type:"integer"}
+log_interval = 2500  # @param {type:"integer"}
 
 num_eval_episodes = 30  # @param {type:"integer"}
 eval_interval = 10000  # @param {type:"integer"}
 
 train_py_env = suite_pybullet.load(env_name)
 eval_py_env = suite_pybullet.load(env_name)
+train_py_env.reset(), eval_py_env.reset()
 
 train_env = tf_py_environment.TFPyEnvironment(train_py_env)
 eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
@@ -143,7 +139,9 @@ avg_return = tf_metrics.AverageReturnMetric()
 observers = [num_episodes, env_steps, avg_return, replay_buffer.add_batch]
 # A driver executes the agent's exploration loop and allow the observers to collect exploration information
 driver = dynamic_step_driver.DynamicStepDriver(
-    train_env, tf_agent.collect_policy, observers=observers, num_steps=initial_collect_steps)
+    train_env, tf_agent.collect_policy, observers=observers, num_steps=collect_steps_per_iteration)
+initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
+    train_env, collect_policy, observers=[replay_buffer.add_batch], num_steps=initial_collect_steps)
 
 
 def train_and_eval():
@@ -155,6 +153,20 @@ def train_and_eval():
     tf_agent.train_step_counter.assign(0)
 
     global global_step
+
+    # Load the policy if it was trained beforehand
+    if os.path.exists(checkpoint_dir):
+        train_checkpointer.initialize_or_restore()
+        global_step = tf.compat.v1.train.get_global_step()
+        print("Checkpoint loaded! global_step={}".format(global_step.value().numpy()))
+    if not os.path.exists(stochastic_policy_dir):
+        os.makedirs(stochastic_policy_dir)
+    if not os.path.exists(greedy_policy_dir):
+        os.makedirs(greedy_policy_dir)
+
+    print("Initialize replay buffer...")
+    initial_collect_driver.run()
+
     returns = []
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
@@ -162,12 +174,6 @@ def train_and_eval():
     print("Start training...")
 
     for _ in range(num_iterations):
-
-        # Load the policy if it was trained beforehand
-        if os.path.exists('../saves/checkpoint'):
-            train_checkpointer.initialize_or_restore()
-            global_step = tf.compat.v1.train.get_global_step()
-            # print("Checkpoint loaded! global_step={}".format(global_step.eval()))
 
         for _ in range(collect_steps_per_iteration):
             # Collect a few episodes using collect_policy and save to the replay buffer.
@@ -184,24 +190,31 @@ def train_and_eval():
         if step % log_interval == 0:
             print('step = {0}: loss = {1}'.format(step, train_loss.loss))
             train_checkpointer.save(global_step)
-            if not os.path.exists(stochastic_policy_dir):
-                os.makedirs(stochastic_policy_dir)
-            if not os.path.exists(greedy_policy_dir):
-                os.makedirs(greedy_policy_dir)
             stochastic_policy_saver.save(stochastic_policy_dir)
             eval_policy_saver.save(greedy_policy_dir)
+            with train_summary_writer.as_default():
+                tf.summary.scalar('Loss', train_loss.loss, step=step)
+                tf.summary.scalar('Training average returns', avg_return.result(), step=step)
 
         if step % eval_interval == 0:
-            avg_return = tf_metrics.AverageReturnMetric()
-            dynamic_episode_driver.DynamicEpisodeDriver(eval_env, tf_agent.policy, [avg_return],
-                                                        num_episodes=num_eval_episodes).run()
-            print('step = {0}: Average Return = {1}'.format(step, avg_return.result()))
+            avg_eval_return = tf_metrics.AverageReturnMetric()
+            if not os.path.exists('saves/eval_videos'):
+                os.makedirs('saves/eval_videos')
+            current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            video_filename = 'saves/eval_videos/' + env_name + current_time + '.mp4'
+            with imageio.get_writer(video_filename, fps=60) as video:
+                eval_py_env.reset()
+                dynamic_episode_driver.DynamicEpisodeDriver(eval_env, tf_agent.policy,
+                                                            [avg_eval_return,
+                                                             lambda _: video.append_data(eval_py_env.render())],
+                                                            num_episodes=num_eval_episodes).run()
+            print('step = {0}: Average Return = {1}'.format(step, avg_eval_return.result()))
             with train_summary_writer.as_default():
-                tf.summary.scalar('Expected returns', avg_return, step=step)
-            returns.append(avg_return)
+                tf.summary.scalar('Expected returns', avg_eval_return.result(), step=step)
+            returns.append(avg_eval_return.result())
 
     # Plots
-    steps = range(0, num_iterations + 1, eval_interval)
+    steps = range(0, num_iterations, eval_interval)
     plt.plot(steps, returns)
     plt.ylabel('Average Return')
     plt.xlabel('Step')
@@ -210,9 +223,29 @@ def train_and_eval():
 
 
 def render_policy():
-    avg_return = tf_metrics.AverageReturnMetric()
-    saved_policy = tf.compat.v2.saved_model.load(stochastic_policy_dir)
-    dynamic_episode_driver.DynamicEpisodeDriver(eval_env, saved_policy, [avg_return,
-                                                                         lambda _: eval_env.render()],
-                                                num_episodes=num_eval_episodes).run()
-    print('Average Return = {}'.format(avg_return.result()))
+    rendering_avg_return = tf_metrics.AverageReturnMetric()
+    # saved_policy = tf.compat.v2.saved_model.load(stochastic_policy_dir)
+    saved_policy = random_tf_policy.RandomTFPolicy(tf_agent.time_step_spec, action_spec)
+    if not os.path.exists('saves/eval_videos'):
+        os.makedirs('saves/eval_videos')
+    video_filename = 'saves/eval_videos/' + env_name + '.mp4'
+    eval_env.reset()
+    with imageio.get_writer(video_filename, fps=60) as video:
+        dynamic_episode_driver.DynamicEpisodeDriver(eval_env, saved_policy,
+                                                    [rendering_avg_return,
+                                                     lambda _: video.append_data(eval_py_env.render())],
+                                                    num_episodes=1).run()
+    print('Average Return = {}'.format(rendering_avg_return.result()))
+
+
+def env_random_policy_video_generation(env_name, episodes=1):
+    py_env = suite_pybullet.load(env_name)
+    tf_env = tf_py_environment.TFPyEnvironment(py_env)
+    random_policy = random_tf_policy.RandomTFPolicy(tf_env.time_step_spec(), tf_env.action_spec())
+    if not os.path.exists('saves/eval_videos'):
+        os.makedirs('saves/eval_videos')
+    video_filename = 'saves/eval_videos/' + env_name + '_random_policy.mp4'
+    with imageio.get_writer(video_filename, fps=60) as video:
+        dynamic_episode_driver.DynamicEpisodeDriver(tf_env, random_policy,
+                                                    [lambda _: video.append_data(py_env.render())],
+                                                    num_episodes=episodes).run()

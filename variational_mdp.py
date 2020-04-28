@@ -266,7 +266,7 @@ def train(vae_mdp: VariationalMDPStateAbstraction, dataset: tf.data.Dataset,
           epochs: int = 8, batch_size: int = 32,
           optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
           checkpoint: tf.train.Checkpoint = None, manager: tf.train.CheckpointManager = None,
-          logs: bool = True):
+          logs: bool = True, save_best_only: bool = False):
     import time
 
     if checkpoint is not None and manager is not None:
@@ -295,7 +295,7 @@ def train(vae_mdp: VariationalMDPStateAbstraction, dataset: tf.data.Dataset,
             progressbar.add(batch_size, values=[('epoch_time', end_time - start_time), ('ELBO', - loss.result())])
             if checkpoint is not None and manager is not None:
                 checkpoint.step.assign_add(1)
-                if loss.result().numpy() > best:
+                if (not save_best_only) or loss.result().numpy() > best:
                     manager.save()
                     best = loss.result().numpy()
             if logs:
