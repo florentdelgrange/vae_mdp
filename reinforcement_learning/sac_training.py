@@ -19,7 +19,7 @@ from tf_agents.networks import actor_distribution_network
 from tf_agents.networks import normal_projection_network
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.utils import common
-from tf_agents.policies import policy_saver, greedy_policy, random_tf_policy
+from tf_agents.policies import policy_saver, random_tf_policy
 
 env_name = "HumanoidBulletEnv-v0"  # @param {type:"string"}
 
@@ -39,7 +39,7 @@ alpha_learning_rate = 3e-4  # @param {type:"number"}
 target_update_tau = 0.005  # @param {type:"number"}
 target_update_period = 1  # @param {type:"number"}
 gamma = 0.99  # @param {type:"number"}
-reward_scale_factor = 1.0  # @param {type:"number"}
+reward_scale_factor = 20.0  # @param {type:"number"}
 gradient_clipping = None  # @param
 
 actor_fc_layer_params = (256, 256)
@@ -103,7 +103,6 @@ tf_agent = sac_agent.SacAgent(
 tf_agent.initialize()
 
 # define the policy from the learning agent
-eval_policy = greedy_policy.GreedyPolicy(tf_agent.policy)
 collect_policy = tf_agent.collect_policy
 
 replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
@@ -126,9 +125,7 @@ train_checkpointer = common.Checkpointer(
     global_step=global_step
 )
 stochastic_policy_dir = os.path.join('saves/', 'stochastic_policy')
-greedy_policy_dir = os.path.join('saves/', 'greedy_policy')
 stochastic_policy_saver = policy_saver.PolicySaver(tf_agent.policy)
-eval_policy_saver = policy_saver.PolicySaver(eval_policy)
 
 num_episodes = tf_metrics.NumberOfEpisodes()
 env_steps = tf_metrics.EnvironmentSteps()
@@ -158,8 +155,6 @@ def train_and_eval():
         print("Checkpoint loaded! global_step={}".format(global_step.value().numpy()))
     if not os.path.exists(stochastic_policy_dir):
         os.makedirs(stochastic_policy_dir)
-    if not os.path.exists(greedy_policy_dir):
-        os.makedirs(greedy_policy_dir)
 
     print("Initialize replay buffer...")
     initial_collect_driver.run()
@@ -188,7 +183,6 @@ def train_and_eval():
             print('step = {0}: loss = {1}'.format(step, train_loss.loss))
             train_checkpointer.save(global_step)
             stochastic_policy_saver.save(stochastic_policy_dir)
-            eval_policy_saver.save(greedy_policy_dir)
             with train_summary_writer.as_default():
                 tf.summary.scalar('Loss', train_loss.loss, step=step)
                 tf.summary.scalar('Training average returns', avg_return.result(), step=step)
@@ -198,7 +192,7 @@ def train_and_eval():
             if not os.path.exists('saves/eval'):
                 os.makedirs('saves/eval')
             current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            video_filename = 'saves/eval/' + env_name + current_time + '.mp4'
+            video_filename = 'saves/eval/' + env_name + current_time + '_step' + str(step) + '.mp4'
             with imageio.get_writer(video_filename, fps=60) as video:
                 tf_env.reset()
                 dynamic_episode_driver.DynamicEpisodeDriver(tf_env, tf_agent.policy,
