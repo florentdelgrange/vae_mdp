@@ -1,5 +1,6 @@
 import os
 from typing import Tuple, Callable
+import threading
 
 import PIL
 import imageio
@@ -24,7 +25,7 @@ from tf_agents.policies import policy_saver, random_tf_policy
 from util.io import dataset_generator
 
 
-class Learner:
+class SACLearner:
     def __init__(self,
                  env_name: str = 'HumanoidBulletEnv-v0',
                  num_iterations: int = int(3e6),
@@ -157,11 +158,6 @@ class Learner:
             num_parallel_calls=3,
             sample_batch_size=batch_size,
             num_steps=2).prefetch(3)
-        # create an observation dataset
-        self.observations_dataset = self.replay_buffer.as_dataset(
-            num_parallel_calls=3,
-            sample_batch_size=replay_buffer_capacity,
-            num_steps=3)
         self.iterator = iter(self.dataset)
 
         self.checkpoint_dir = os.path.join('saves/', 'checkpoint')
@@ -189,6 +185,10 @@ class Learner:
 
         self.labeling_function = labeling_function
 
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
+        self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+
     def train_and_eval(self):
         # Optimize by wrapping some of the code in a graph using TF function.
         self.tf_agent.train = common.function(self.tf_agent.train)
@@ -201,20 +201,15 @@ class Learner:
             print("Checkpoint loaded! global_step={}".format(self.global_step.value().numpy()))
         if not os.path.exists(self.stochastic_policy_dir):
             os.makedirs(self.stochastic_policy_dir)
-
         print("Initialize replay buffer...")
         self.initial_collect_driver.run()
 
-        returns = []
-        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
-        train_summary_writer = tf.summary.create_file_writer(train_log_dir)
         print("Start training...")
 
         for _ in range(self.num_iterations):
 
             for _ in range(self.collect_steps_per_iteration):
-                # Collect a few episodes using collect_policy and save to the replay buffer.
+                # Collect a few steps using collect_policy and save to the replay buffer.
                 self.driver.run()
 
             # Use data from the buffer and update the agent's network.
@@ -228,39 +223,56 @@ class Learner:
                 print('step = {0}: loss = {1}'.format(step, train_loss.loss))
                 self.train_checkpointer.save(self.global_step)
                 self.stochastic_policy_saver.save(self.stochastic_policy_dir)
-                with train_summary_writer.as_default():
+                with self.train_summary_writer.as_default():
                     tf.summary.scalar('Loss', train_loss.loss, step=step)
                     if not self.parallelization:
                         tf.summary.scalar('Training average returns', self.avg_return.result(), step=step)
 
             if step % self.eval_interval == 0:
-                avg_eval_return = tf_metrics.AverageReturnMetric()
-                if not os.path.exists('saves/eval'):
-                    os.makedirs('saves/eval')
-                if self.eval_video:
-                    self.evaluate_policy_video(observers=[avg_eval_return], step=str(step))
-                else:
-                    self.eval_env.reset()
-                    dynamic_episode_driver.DynamicEpisodeDriver(self.eval_env, self.tf_agent.policy,
-                                                                [avg_eval_return],
-                                                                num_episodes=self.num_eval_episodes).run()
-                print('step = {0}: Average Return = {1}'.format(step, avg_eval_return.result()))
-                with train_summary_writer.as_default():
-                    tf.summary.scalar('Average returns', avg_eval_return.result(), step=step)
-                returns.append(avg_eval_return.result())
+                eval_thread = threading.Thread(target=self.eval, args=(step,), daemon=True, name='eval')
+                eval_thread.start()
 
-            if step % self.replay_buffer_capacity == 0:
-                dataset_generator.gather_rl_observations(iter(self.observations_dataset),
-                                                         self.labeling_function)
+            if step % (self.replay_buffer_capacity // 4) == 0:
+                dataset_generation_thread = threading.Thread(target=self.save_observations,
+                                                             args=(self.replay_buffer_capacity // 4,),
+                                                             daemon=True,
+                                                             name='dataset_gen')
+                dataset_generation_thread.start()
 
-    def evaluate_policy_video(self, observers=None, step=''):
+    def eval(self, step: int = 0):
+        avg_eval_return = tf_metrics.AverageReturnMetric()
+        avg_eval_episode_length = tf_metrics.AverageEpisodeLengthMetric()
+        saved_policy = tf.compat.v2.saved_model.load(self.stochastic_policy_dir)
+        if self.eval_video:
+            self.evaluate_policy_video(saved_policy,
+                                       observers=[avg_eval_return, avg_eval_episode_length],
+                                       step=str(step))
+        else:
+            self.eval_env.reset()
+            dynamic_episode_driver.DynamicEpisodeDriver(self.eval_env, saved_policy,
+                                                        [avg_eval_return, avg_eval_episode_length],
+                                                        num_episodes=self.num_eval_episodes).run()
+        print('step = {0}: Average Return = {1}'.format(step, avg_eval_return.result()))
+        with self.train_summary_writer.as_default():
+            tf.summary.scalar('Average returns', avg_eval_return.result(), step=step)
+            tf.summary.scalar('Average episode length', avg_eval_episode_length.result(), step=step)
+
+    def save_observations(self, batch_size: int = 128000):
+        observations_dataset = self.replay_buffer.as_dataset(
+            num_parallel_calls=3,
+            sample_batch_size=batch_size,
+            num_steps=3)
+        dataset_generator.gather_rl_observations(iter(observations_dataset),
+                                                 self.labeling_function)
+        print("observation dataset saved")
+
+    def evaluate_policy_video(self, policy, observers=None, step=''):
         if observers is None:
             observers = []
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         video_filename = 'saves/eval/' + self.env_name + current_time + '_step' + step + '.mp4'
         with imageio.get_writer(video_filename, fps=60) as video:
             self.eval_env.reset()
-            dynamic_episode_driver.DynamicEpisodeDriver(self.eval_env, self.tf_agent.policy,
+            dynamic_episode_driver.DynamicEpisodeDriver(self.eval_env, policy,
                                                         observers + [lambda _: video.append_data(self.py_env.render())],
                                                         num_episodes=self.num_eval_episodes).run()
-
