@@ -1,11 +1,21 @@
-import datetime
-
 import h5py
 import os
+import glob
+import datetime
+import random
+from typing import List, Dict, Tuple
+
+import numpy as np
+import tensorflow as tf
 import tf_agents.trajectories.time_step as ts
+import time
 
 
-def gather_rl_observations(iterator, labeling_function, dataset_path='dataset', dataset_name='rl_observations'):
+def gather_rl_observations(
+        iterator,
+        labeling_function,
+        dataset_path='dataset/reinforcement_learning',
+        dataset_name='rl_exploration'):
     """
     Writes the observations gathered through the training of an RL policy into an hdf5 dataset.
     Important: the next() call of the iterator function must yields a bash containing 3-steps of tf_agents Trajectories.
@@ -17,7 +27,6 @@ def gather_rl_observations(iterator, labeling_function, dataset_path='dataset', 
     rewards = data.reward[:, :2].numpy()  # assuming rewards are scalar values
     next_states = data.observation[:, 1:, :].numpy()
     next_labels = labeling_function(next_states)
-    # 0: initial state; 1: mid state; 2: terminal state
     state_type = data.step_type[:, :2].numpy()
     next_state_type = data.next_step_type[:, :2].numpy()
 
@@ -31,7 +40,7 @@ def gather_rl_observations(iterator, labeling_function, dataset_path='dataset', 
     if not os.path.exists(dataset_path):
         os.makedirs(dataset_path)
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    with h5py.File(os.path.join(dataset_path, dataset_name + current_time), 'w') as h5f:
+    with h5py.File(os.path.join(dataset_path, dataset_name + current_time + '.hdf5'), 'w') as h5f:
         h5f['state'] = states[filtering]
         h5f['action'] = actions[filtering]
         h5f['reward'] = rewards[filtering]
@@ -39,3 +48,89 @@ def gather_rl_observations(iterator, labeling_function, dataset_path='dataset', 
         h5f['next_state_label'] = next_labels[filtering]
         h5f['state_type'] = state_type[filtering]
         h5f['next_state_type'] = state_type[filtering]
+
+
+class DatasetGenerator:
+    def __call__(self, file):
+        with h5py.File(file, 'r') as hf:
+            for (state, action, reward, next_state, label, state_type, next_state_type) in \
+                    zip(hf['state'], hf['action'], hf['reward'], hf['next_state'],
+                        hf['next_state_label'], hf['state_type'], hf['next_state_type']):
+                yield state, action, reward, next_state, label, state_type, next_state_type
+
+
+def get_tensor_shape(h5file):
+    with h5py.File(h5file, 'r') as hf:
+        return (tf.TensorShape(hf['state'].shape[1:]),
+                tf.TensorShape(hf['action'].shape[1:]),
+                tf.TensorShape(hf['reward'].shape[1:]),
+                tf.TensorShape(hf['next_state'].shape[1:]),
+                tf.TensorShape(hf['next_state_label'].shape[1:]),
+                tf.TensorShape(hf['state_type'].shape[1:]),
+                tf.TensorShape(hf['next_state_type'].shape[1:]))
+
+
+def create_dataset(cycle_length=4, block_length=32, num_parallel_calls=4,
+                   hdf5_files_path='dataset/reinforcement_learning', regex='*.hdf5'):
+
+    file_list: List[str] = glob.glob(os.path.join(hdf5_files_path, regex), recursive=True)
+    random.shuffle(file_list)
+
+    dataset = tf.data.Dataset.from_tensor_slices(file_list)
+
+    dataset = dataset.interleave(
+        lambda filename: tf.data.Dataset.from_generator(
+            DatasetGenerator(),
+            (tf.float32, tf.float32, tf.float32, tf.float32, tf.bool, tf.int8, tf.int8),
+            get_tensor_shape(file_list[0]),  # all files are assumed to have same Tensor Shape
+            args=(filename,)
+        ),
+        cycle_length=cycle_length,
+        block_length=block_length,
+        num_parallel_calls=num_parallel_calls
+    )
+    return dataset
+
+
+def merge_rl_observations_dataset(
+        hdf5_files_path='dataset/reinforcement_learning',
+        dataset_name='rl_exploration.hdf5',
+        regex='*.hdf5',
+        shuffle: bool = False):
+    file_list: List[str] = glob.glob(os.path.join(hdf5_files_path, regex), recursive=True)
+
+    print("File list:")
+    print(file_list)
+
+    length: int = 0
+    h5f_indices: Dict[str, Tuple[int, int]] = {}
+    shape: Dict[str, Tuple[int, ...]] = {}
+    start: float = time.time()
+
+    for h5f_name in file_list:
+        with h5py.File(h5f_name, 'r') as h5f:
+            # we assume that all h5f datasets have the same length (= size of axis 0)
+            h5f_length = h5f['state'].shape[0]
+            h5f_indices[h5f_name] = (length, length + h5f_length)
+            length += h5f_length
+
+    random_indices = np.arange(length) if shuffle else np.empty(0)
+    np.random.shuffle(random_indices)
+
+    with h5py.File(os.path.join(hdf5_files_path, dataset_name), 'w') as merged_h5f:
+        for i, h5f_name in enumerate(file_list):
+            with h5py.File(h5f_name, 'r') as h5f:
+                first, last = h5f_indices[h5f_name]
+                indices = np.sort(random_indices[first: last]) if shuffle else np.empty(0)
+                for key in h5f:
+                    if i == 0:  # dataset file initialization
+                        shape[key] = (length,) + h5f[key].shape[1:]
+                        merged_h5f.create_dataset(key, shape[key], dtype=h5f[key].dtype)
+                    if shuffle:
+                        merged_h5f[key][indices] = h5f[key]
+                    else:
+                        merged_h5f[key][first: last] = h5f[key]
+
+        print("Dataset files merged into {}. Time: {:.3f} sec, size: {:.3f} GB).".format(
+            dataset_name, time.time() - start,
+                          os.path.getsize(os.path.join(hdf5_files_path, dataset_name)) / 2.0 ** 30))
