@@ -166,4 +166,4 @@ def merge_rl_observations_dataset(
 
         print("Dataset files merged into {}. Time: {:.3f} sec, size: {:.3f} GB).".format(
             dataset_name, time.time() - start,
-                          os.path.getsize(os.path.join(hdf5_files_path, dataset_name)) / 2.0 ** 30))
+            os.path.getsize(os.path.join(hdf5_files_path, dataset_name)) / 2.0 ** 30))

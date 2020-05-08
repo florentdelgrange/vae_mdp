@@ -1,10 +1,10 @@
 import os
 from typing import Tuple, Callable
 import threading
+import datetime
 
 import PIL
 import imageio
-import datetime
 
 import tensorflow as tf
 
@@ -20,9 +20,36 @@ from tf_agents.networks import actor_distribution_network
 from tf_agents.networks import normal_projection_network
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.utils import common
-from tf_agents.policies import policy_saver, random_tf_policy
+from tf_agents.policies import policy_saver
+import tf_agents.trajectories.time_step as ts
 
 from util.io import dataset_generator
+
+labeling_functions = {
+    'HumanoidBulletEnv-v0':
+        lambda states: states.take(0, axis=-1) + 0.8 <= 0.78,  # falling down
+    # np.count_nonzero(np.abs(observation[:, :, 8: 42][0::2]) > 0.99) > 0  # has stuck joints
+}
+
+
+class NumberOfSafetyViolations:
+    def __init__(self, labeling_function):
+        self._n = 0
+        self._num_episodes = 0
+        self.labeling_function = labeling_function
+
+    def __call__(self, *args, **kwargs):
+        trajectory = args[0]
+        if self.labeling_function(trajectory.observation.numpy()).any():
+            self._n += 1
+        if trajectory.step_type == ts.StepType.LAST:
+            self._num_episodes += 1
+
+    def result(self):
+        return self._n
+
+    def average(self):
+        return self._n / self._num_episodes
 
 
 class SACLearner:
@@ -40,15 +67,15 @@ class SACLearner:
                  gamma: float = 0.99,
                  reward_scale_factor: float = 20.0,
                  gradient_clipping=None,
-                 actor_fc_layer_params: Tuple[int, int] = (256, 256),
-                 critic_joint_fc_layer_params: Tuple[int, int] = (256, 256),
+                 actor_fc_layer_params: Tuple[int, ...] = (256, 256),
+                 critic_joint_fc_layer_params: Tuple[int, ...] = (256, 256),
                  log_interval: int = 2500,
                  num_eval_episodes: int = 30,
                  eval_interval: int = int(1e4),
                  parallelization: bool = True,
                  num_parallel_environments: int = 4,
                  batch_size: int = 256,
-                 labeling_function: Callable = lambda states: states[:, :, 0] + 0.8 <= 0.78,  # for HumanoidBulletEnv-v0
+                 labeling_function: Callable = labeling_functions['HumanoidBulletEnv-v0'],
                  eval_video: bool = False,
                  debug: bool = False):
         self.env_name = env_name
@@ -85,7 +112,7 @@ class SACLearner:
 
         if parallelization:
             self.tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
-                [lambda: suite_pybullet.load('HumanoidBulletEnv-v0')] * num_parallel_environments))
+                [lambda: suite_pybullet.load(env_name)] * num_parallel_environments))
             self.tf_env.reset()
             self.py_env = suite_pybullet.load(env_name)
             self.py_env.reset()
@@ -175,6 +202,7 @@ class SACLearner:
         self.num_episodes = tf_metrics.NumberOfEpisodes()
         self.env_steps = tf_metrics.EnvironmentSteps()
         self.avg_return = tf_metrics.AverageReturnMetric()
+
         observers = [self.num_episodes, self.env_steps, self.avg_return] if not parallelization else []
         observers += [self.replay_buffer.add_batch]
         # A driver executes the agent's exploration loop and allows the observers to collect exploration information
@@ -198,7 +226,7 @@ class SACLearner:
         if os.path.exists(self.checkpoint_dir):
             self.train_checkpointer.initialize_or_restore()
             self.global_step = tf.compat.v1.train.get_global_step()
-            print("Checkpoint loaded! global_step={}".format(self.global_step.value().numpy()))
+            print("Checkpoint loaded! global_step={}".format(self.global_step.result().numpy()))
         if not os.path.exists(self.stochastic_policy_dir):
             os.makedirs(self.stochastic_policy_dir)
         print("Initialize replay buffer...")
@@ -243,19 +271,24 @@ class SACLearner:
         avg_eval_return = tf_metrics.AverageReturnMetric()
         avg_eval_episode_length = tf_metrics.AverageEpisodeLengthMetric()
         saved_policy = tf.compat.v2.saved_model.load(self.stochastic_policy_dir)
+        num_safety_violations = NumberOfSafetyViolations(labeling_function=self.labeling_function)
         if self.eval_video:
             self.evaluate_policy_video(saved_policy,
-                                       observers=[avg_eval_return, avg_eval_episode_length],
+                                       observers=[avg_eval_return, avg_eval_episode_length, num_safety_violations],
                                        step=str(step))
         else:
             self.eval_env.reset()
             dynamic_episode_driver.DynamicEpisodeDriver(self.eval_env, saved_policy,
-                                                        [avg_eval_return, avg_eval_episode_length],
+                                                        [avg_eval_return, avg_eval_episode_length,
+                                                         num_safety_violations],
                                                         num_episodes=self.num_eval_episodes).run()
         print('step = {0}: Average Return = {1}'.format(step, avg_eval_return.result()))
         with self.train_summary_writer.as_default():
             tf.summary.scalar('Average returns', avg_eval_return.result(), step=step)
             tf.summary.scalar('Average episode length', avg_eval_episode_length.result(), step=step)
+            tf.summary.scalar('Number of safety violations for {} episodes'.format(self.num_eval_episodes),
+                              num_safety_violations.result(),
+                              step=step)
 
     def save_observations(self, batch_size: int = 128000):
         observations_dataset = self.replay_buffer.as_dataset(

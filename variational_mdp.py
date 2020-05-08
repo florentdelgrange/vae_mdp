@@ -1,9 +1,10 @@
+import os
 from typing import Tuple
 import numpy as np
 
 import tensorflow as tf
 import tensorflow_probability as tfp
-from tensorflow.keras import backend as K, Sequential
+from tensorflow.keras import backend as K
 from tensorflow.keras import Model
 from tensorflow.keras.models import clone_model
 from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense, Lambda
@@ -14,15 +15,29 @@ from util.pdf import logistic, binary_concrete
 epsilon = 1e-12
 max_val = 1e9
 min_val = -1e9
+max_log_val = np.log(1e9)
+min_log_val = np.log(epsilon)
 
+debug = False
 
 class VariationalMDPStateAbstraction(Model):
-    def __init__(self, state_shape: Tuple[int, ...], action_shape: Tuple[int], reward_shape: Tuple[int],
-                 label_shape: Tuple[int], encoder_network: Model, transition_network: Model, reward_network: Model,
-                 decoder_network: Model, latent_state_size: int = 128, temperature_1: float = 2 / 3,
-                 temperature_2: float = 1 / 2, nb_gaussian_posteriors: int = 3,
-                 action_pre_processing_network: Model = None, state_pre_processing_network: Model = None,
-                 state_post_processing_network: Model = None, name: str = 'vae_mdp'):
+    def __init__(self,
+                 state_shape: Tuple[int, ...],
+                 action_shape: Tuple[int],
+                 reward_shape: Tuple[int],
+                 label_shape: Tuple[int],
+                 encoder_network: Model,
+                 transition_network: Model,
+                 reward_network: Model,
+                 decoder_network: Model,
+                 latent_state_size: int = 16,
+                 temperature_1: float = 2 / 3,
+                 temperature_2: float = 1 / 2,
+                 nb_gaussian_posteriors: int = 3,
+                 action_pre_processing_network: Model = None,
+                 state_pre_processing_network: Model = None,
+                 state_post_processing_network: Model = None,
+                 name: str = 'vae_mdp'):
         super(VariationalMDPStateAbstraction, self).__init__()
         self.temperature = [temperature_1, temperature_2]
         self.state_shape = state_shape
@@ -78,7 +93,7 @@ class VariationalMDPStateAbstraction(Model):
             Concatenate(name="transition_network_input")([latent_state, action_layer_1])
         transition = transition_network(transition_network_input)
         transition_output_layer = \
-            Dense(units=latent_state_size, activation='linear', name='logistic_locations')(transition)
+            Dense(units=latent_state_size, activation='linear', name='transition_logistic_locations')(transition)
         self.transition_network = Model(inputs=[latent_state, action], outputs=transition_output_layer,
                                         name="transition_network")
 
@@ -88,9 +103,9 @@ class VariationalMDPStateAbstraction(Model):
         reward_network_input = \
             Concatenate(name="reward_network_input")([latent_state, action_layer_2, next_latent_state])
         reward_1 = reward_network(reward_network_input)
-        reward_mean = Dense(np.prod(reward_shape), activation='linear')(reward_1)
+        reward_mean = Dense(np.prod(reward_shape), activation='linear', name='reward_mean_0')(reward_1)
         reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
-        reward_log_var = Dense(np.prod(reward_shape), activation='linear')(reward_1)
+        reward_log_var = Dense(np.prod(reward_shape), activation='linear', name='reward_log_var_0')(reward_1)
         reward_log_var = Reshape(reward_shape, name='reward_log_var')(reward_log_var)
         self.reward_network = Model(inputs=[latent_state, action, next_latent_state],
                                     outputs=[reward_mean, reward_log_var], name='reward_network')
@@ -101,11 +116,13 @@ class VariationalMDPStateAbstraction(Model):
         if state_post_processing_network is not None:
             decoder = state_post_processing_network(decoder)
         # 1 mean per dimension, nb Normal Gaussian
-        decoder_output_mean = Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear')(decoder)
+        decoder_output_mean = \
+            Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear', name='GMM_means_0')(decoder)
         decoder_output_mean = \
             Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_means")(decoder_output_mean)
         # 1 var per dimension, nb Normal Gaussian
-        decoder_output_log_var = Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear')(decoder)
+        decoder_output_log_var = \
+            Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear', name='GMM_log_vars_0')(decoder)
         decoder_output_log_var = \
             Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_log_vars")(decoder_output_log_var)
         # prior over Normal Gaussian
@@ -113,18 +130,20 @@ class VariationalMDPStateAbstraction(Model):
         self.reconstruction_network = Model(inputs=next_latent_state,
                                             outputs=[decoder_output_mean, decoder_output_log_var, decoder_prior],
                                             name='reconstruction_network')
+        for layer in self.reconstruction_network.layers:
+            layer.trainable = True
         self._vae = None
 
+    @tf.function
     def sample_logistic(self, log_alpha: tf.Tensor):
         """
         Reparameterization trick for sampling binary concrete random variables.
         The logistic random variable with location log_alpha is a binary concrete random variable before applying the
         sigmoid function.
         """
-        batch = K.shape(log_alpha)[0]
-        dim = K.int_shape(log_alpha)[1]
-        U = K.random_uniform(shape=(batch, dim), minval=epsilon)
-        L = K.log(U) - K.log(K.ones(shape=(batch, dim,)) - U)
+        U = tf.random.uniform(shape=tf.shape(log_alpha), minval=epsilon, name="sample_U")
+        L = tf.math.log(U) - tf.math.log(tf.ones(shape=tf.shape(log_alpha), dtype=log_alpha.dtype) - U,
+                                         name="log-logistic_noise")
         return logistic.sample(self.temperature[0], log_alpha, L)
 
     def encode(self, state, action, reward, label, state_prime) -> tfp.distributions.Distribution:
@@ -212,41 +231,72 @@ class VariationalMDPStateAbstraction(Model):
 
 
 @tf.function
-def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x):
+def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x,
+                 reconstruction_state_observer=None, reconstruction_reward_observer=None):
     # inputs are assumed to have shape
     # x = [(?, 2, state_shape), (?, 2, action_shape), (?, 2, reward_shape), (?, 2, state_shape), (?, 2, label_shape)]
-    s_0, a_0, r_0, _, l_1 = (input[i][:, 0] for i, input in enumerate(x))
-    s_1, a_1, r_1, s_2, l_2 = (input[i][:, 1] for i, input in enumerate(x))
+    s_0, a_0, r_0, _, l_1 = (input[:, 0, :] for input in x)
+    s_1, a_1, r_1, s_2, l_2 = (input[:, 1, :] for input in x)
+
     [log_alpha, label] = vae_mdp.encoder_network([s_0, a_0, r_0, s_1, l_1])
     [log_alpha_prime, label_prime] = vae_mdp.encoder_network([s_1, a_1, r_1, s_2, l_2])
 
     # z, z' ~ BinConcrete = sigmoid(BinConcreteLogistic)
     logistic_z, logistic_z_prime = vae_mdp.sample_logistic(log_alpha), vae_mdp.sample_logistic(log_alpha_prime)
-    z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1)
-    z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1)
+    z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1, name="concat_z")
+    z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1, name="concat_z_prime")
 
-    # change label l'=1 to 100 and label l'=0 to -1000 so that
-    # sigmoid(logistic_z'[l']) = 1 if l'=1 and sigmoid(logistic_z'[l']) = 0 if l'=0
-    logistic_label_prime = ((log_alpha_prime * 1.1) - tf.ones(tf.shape(log_alpha_prime))) * 1e3
-    logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1)
+    if debug:
+        tf.print(logistic_z, "sampled logistic z")
+        tf.print(logistic_z_prime, "sampled logistic z'")
+        tf.print(z, "sampled z")
+        tf.print(z_prime, "sampled z'")
 
     # binary-concrete log-logistic probability Q(logistic_z'|s_1, a_1, r_1, s_2, l_2), logistic_z' ~ Logistic(alpha')
-    log_q_z_prime = tf.clip_by_value(
+    log_q_z_prime = \
         binary_concrete.log_logistic_density(vae_mdp.temperature[0], log_alpha_prime,
-                                             tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime),
-        clip_value_min=min_val, clip_value_max=max_val)
+                                             tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime)
+
+    if debug: tf.print(log_q_z_prime, "Log-logistic Q(z')")
+
+    # change label l'=1 to 100 and label l'=0 to -100 so that
+    # sigmoid(logistic_z'[l']) = 1 if l'=1 and sigmoid(logistic_z'[l']) = 0 if l'=0
+    logistic_label_prime = ((label_prime * 2) - tf.ones(tf.shape(label_prime))) * 1e2
+    logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1, name="concat_logistic_z_prime")
+
+    if debug: tf.print(logistic_z_prime, "Logistic sampled z' with logistic labels")
 
     # logistic log probability P(logistic_z'|z, a_1)
-    log_p_z_prime = tf.clip_by_value(
-        logistic.log_density(vae_mdp.temperature[1], vae_mdp.transition_network([z, a_1]),
-                             tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime),
-        clip_value_min=min_val, clip_value_max=max_val)
+    log_p_z_prime = logistic.log_density(vae_mdp.temperature[1], vae_mdp.transition_network([z, a_1]),
+                                         tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime)
+
+    if debug:
+        tf.print(log_p_z_prime, "log P(logistic z'|z, a)")
 
     # Normal log-probability P(r_1 | z, a_1, z')
     log_p_rewards = vae_mdp.reward_probability_distribution(z, a_1, z_prime).log_prob(r_1)
+    if debug: tf.print(log_p_rewards, "log P(r | z, a, z')")
 
     # Reconstruction P(s_2 | z')
     log_p_reconstruction = vae_mdp.decode(z_prime).log_prob(s_2)
+    if debug:
+        tf.print(vae_mdp.decode(z_prime).prob(s_2), "P(s' | z')")
+        tf.print(vae_mdp.decode(z_prime).mean(), "mean")
+        tf.print(vae_mdp.decode(z_prime).variance(), "variance")
+        tf.print(log_p_reconstruction, "log P(s' | z')")
+
+    # the probability of encoding labels into z' is one
+    log_q_z_prime = tf.concat([log_q_z_prime, tf.zeros(shape=tf.shape(label_prime))], axis=-1, name="q_z_prime_final")
+    if debug: tf.print(log_q_z_prime, "Log Q(z') concatenated with proba 1 labels")
+
+    if debug:
+        tf.print(log_q_z_prime - log_p_z_prime, "Q(z') - P(z')")
+        tf.print(tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1), "sum of log probabilities")
+
+    if reconstruction_state_observer:
+        reconstruction_state_observer(tf.exp(log_p_reconstruction))
+    if reconstruction_reward_observer:
+        reconstruction_reward_observer(tf.exp(log_p_rewards))
 
     return - tf.reduce_mean(
         log_p_rewards + log_p_reconstruction - tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
@@ -254,20 +304,27 @@ def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x):
 
 
 @tf.function
-def compute_apply_gradients(vae_mdp: VariationalMDPStateAbstraction, x, optimizer):
+def compute_apply_gradients(vae_mdp: VariationalMDPStateAbstraction, x, optimizer,
+                            reconstruction_state_observer=None, reconstruction_reward_observer=None):
     with tf.GradientTape() as tape:
-        loss = compute_loss(vae_mdp, x)
+        loss = compute_loss(vae_mdp, x, reconstruction_state_observer, reconstruction_reward_observer)
     gradients = tape.gradient(loss, vae_mdp.trainable_variables)
+    if debug:
+        for gradient, variable in zip(gradients, vae_mdp.trainable_variables):
+            tf.print(gradient, "Gradient for {}".format(variable.name))
     optimizer.apply_gradients(zip(gradients, vae_mdp.trainable_variables))
     return loss
 
 
-def train(vae_mdp: VariationalMDPStateAbstraction, dataset: tf.data.Dataset,
-          epochs: int = 8, batch_size: int = 32,
+def train(vae_mdp: VariationalMDPStateAbstraction,
+          dataset: tf.data.Dataset,
+          epochs: int = 8,
+          batch_size: int = 32,
           optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
-          checkpoint: tf.train.Checkpoint = None, manager: tf.train.CheckpointManager = None,
-          logs: bool = True, save_best_only: bool = False):
-    import time
+          checkpoint: tf.train.Checkpoint = None,
+          manager: tf.train.CheckpointManager = None,
+          log_interval: int = 24):
+    import datetime
 
     if checkpoint is not None and manager is not None:
         checkpoint.restore(manager.latest_checkpoint)
@@ -275,30 +332,42 @@ def train(vae_mdp: VariationalMDPStateAbstraction, dataset: tf.data.Dataset,
             print("Restored from {}".format(manager.latest_checkpoint))
         else:
             print("Initializing from scratch.")
-    if logs:
-        import datetime
-        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
-        train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 
-    dataset_size = 0
+    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
+    if not os.path.exists(train_log_dir):
+        os.makedirs(train_log_dir)
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+
+    global_step = tf.compat.v1.train.get_or_create_global_step()
+    print("Step: {}".format(global_step.numpy()))
+
     for epoch in range(epochs):
-        progressbar = Progbar(target=None if not dataset_size else dataset_size,
+        progressbar = Progbar(target=None,  # if not dataset_size else dataset_size,
                               stateful_metrics=['epoch_time', 'ELBO'])
         loss = tf.keras.metrics.Mean()
-        best = - np.inf
+        prob_rewards = tf.keras.metrics.Mean()
+        prob_states = tf.keras.metrics.Mean()
         print("Epoch: {}/{}".format(epoch + 1, epochs))
-        start_time = time.time()
-        for step, x in enumerate(dataset):
-            loss(compute_apply_gradients(vae_mdp, x, optimizer))
-            end_time = time.time()
-            progressbar.add(batch_size, values=[('epoch_time', end_time - start_time), ('ELBO', - loss.result())])
+
+        for x in dataset.batch(batch_size, drop_remainder=True):
+
+            gradients = compute_apply_gradients(vae_mdp, x, optimizer, prob_states, prob_rewards)
+            loss(gradients)
+            # with train_summary_writer.as_default():
+            #     tf.summary.trace_export(name="ELBO", step=global_step, profiler_outdir=train_log_dir)
+
+            progressbar.add(batch_size, values=[('ELBO', - loss.result()),
+                                                ('prob. rewards', prob_rewards.result()),
+                                                ('prob. states', prob_states.result())])
+
             if checkpoint is not None and manager is not None:
-                checkpoint.step.assign_add(1)
-                if (not save_best_only) or loss.result().numpy() > best:
-                    manager.save()
-                    best = loss.result().numpy()
-            if logs:
-                with train_summary_writer.as_default():
-                    tf.summary.scalar('ELBO', loss.result(), step=epoch * dataset_size + step)
-            dataset_size = max([dataset_size, (step + 1) * batch_size])
+                global_step.assign_add(1)
+                manager.save(global_step)
+                if global_step.numpy() % log_interval == 0:
+                    with train_summary_writer.as_default():
+                        tf.summary.scalar('ELBO', loss.result(), step=global_step.numpy())
+                        tf.summary.scalar('Rewards: mean reconstruction probability', prob_rewards.result(),
+                                          step=global_step.numpy())
+                        tf.summary.scalar('States: mean reconstruction states', prob_states.result(),
+                                          step=global_step.numpy())
