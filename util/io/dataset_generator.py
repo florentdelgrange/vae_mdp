@@ -15,7 +15,8 @@ def gather_rl_observations(
         iterator,
         labeling_function,
         dataset_path='dataset/reinforcement_learning',
-        dataset_name='rl_exploration'):
+        dataset_name='rl_exploration',
+        scalar_rewards=True):
     """
     Writes the observations gathered through the training of an RL policy into an hdf5 dataset.
     Important: the next() call of the iterator function must yields a bash containing 3-steps of tf_agents Trajectories.
@@ -24,9 +25,13 @@ def gather_rl_observations(
     data = iterator.next()[0]  # a tf_agents dataset typically returns a tuple (trajectories, information)
     states = data.observation[:, :2, :].numpy()
     actions = data.action[:, :2, :].numpy()
-    rewards = data.reward[:, :2].numpy()  # assuming rewards are scalar values
+    rewards = data.reward[:, :2].numpy() if scalar_rewards else data.reward[:, :2, :].numpy()
+    if scalar_rewards:
+        rewards.reshape(list(rewards.shape) + [1])
     next_states = data.observation[:, 1:, :].numpy()
     next_labels = labeling_function(next_states)
+    if next_labels.shape == states.shape[:-1]:
+        next_labels.reshape(list(next_labels.shape) + [1])
     state_type = data.step_type[:, :2].numpy()
     next_state_type = data.next_step_type[:, :2].numpy()
 
@@ -51,28 +56,56 @@ def gather_rl_observations(
 
 
 class DatasetGenerator:
+
+    def __init__(self, initial_dummy_state=None, initial_dummy_action=None):
+        self.initial_dummy_state = initial_dummy_state
+        self.initial_dummy_action = initial_dummy_action
+
     def __call__(self, file):
         with h5py.File(file, 'r') as hf:
             for (state, action, reward, next_state, label, state_type, next_state_type) in \
                     zip(hf['state'], hf['action'], hf['reward'], hf['next_state'],
                         hf['next_state_label'], hf['state_type'], hf['next_state_type']):
-                yield state, action, reward, next_state, label, state_type, next_state_type
+
+                if state.shape[:-1] == reward.shape:  # singleton shape
+                    reward = reward.reshape(list(reward.shape) + [1])
+                if state.shape[:-1] == label.shape:
+                    label = label.reshape(list(label.shape) + [1])
+
+                if state_type[0] == ts.StepType.FIRST:  # initial state handling
+                    initial_state = self.initial_dummy_state if self.initial_dummy_state is not None \
+                        else np.zeros(shape=state.shape[1:])
+                    initial_action = self.initial_dummy_action if self.initial_dummy_action is not None \
+                        else np.zeros(shape=action.shape[1:])
+                    yield np.stack((initial_state, state[0])), \
+                          np.stack((initial_action, action[0])), \
+                          np.stack((np.zeros(shape=reward.shape[1:]), reward[0])), \
+                          state, \
+                          np.stack((label[0], label[0]))
+
+                yield state, action, reward, next_state, label
 
 
 def get_tensor_shape(h5file):
     with h5py.File(h5file, 'r') as hf:
+        reward_shape = list(hf['reward'].shape[1:]) + \
+                       ([1] if (tf.TensorShape(hf['state'].shape[:-1]) == hf['reward'].shape) else [])
+        label_shape = list(hf['next_state_label'].shape[1:]) + \
+                      ([1] if (tf.TensorShape(hf['state'].shape[:-1]) == hf['next_state_label'].shape) else [])
         return (tf.TensorShape(hf['state'].shape[1:]),
                 tf.TensorShape(hf['action'].shape[1:]),
-                tf.TensorShape(hf['reward'].shape[1:]),
+                tf.TensorShape(reward_shape),
                 tf.TensorShape(hf['next_state'].shape[1:]),
-                tf.TensorShape(hf['next_state_label'].shape[1:]),
-                tf.TensorShape(hf['state_type'].shape[1:]),
-                tf.TensorShape(hf['next_state_type'].shape[1:]))
+                tf.TensorShape(label_shape))
+        #  tf.TensorShape(hf['state_type'].shape[1:]),
+        #  tf.TensorShape(hf['next_state_type'].shape[1:]))
 
 
-def create_dataset(cycle_length=4, block_length=32, num_parallel_calls=4,
-                   hdf5_files_path='dataset/reinforcement_learning', regex='*.hdf5'):
-
+def create_dataset(cycle_length=4,
+                   block_length=32,
+                   num_parallel_calls=tf.data.experimental.AUTOTUNE,
+                   hdf5_files_path='dataset/reinforcement_learning',
+                   regex='*.hdf5'):
     file_list: List[str] = glob.glob(os.path.join(hdf5_files_path, regex), recursive=True)
     random.shuffle(file_list)
 
@@ -81,7 +114,7 @@ def create_dataset(cycle_length=4, block_length=32, num_parallel_calls=4,
     dataset = dataset.interleave(
         lambda filename: tf.data.Dataset.from_generator(
             DatasetGenerator(),
-            (tf.float32, tf.float32, tf.float32, tf.float32, tf.bool, tf.int8, tf.int8),
+            (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),  # , tf.int8, tf.int8),
             get_tensor_shape(file_list[0]),  # all files are assumed to have same Tensor Shape
             args=(filename,)
         ),
