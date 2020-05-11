@@ -53,8 +53,8 @@ if __name__ == '__main__':
 
     step = tf.compat.v1.train.get_or_create_global_step()
     checkpoint_directory = "saves/vae_mdp_training_checkpoints"
-    checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model)
-    manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=5,
-                                         checkpoint_interval=2500, step_counter=step)
+    checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
+    manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
 
-    variational_mdp.train(vae_mdp_model, dataset, batch_size=128, optimizer=optimizer, checkpoint=checkpoint, manager=manager)
+    variational_mdp.train(vae_mdp_model, dataset,
+                          batch_size=128, optimizer=optimizer, checkpoint=checkpoint, manager=manager)

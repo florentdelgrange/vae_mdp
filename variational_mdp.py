@@ -11,6 +11,8 @@ from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape
 from tensorflow.keras.utils import Progbar
 
 from util.pdf import logistic, binary_concrete
+from tensorflow.python import debug as tf_debug
+
 
 epsilon = 1e-12
 max_val = 1e9
@@ -18,7 +20,6 @@ min_val = -1e9
 max_log_val = np.log(1e9)
 min_log_val = np.log(epsilon)
 
-debug = False
 
 class VariationalMDPStateAbstraction(Model):
     def __init__(self,
@@ -232,7 +233,7 @@ class VariationalMDPStateAbstraction(Model):
 
 @tf.function
 def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x,
-                 reconstruction_state_observer=None, reconstruction_reward_observer=None):
+                 reconstruction_state_observer=None, reconstruction_reward_observer=None, kl_observer=None):
     # inputs are assumed to have shape
     # x = [(?, 2, state_shape), (?, 2, action_shape), (?, 2, reward_shape), (?, 2, state_shape), (?, 2, label_shape)]
     s_0, a_0, r_0, _, l_1 = (input[:, 0, :] for input in x)
@@ -246,72 +247,55 @@ def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x,
     z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1, name="concat_z")
     z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1, name="concat_z_prime")
 
-    if debug:
-        tf.print(logistic_z, "sampled logistic z")
-        tf.print(logistic_z_prime, "sampled logistic z'")
-        tf.print(z, "sampled z")
-        tf.print(z_prime, "sampled z'")
-
     # binary-concrete log-logistic probability Q(logistic_z'|s_1, a_1, r_1, s_2, l_2), logistic_z' ~ Logistic(alpha')
     log_q_z_prime = \
         binary_concrete.log_logistic_density(vae_mdp.temperature[0], log_alpha_prime,
                                              tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime)
-
-    if debug: tf.print(log_q_z_prime, "Log-logistic Q(z')")
 
     # change label l'=1 to 100 and label l'=0 to -100 so that
     # sigmoid(logistic_z'[l']) = 1 if l'=1 and sigmoid(logistic_z'[l']) = 0 if l'=0
     logistic_label_prime = ((label_prime * 2) - tf.ones(tf.shape(label_prime))) * 1e2
     logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1, name="concat_logistic_z_prime")
 
-    if debug: tf.print(logistic_z_prime, "Logistic sampled z' with logistic labels")
-
     # logistic log probability P(logistic_z'|z, a_1)
     log_p_z_prime = logistic.log_density(vae_mdp.temperature[1], vae_mdp.transition_network([z, a_1]),
                                          tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime)
 
-    if debug:
-        tf.print(log_p_z_prime, "log P(logistic z'|z, a)")
-
     # Normal log-probability P(r_1 | z, a_1, z')
-    log_p_rewards = vae_mdp.reward_probability_distribution(z, a_1, z_prime).log_prob(r_1)
-    if debug: tf.print(log_p_rewards, "log P(r | z, a, z')")
+    reward_distribution = vae_mdp.reward_probability_distribution(z, a_1, z_prime)
+    log_p_rewards = reward_distribution.log_prob(r_1)
 
     # Reconstruction P(s_2 | z')
-    log_p_reconstruction = vae_mdp.decode(z_prime).log_prob(s_2)
-    if debug:
-        tf.print(vae_mdp.decode(z_prime).prob(s_2), "P(s' | z')")
-        tf.print(vae_mdp.decode(z_prime).mean(), "mean")
-        tf.print(vae_mdp.decode(z_prime).variance(), "variance")
-        tf.print(log_p_reconstruction, "log P(s' | z')")
+    state_distribution = vae_mdp.decode(z_prime)
+    log_p_reconstruction = state_distribution.log_prob(s_2)
 
     # the probability of encoding labels into z' is one
     log_q_z_prime = tf.concat([log_q_z_prime, tf.zeros(shape=tf.shape(label_prime))], axis=-1, name="q_z_prime_final")
-    if debug: tf.print(log_q_z_prime, "Log Q(z') concatenated with proba 1 labels")
 
-    if debug:
-        tf.print(log_q_z_prime - log_p_z_prime, "Q(z') - P(z')")
-        tf.print(tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1), "sum of log probabilities")
+    kl_terms = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
 
     if reconstruction_state_observer:
-        reconstruction_state_observer(tf.exp(log_p_reconstruction))
+        reconstruction_state_observer(
+            tf.reduce_sum(tf.square(reward_distribution.sample(sample_shape=tf.shape(s_2)) - s_2), axis=1))
     if reconstruction_reward_observer:
-        reconstruction_reward_observer(tf.exp(log_p_rewards))
+        reconstruction_reward_observer(
+            tf.reduce_sum(tf.square(reward_distribution.sample(sample_shape=tf.shape(r_1)) - r_1), axis=1))
+    if kl_observer:
+        kl_observer(kl_terms)
 
     return - tf.reduce_mean(
-        log_p_rewards + log_p_reconstruction - tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
+        log_p_rewards + log_p_reconstruction - kl_terms
     )
 
 
 @tf.function
 def compute_apply_gradients(vae_mdp: VariationalMDPStateAbstraction, x, optimizer,
-                            reconstruction_state_observer=None, reconstruction_reward_observer=None):
+                            reconstruction_state_observer=None,
+                            reconstruction_reward_observer=None,
+                            kl_observer=None):
     with tf.GradientTape() as tape:
-        loss = compute_loss(vae_mdp, x, reconstruction_state_observer, reconstruction_reward_observer)
+        loss = compute_loss(vae_mdp, x, reconstruction_state_observer, reconstruction_reward_observer, kl_observer)
     gradients = tape.gradient(loss, vae_mdp.trainable_variables)
-    if debug:
-        for gradient, variable in zip(gradients, vae_mdp.trainable_variables):
-            tf.print(gradient, "Gradient for {}".format(variable.name))
     optimizer.apply_gradients(zip(gradients, vae_mdp.trainable_variables))
     return loss
 
@@ -323,8 +307,9 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
           optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
           checkpoint: tf.train.Checkpoint = None,
           manager: tf.train.CheckpointManager = None,
-          log_interval: int = 24):
+          log_interval: int = 80):
     import datetime
+    import time
 
     if checkpoint is not None and manager is not None:
         checkpoint.restore(manager.latest_checkpoint)
@@ -339,35 +324,40 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
         os.makedirs(train_log_dir)
     train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 
-    global_step = tf.compat.v1.train.get_or_create_global_step()
+    global_step = checkpoint.save_counter
     print("Step: {}".format(global_step.numpy()))
 
     for epoch in range(epochs):
         progressbar = Progbar(target=None,  # if not dataset_size else dataset_size,
-                              stateful_metrics=['epoch_time', 'ELBO'])
+                              stateful_metrics=['steps', 'ELBO', 'State reconstruction MSE',
+                                                'Reward reconstruction MSE', 'KL terms'],
+                              interval=0.1)
         loss = tf.keras.metrics.Mean()
-        prob_rewards = tf.keras.metrics.Mean()
-        prob_states = tf.keras.metrics.Mean()
+        reward_observer = tf.keras.metrics.Mean()
+        state_observer = tf.keras.metrics.Mean()
+        kl_observer = tf.keras.metrics.Mean()
         print("Epoch: {}/{}".format(epoch + 1, epochs))
 
         for x in dataset.batch(batch_size, drop_remainder=True):
-
-            gradients = compute_apply_gradients(vae_mdp, x, optimizer, prob_states, prob_rewards)
+            gradients = compute_apply_gradients(vae_mdp, x, optimizer, state_observer, reward_observer, kl_observer)
             loss(gradients)
-            # with train_summary_writer.as_default():
-            #     tf.summary.trace_export(name="ELBO", step=global_step, profiler_outdir=train_log_dir)
 
-            progressbar.add(batch_size, values=[('ELBO', - loss.result()),
-                                                ('prob. rewards', prob_rewards.result()),
-                                                ('prob. states', prob_states.result())])
+            progressbar.add(batch_size, values=[('steps', global_step.numpy()),
+                                                ('ELBO', - loss.result()),
+                                                ('State reconstruction MSE', state_observer.result()),
+                                                ('Reward reconstruction MSE', reward_observer.result()),
+                                                ('KL terms', kl_observer.result())])
 
             if checkpoint is not None and manager is not None:
                 global_step.assign_add(1)
-                manager.save(global_step)
-                if global_step.numpy() % log_interval == 0:
-                    with train_summary_writer.as_default():
-                        tf.summary.scalar('ELBO', loss.result(), step=global_step.numpy())
-                        tf.summary.scalar('Rewards: mean reconstruction probability', prob_rewards.result(),
-                                          step=global_step.numpy())
-                        tf.summary.scalar('States: mean reconstruction states', prob_states.result(),
-                                          step=global_step.numpy())
+
+            if global_step.numpy() % log_interval == 0:
+                manager.save()
+                with train_summary_writer.as_default():
+                    tf.summary.scalar('ELBO', - loss.result(), step=global_step.numpy())
+                    tf.summary.scalar('State reconstruction MSE', state_observer.result(),
+                                      step=global_step.numpy())
+                    tf.summary.scalar('Reward reconstruction MSE', reward_observer.result(),
+                                      step=global_step.numpy())
+                    tf.summary.scalar('KL terms', kl_observer.result(), step=global_step.numpy())
+
