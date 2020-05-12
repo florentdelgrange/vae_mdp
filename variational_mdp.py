@@ -131,8 +131,13 @@ class VariationalMDPStateAbstraction(Model):
         self.reconstruction_network = Model(inputs=next_latent_state,
                                             outputs=[decoder_output_mean, decoder_output_log_var, decoder_prior],
                                             name='reconstruction_network')
-        for layer in self.reconstruction_network.layers:
-            layer.trainable = True
+
+        vae_input = [Input(shape=(2,) + self.state_shape, name="incident_states"),
+                     Input(shape=(2,) + self.action_shape, name="actions"),
+                     Input(shape=(2,) + self.reward_shape, name="rewards"),
+                     Input(shape=(2,) + self.state_shape, name="next_states"),
+                     Input(shape=(2,) + self.label_shape, name="labels")]
+        self._set_inputs(vae_input)
         self._vae = None
 
     @tf.function
@@ -307,9 +312,9 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
           optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
           checkpoint: tf.train.Checkpoint = None,
           manager: tf.train.CheckpointManager = None,
-          log_interval: int = 80):
+          log_interval: int = 80,
+          dataset_size: int = None):
     import datetime
-    import time
 
     if checkpoint is not None and manager is not None:
         checkpoint.restore(manager.latest_checkpoint)
@@ -328,7 +333,7 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
     print("Step: {}".format(global_step.numpy()))
 
     for epoch in range(epochs):
-        progressbar = Progbar(target=None,  # if not dataset_size else dataset_size,
+        progressbar = Progbar(target=dataset_size,
                               stateful_metrics=['steps', 'ELBO', 'State reconstruction MSE',
                                                 'Reward reconstruction MSE', 'KL terms'],
                               interval=0.1)
@@ -361,3 +366,4 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
                                       step=global_step.numpy())
                     tf.summary.scalar('KL terms', kl_observer.result(), step=global_step.numpy())
 
+        # vae_mdp.save(os.path.join(manager.directory, 'vae_state_abstraction_epoch_{}.hdf5'.format(epoch)))

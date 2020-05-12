@@ -12,8 +12,13 @@ import variational_mdp
 if __name__ == '__main__':
     # strategy = tf.distribute.experimental.CentralStorageStrategy()
     # with strategy.scope():
-    dataset = dataset_generator.create_dataset(
-        hdf5_files_path='reinforcement_learning/dataset/reinforcement_learning')
+    dataset_path = 'reinforcement_learning/dataset/reinforcement_learning'
+    batch_size = 128
+    dataset = dataset_generator.create_dataset(hdf5_files_path=dataset_path)
+    print('Computing dataset size...')
+    dataset_size = dataset_generator.get_num_samples(dataset_path, batch_size=batch_size, drop_remainder=False)
+    print('{} samples.'.format(dataset_size))
+
     state_shape, action_shape, reward_shape, _, label_shape = \
         [tuple(spec.shape.as_list()[1:]) for spec in dataset.element_spec]
     latent_state_size = 16
@@ -57,4 +62,5 @@ if __name__ == '__main__':
     manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
 
     variational_mdp.train(vae_mdp_model, dataset,
-                          batch_size=128, optimizer=optimizer, checkpoint=checkpoint, manager=manager)
+                          batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint, manager=manager,
+                          dataset_size=dataset_size)

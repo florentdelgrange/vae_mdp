@@ -125,6 +125,18 @@ def create_dataset(cycle_length=4,
     return dataset
 
 
+def get_num_samples(hdf5_files_path: str = 'dataset/reinforcement_learning', regex: str = '*.hdf5',
+                    drop_remainder: bool = True, batch_size: int = 32):
+    file_list: List[str] = glob.glob(os.path.join(hdf5_files_path, regex), recursive=True)
+    size = 0
+    for h5f_name in file_list:
+        with h5py.File(h5f_name, 'r') as h5f:
+            # we assume that all h5f datasets have the same length (= size of axis 0)
+            h5f_size = h5f['state'].shape[0]
+            size += (h5f_size // batch_size) * batch_size if drop_remainder else h5f_size
+    return size
+
+
 def merge_rl_observations_dataset(
         hdf5_files_path='dataset/reinforcement_learning',
         dataset_name='rl_exploration.hdf5',
@@ -166,4 +178,4 @@ def merge_rl_observations_dataset(
 
         print("Dataset files merged into {}. Time: {:.3f} sec, size: {:.3f} GB).".format(
             dataset_name, time.time() - start,
-            os.path.getsize(os.path.join(hdf5_files_path, dataset_name)) / 2.0 ** 30))
+                          os.path.getsize(os.path.join(hdf5_files_path, dataset_name)) / 2.0 ** 30))
