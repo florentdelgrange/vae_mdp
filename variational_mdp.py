@@ -13,7 +13,6 @@ from tensorflow.keras.utils import Progbar
 from util.pdf import logistic, binary_concrete
 from tensorflow.python import debug as tf_debug
 
-
 epsilon = 1e-12
 max_val = 1e9
 min_val = -1e9
@@ -366,4 +365,8 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
                                       step=global_step.numpy())
                     tf.summary.scalar('KL terms', kl_observer.result(), step=global_step.numpy())
 
-        # vae_mdp.save(os.path.join(manager.directory, 'vae_state_abstraction_epoch_{}.hdf5'.format(epoch)))
+        if not os.path.exists(os.path.join(manager.directory, 'weights')):
+            os.makedirs(os.path.join(manager.directory, 'weights'))
+        vae_mdp.save_weights(
+            os.path.join(manager.directory, 'weights',
+                         'vae_state_abstraction_epoch{}_step{}.hdf5'.format(epoch, global_step.numpy())))
