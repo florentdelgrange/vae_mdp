@@ -187,7 +187,7 @@ class SACLearner:
             num_steps=2).prefetch(3)
         self.iterator = iter(self.dataset)
 
-        self.checkpoint_dir = os.path.join('saves/', 'checkpoint')
+        self.checkpoint_dir = os.path.join('saves/', 'sac_training_checkpoint')
         self.train_checkpointer = common.Checkpointer(
             ckpt_dir=self.checkpoint_dir,
             max_to_keep=1,
@@ -226,7 +226,7 @@ class SACLearner:
         if os.path.exists(self.checkpoint_dir):
             self.train_checkpointer.initialize_or_restore()
             self.global_step = tf.compat.v1.train.get_global_step()
-            print("Checkpoint loaded! global_step={}".format(self.global_step.result().numpy()))
+            print("Checkpoint loaded! global_step={}".format(self.global_step.numpy()))
         if not os.path.exists(self.stochastic_policy_dir):
             os.makedirs(self.stochastic_policy_dir)
         print("Initialize replay buffer...")
