@@ -52,7 +52,6 @@ if __name__ == '__main__':
         state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
         encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
         latent_state_size=16, nb_gaussian_posteriors=3)
-    plot_model(vae_mdp_model.vae, dpi=300, expand_nested=True, show_shapes=True)
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 

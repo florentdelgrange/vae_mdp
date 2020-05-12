@@ -1,5 +1,5 @@
 import os
-from typing import Tuple
+from typing import Tuple, Optional, List
 import numpy as np
 
 import tensorflow as tf
@@ -137,7 +137,27 @@ class VariationalMDPStateAbstraction(Model):
                      Input(shape=(2,) + self.state_shape, name="next_states"),
                      Input(shape=(2,) + self.label_shape, name="labels")]
         self._set_inputs(vae_input)
-        self._vae = None
+
+        self._reconstruction_state_observer: Optional[tf.metrics.Metric] = None
+        self._reconstruction_reward_observer: Optional[tf.metrics.Metric] = None
+        self._kl_terms_observer: Optional[tf.metrics.Metric] = None
+
+    def attach_observers(self,
+                         reconstruction_state_observer: Optional[tf.metrics.Metric] = None,
+                         reconstruction_reward_observer: Optional[tf.metrics.Metric] = None,
+                         kl_terms_observer: Optional[tf.metrics.Metric] = None):
+
+        self._reconstruction_state_observer: Optional[tf.metrics.Metric] = reconstruction_state_observer
+        self._reconstruction_reward_observer: Optional[tf.metrics.Metric] = reconstruction_reward_observer
+        self._kl_terms_observer: Optional[tf.metrics.Metric] = kl_terms_observer
+
+    def detach_observer(self, observers: List[str]):
+        if 'state' in observers:
+            self._reconstruction_state_observer = None
+        if 'reward' in observers:
+            self._reconstruction_reward_observer = None
+        if 'kl_terms' in observers:
+            self._kl_terms_observer = None
 
     @tf.function
     def sample_logistic(self, log_alpha: tf.Tensor):
@@ -192,113 +212,73 @@ class VariationalMDPStateAbstraction(Model):
         [reward_mean, reward_log_var] = self.reward_network([latent_state, action, next_latent_state])
         return tfp.distributions.MultivariateNormalDiag(loc=reward_mean, scale_diag=tf.math.exp(reward_log_var))
 
-    @property
-    def vae(self) -> Model:
-        """
-        VAE-MDP network
-        """
-        # Make the VAE input time distributed so that the encoder provides z, z' with
-        # z ~ Q(z_t|s_{t-1},a_{t-1},r_{t-1}, s_t, l_t) and z' ~ Q(z_{t+1}|s_t, a_t, r_t, s_{t+1}, l_{t+1})
-        # Time distributed layers do not support multiple outputs or inputs.
-        if self._vae is None:
-            vae_input = [Input(shape=(2,) + self.state_shape, name="incident_states"),
-                         Input(shape=(2,) + self.action_shape, name="actions"),
-                         Input(shape=(2,) + self.reward_shape, name="rewards"),
-                         Input(shape=(2,) + self.state_shape, name="next_states"),
-                         Input(shape=(2,) + self.label_shape, name="labels")]
-            shapes = [self.state_shape, self.action_shape, self.reward_shape, self.state_shape, self.label_shape]
-            flat_shapes = [np.prod(shape) for shape in shapes]
-            indices = [sum(flat_shapes[:i + 1]) for i in range(len(flat_shapes))]
-            vae_flat_input = \
-                Concatenate(name="flat_input")([Reshape(target_shape=(2, shape,))(x)
-                                                for x, shape in zip(vae_input, flat_shapes)])
-            Q = TimeDistributed(Lambda(lambda x: Concatenate()(
-                self.encoder_network([Reshape(target_shape=shapes[0])(x[:, : indices[0]]),
-                                      Reshape(target_shape=shapes[1])(x[:, indices[0]: indices[1]]),
-                                      Reshape(target_shape=shapes[2])(x[:, indices[1]: indices[2]]),
-                                      Reshape(target_shape=shapes[3])(x[:, indices[2]: indices[3]]),
-                                      Reshape(target_shape=shapes[4])(x[:, indices[3]:])])), name='encoder'),
-                                input_shape=(2, sum(flat_shapes),))(vae_flat_input)
-            log_alpha_layer_size = self.latent_state_size - np.prod(self.label_shape)
-            logistic_z = Lambda(self.sample_logistic, name="logistic_z")(Q[:, 0, :log_alpha_layer_size])
-            logistic_z_prime = Lambda(self.sample_logistic, name="logistic_z_prime")(Q[:, 1, :log_alpha_layer_size])
-
-            z = Concatenate()([Lambda(K.sigmoid)(logistic_z), Q[:, 0, log_alpha_layer_size:]])
-            z_prime = Concatenate()([Lambda(K.sigmoid)(logistic_z_prime), Q[:, 1, log_alpha_layer_size:]])
-            P_transition = self.transition_network([z, vae_input[1][:, 1]])
-            P_reward = self.reward_network([z, vae_input[1][:, 1], z_prime])
-            P_state = self.reconstruction_network(z_prime)
-            self._vae = Model(inputs=vae_input, outputs=P_state + [P_transition] + P_reward, name='vae')
-        return self._vae
-
     def call(self, inputs, training=None, mask=None):
-        return self.vae.call(inputs, training=training, mask=mask)
+        # inputs are assumed to have shape
+        # [(?, 2, state_shape), (?, 2, action_shape), (?, 2, reward_shape), (?, 2, state_shape), (?, 2, label_shape)]
+        s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
+        s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
+
+        [log_alpha, label] = self.encoder_network([s_0, a_0, r_0, s_1, l_1])
+        [log_alpha_prime, label_prime] = self.encoder_network([s_1, a_1, r_1, s_2, l_2])
+
+        # z, z' ~ BinConcrete = sigmoid(BinConcreteLogistic)
+        logistic_z, logistic_z_prime = self.sample_logistic(log_alpha), self.sample_logistic(log_alpha_prime)
+        z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1, name="concat_z")
+        z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1, name="concat_z_prime")
+
+        # binary-concrete log-logistic probability Q(logistic_z'|s_1, a_1, r_1, s_2, l_2),
+        # logistic_z' ~ Logistic(alpha')
+        log_q_z_prime = \
+            binary_concrete.log_logistic_density(self.temperature[0], log_alpha_prime,
+                                                 tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime)
+
+        # change label l'=1 to 100 and label l'=0 to -100 so that
+        # sigmoid(logistic_z'[l']) = 1 if l'=1 and sigmoid(logistic_z'[l']) = 0 if l'=0
+        logistic_label_prime = ((label_prime * 2) - tf.ones(tf.shape(label_prime))) * 1e2
+        logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1, name="concat_logistic_z_prime")
+
+        # logistic log probability P(logistic_z'|z, a_1)
+        log_p_z_prime = logistic.log_density(self.temperature[1], self.transition_network([z, a_1]),
+                                             tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime)
+
+        # Normal log-probability P(r_1 | z, a_1, z')
+        reward_distribution = self.reward_probability_distribution(z, a_1, z_prime)
+        log_p_rewards = reward_distribution.log_prob(r_1)
+
+        # Reconstruction P(s_2 | z')
+        state_distribution = self.decode(z_prime)
+        log_p_reconstruction = state_distribution.log_prob(s_2)
+
+        # the probability of encoding labels into z' is one
+        log_q_z_prime = tf.concat([log_q_z_prime, tf.zeros(shape=tf.shape(label_prime))], axis=-1,
+                                  name="q_z_prime_final")
+
+        kl_terms = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
+
+        if self._reconstruction_state_observer:
+            self._reconstruction_state_observer(
+                tf.reduce_sum(tf.square(reward_distribution.sample(sample_shape=tf.shape(s_2)) - s_2), axis=1))
+        if self._reconstruction_reward_observer:
+            self._reconstruction_reward_observer(
+                tf.reduce_sum(tf.square(reward_distribution.sample(sample_shape=tf.shape(r_1)) - r_1), axis=1))
+        if self._kl_terms_observer:
+            self._kl_terms_observer(kl_terms)
+
+        return [log_p_reconstruction, log_p_rewards, kl_terms]
 
 
 @tf.function
-def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x,
-                 reconstruction_state_observer=None, reconstruction_reward_observer=None, kl_observer=None):
-    # inputs are assumed to have shape
-    # x = [(?, 2, state_shape), (?, 2, action_shape), (?, 2, reward_shape), (?, 2, state_shape), (?, 2, label_shape)]
-    s_0, a_0, r_0, _, l_1 = (input[:, 0, :] for input in x)
-    s_1, a_1, r_1, s_2, l_2 = (input[:, 1, :] for input in x)
-
-    [log_alpha, label] = vae_mdp.encoder_network([s_0, a_0, r_0, s_1, l_1])
-    [log_alpha_prime, label_prime] = vae_mdp.encoder_network([s_1, a_1, r_1, s_2, l_2])
-
-    # z, z' ~ BinConcrete = sigmoid(BinConcreteLogistic)
-    logistic_z, logistic_z_prime = vae_mdp.sample_logistic(log_alpha), vae_mdp.sample_logistic(log_alpha_prime)
-    z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1, name="concat_z")
-    z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1, name="concat_z_prime")
-
-    # binary-concrete log-logistic probability Q(logistic_z'|s_1, a_1, r_1, s_2, l_2), logistic_z' ~ Logistic(alpha')
-    log_q_z_prime = \
-        binary_concrete.log_logistic_density(vae_mdp.temperature[0], log_alpha_prime,
-                                             tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime)
-
-    # change label l'=1 to 100 and label l'=0 to -100 so that
-    # sigmoid(logistic_z'[l']) = 1 if l'=1 and sigmoid(logistic_z'[l']) = 0 if l'=0
-    logistic_label_prime = ((label_prime * 2) - tf.ones(tf.shape(label_prime))) * 1e2
-    logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1, name="concat_logistic_z_prime")
-
-    # logistic log probability P(logistic_z'|z, a_1)
-    log_p_z_prime = logistic.log_density(vae_mdp.temperature[1], vae_mdp.transition_network([z, a_1]),
-                                         tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime)
-
-    # Normal log-probability P(r_1 | z, a_1, z')
-    reward_distribution = vae_mdp.reward_probability_distribution(z, a_1, z_prime)
-    log_p_rewards = reward_distribution.log_prob(r_1)
-
-    # Reconstruction P(s_2 | z')
-    state_distribution = vae_mdp.decode(z_prime)
-    log_p_reconstruction = state_distribution.log_prob(s_2)
-
-    # the probability of encoding labels into z' is one
-    log_q_z_prime = tf.concat([log_q_z_prime, tf.zeros(shape=tf.shape(label_prime))], axis=-1, name="q_z_prime_final")
-
-    kl_terms = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
-
-    if reconstruction_state_observer:
-        reconstruction_state_observer(
-            tf.reduce_sum(tf.square(reward_distribution.sample(sample_shape=tf.shape(s_2)) - s_2), axis=1))
-    if reconstruction_reward_observer:
-        reconstruction_reward_observer(
-            tf.reduce_sum(tf.square(reward_distribution.sample(sample_shape=tf.shape(r_1)) - r_1), axis=1))
-    if kl_observer:
-        kl_observer(kl_terms)
-
+def compute_loss(vae_mdp: VariationalMDPStateAbstraction, x):
+    log_p_states, log_p_rewards, kl_terms = vae_mdp(x)
     return - tf.reduce_mean(
-        log_p_rewards + log_p_reconstruction - kl_terms
+        log_p_states + log_p_rewards - kl_terms
     )
 
 
 @tf.function
-def compute_apply_gradients(vae_mdp: VariationalMDPStateAbstraction, x, optimizer,
-                            reconstruction_state_observer=None,
-                            reconstruction_reward_observer=None,
-                            kl_observer=None):
+def compute_apply_gradients(vae_mdp: VariationalMDPStateAbstraction, x, optimizer):
     with tf.GradientTape() as tape:
-        loss = compute_loss(vae_mdp, x, reconstruction_state_observer, reconstruction_reward_observer, kl_observer)
+        loss = compute_loss(vae_mdp, x)
     gradients = tape.gradient(loss, vae_mdp.trainable_variables)
     optimizer.apply_gradients(zip(gradients, vae_mdp.trainable_variables))
     return loss
@@ -340,10 +320,11 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
         reward_observer = tf.keras.metrics.Mean()
         state_observer = tf.keras.metrics.Mean()
         kl_observer = tf.keras.metrics.Mean()
+        vae_mdp.attach_observers(state_observer, reward_observer, kl_observer)
         print("Epoch: {}/{}".format(epoch + 1, epochs))
 
         for x in dataset.batch(batch_size, drop_remainder=True):
-            gradients = compute_apply_gradients(vae_mdp, x, optimizer, state_observer, reward_observer, kl_observer)
+            gradients = compute_apply_gradients(vae_mdp, x, optimizer)
             loss(gradients)
 
             progressbar.add(batch_size, values=[('steps', global_step.numpy()),
@@ -359,14 +340,13 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
                 manager.save()
                 with train_summary_writer.as_default():
                     tf.summary.scalar('ELBO', - loss.result(), step=global_step.numpy())
-                    tf.summary.scalar('State reconstruction MSE', state_observer.result(),
-                                      step=global_step.numpy())
-                    tf.summary.scalar('Reward reconstruction MSE', reward_observer.result(),
-                                      step=global_step.numpy())
+                    tf.summary.scalar('State reconstruction MSE', state_observer.result(), step=global_step.numpy())
+                    tf.summary.scalar('Reward reconstruction MSE', reward_observer.result(), step=global_step.numpy())
                     tf.summary.scalar('KL terms', kl_observer.result(), step=global_step.numpy())
 
-        if not os.path.exists(os.path.join(manager.directory, 'weights')):
-            os.makedirs(os.path.join(manager.directory, 'weights'))
-        vae_mdp.save_weights(
-            os.path.join(manager.directory, 'weights',
-                         'vae_state_abstraction_epoch{}_step{}.hdf5'.format(epoch, global_step.numpy())))
+        tf.saved_model.save(vae_mdp,
+                            os.path.join(manager.directory,
+                                         os.pardir,
+                                         'vae_state_abstraction_step{}_ELBO{}'.format(
+                                             global_step.numpy(), - loss.result())))
+
