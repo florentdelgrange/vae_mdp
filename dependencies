@@ -25,7 +25,7 @@ idna==2.9
 imageio==2.4.0
 importlib-metadata==1.5.0
 ipykernel==5.1.4
-ipython==7.13.0
+ipython
 ipython-genutils==0.2.0
 ipywidgets==7.5.1
 jedi==0.16.0
@@ -37,14 +37,12 @@ jupyter-console==6.1.0
 jupyter-core==4.6.3
 Keras-Applications==1.0.8
 Keras-Preprocessing==1.1.0
-kiwisolver==1.2.0
 Markdown==3.2.1
 MarkupSafe==1.1.1
-matplotlib==3.2.1
-mistune==0.8.4
-mkl-fft==1.0.15
-mkl-random==1.1.0
-mkl-service==2.3.0
+matplotlib
+mistune
+mkl-fft
+mkl-random
 nbconvert==5.6.1
 nbformat==5.0.4
 notebook==6.0.3
@@ -56,12 +54,7 @@ parso==0.6.2
 pexpect==4.8.0
 pickleshare==0.7.5
 Pillow==7.1.2
-prometheus-client==0.7.1
-prompt-toolkit==3.0.4
-protobuf==3.11.3
-ptyprocess==0.6.0
-pyasn1==0.4.8
-pyasn1-modules==0.2.8
+prometheus-client
 pybullet==2.7.3
 pydot==1.4.1
 pyglet==1.5.4
@@ -80,7 +73,7 @@ Send2Trash==1.5.0
 six==1.14.0
 tensorboard==2.2.1
 tensorboard-plugin-wit==1.6.0.post3
-tensorflow==2.2.0
+tensorflow-gpu==2.2.0
 tensorflow-estimator==2.2.0
 tensorflow-probability==0.9.0
 termcolor==1.1.0
@@ -95,4 +88,4 @@ webencodings==0.5.1
 Werkzeug==1.0.1
 widgetsnbextension==3.5.1
 wrapt==1.12.1
-zipp==2.2.0
+zipp
