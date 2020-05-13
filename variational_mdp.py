@@ -37,7 +37,7 @@ class VariationalMDPStateAbstraction(Model):
                  action_pre_processing_network: Model = None,
                  state_pre_processing_network: Model = None,
                  state_post_processing_network: Model = None,
-                 name: str = 'vae_mdp'):
+                 pre_loaded_model: bool = False):
         super(VariationalMDPStateAbstraction, self).__init__()
         self.temperature = [temperature_1, temperature_2]
         self.state_shape = state_shape
@@ -74,62 +74,69 @@ class VariationalMDPStateAbstraction(Model):
                 TimeDistributed(state_pre_processing_network, input_shape=(2,) + state_shape)(stack_inputs)
             state, next_state = apply_pre_processing[:, 0], apply_pre_processing[:, 1]
 
-        # Encoder network
-        encoder_input = Concatenate(name="encoder_input")([state, action, reward, next_state])
-        encoder = encoder_network(encoder_input)
-        log_alpha_layer = \
-            Dense(units=latent_state_size - np.prod(label_shape), activation='linear', name='log_alpha')(encoder)
-        label_layer = Model(inputs=label, outputs=label, name='label_layer')
-        self.encoder_network = \
-            Model(inputs=[input_state, action, reward, input_next_state, label],
-                  outputs=[log_alpha_layer, label_layer.output], name='encoder')
+        if not pre_loaded_model:
+            # Encoder network
+            encoder_input = Concatenate(name="encoder_input")([state, action, reward, next_state])
+            encoder = encoder_network(encoder_input)
+            log_alpha_layer = \
+                Dense(units=latent_state_size - np.prod(label_shape), activation='linear', name='log_alpha')(encoder)
+            label_layer = Model(inputs=label, outputs=label, name='label_layer')
+            self.encoder_network = \
+                Model(inputs=[input_state, action, reward, input_next_state, label],
+                      outputs=[log_alpha_layer, label_layer.output], name='encoder')
 
-        # Transition network
-        # inputs are binary concrete random variables, outputs are locations of logistic distributions
-        latent_state = Input(shape=(latent_state_size,), name="latent_state")
-        action_layer_1 = action if not action_pre_processing_network \
-            else clone_model(action_pre_processing_network)(action)
-        transition_network_input = \
-            Concatenate(name="transition_network_input")([latent_state, action_layer_1])
-        transition = transition_network(transition_network_input)
-        transition_output_layer = \
-            Dense(units=latent_state_size, activation='linear', name='transition_logistic_locations')(transition)
-        self.transition_network = Model(inputs=[latent_state, action], outputs=transition_output_layer,
-                                        name="transition_network")
+            # Transition network
+            # inputs are binary concrete random variables, outputs are locations of logistic distributions
+            latent_state = Input(shape=(latent_state_size,), name="latent_state")
+            action_layer_1 = action if not action_pre_processing_network \
+                else clone_model(action_pre_processing_network)(action)
+            transition_network_input = \
+                Concatenate(name="transition_network_input")([latent_state, action_layer_1])
+            transition = transition_network(transition_network_input)
+            transition_output_layer = \
+                Dense(units=latent_state_size, activation='linear', name='transition_logistic_locations')(transition)
+            self.transition_network = Model(inputs=[latent_state, action], outputs=transition_output_layer,
+                                            name="transition_network")
 
-        # Reward network
-        next_latent_state = Input(shape=(latent_state_size,), name="next_latent_state")
-        action_layer_2 = action if not action_pre_processing_network else action_pre_processing_network(action)
-        reward_network_input = \
-            Concatenate(name="reward_network_input")([latent_state, action_layer_2, next_latent_state])
-        reward_1 = reward_network(reward_network_input)
-        reward_mean = Dense(np.prod(reward_shape), activation='linear', name='reward_mean_0')(reward_1)
-        reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
-        reward_log_var = Dense(np.prod(reward_shape), activation='linear', name='reward_log_var_0')(reward_1)
-        reward_log_var = Reshape(reward_shape, name='reward_log_var')(reward_log_var)
-        self.reward_network = Model(inputs=[latent_state, action, next_latent_state],
-                                    outputs=[reward_mean, reward_log_var], name='reward_network')
+            # Reward network
+            next_latent_state = Input(shape=(latent_state_size,), name="next_latent_state")
+            action_layer_2 = action if not action_pre_processing_network else action_pre_processing_network(action)
+            reward_network_input = \
+                Concatenate(name="reward_network_input")([latent_state, action_layer_2, next_latent_state])
+            reward_1 = reward_network(reward_network_input)
+            reward_mean = Dense(np.prod(reward_shape), activation='linear', name='reward_mean_0')(reward_1)
+            reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
+            reward_log_var = Dense(np.prod(reward_shape), activation='linear', name='reward_log_var_0')(reward_1)
+            reward_log_var = Reshape(reward_shape, name='reward_log_var')(reward_log_var)
+            self.reward_network = Model(inputs=[latent_state, action, next_latent_state],
+                                        outputs=[reward_mean, reward_log_var], name='reward_network')
 
-        # Reconstruction network
-        # inputs are binary concrete random variables, outputs are given in parameter
-        decoder = decoder_network(next_latent_state)
-        if state_post_processing_network is not None:
-            decoder = state_post_processing_network(decoder)
-        # 1 mean per dimension, nb Normal Gaussian
-        decoder_output_mean = \
-            Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear', name='GMM_means_0')(decoder)
-        decoder_output_mean = \
-            Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_means")(decoder_output_mean)
-        # 1 var per dimension, nb Normal Gaussian
-        decoder_output_log_var = \
-            Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear', name='GMM_log_vars_0')(decoder)
-        decoder_output_log_var = \
-            Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_log_vars")(decoder_output_log_var)
-        # prior over Normal Gaussian
-        decoder_prior = Dense(nb_gaussian_posteriors, activation='softmax', name="GMM_priors")(decoder)
-        self.reconstruction_network = Model(inputs=next_latent_state,
-                                            outputs=[decoder_output_mean, decoder_output_log_var, decoder_prior],
-                                            name='reconstruction_network')
+            # Reconstruction network
+            # inputs are binary concrete random variables, outputs are given in parameter
+            decoder = decoder_network(next_latent_state)
+            if state_post_processing_network is not None:
+                decoder = state_post_processing_network(decoder)
+            # 1 mean per dimension, nb Normal Gaussian
+            decoder_output_mean = \
+                Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear', name='GMM_means_0')(decoder)
+            decoder_output_mean = \
+                Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_means")(decoder_output_mean)
+            # 1 var per dimension, nb Normal Gaussian
+            decoder_output_log_var = \
+                Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear', name='GMM_log_vars_0')(
+                    decoder)
+            decoder_output_log_var = \
+                Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_log_vars")(decoder_output_log_var)
+            # prior over Normal Gaussian
+            decoder_prior = Dense(nb_gaussian_posteriors, activation='softmax', name="GMM_priors")(decoder)
+            self.reconstruction_network = Model(inputs=next_latent_state,
+                                                outputs=[decoder_output_mean, decoder_output_log_var, decoder_prior],
+                                                name='reconstruction_network')
+        else:
+            self.encoder_network = encoder_network
+            self.transition_network = transition_network
+            self.reward_network = reward_network
+            self.reconstruction_network = decoder_network
 
         vae_input = [Input(shape=(2,) + self.state_shape, name="incident_states"),
                      Input(shape=(2,) + self.action_shape, name="actions"),
@@ -171,13 +178,13 @@ class VariationalMDPStateAbstraction(Model):
                                          name="log-logistic_noise")
         return logistic.sample(self.temperature[0], log_alpha, L)
 
-    def encode(self, state, action, reward, label, state_prime) -> tfp.distributions.Distribution:
+    def encode(self, state, action, reward, state_prime, label) -> tfp.distributions.Distribution:
         """
         Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states z
         Note: the Bernoulli distribution is constructed via the Binary Concrete distribution learned by the encoder with
               a temperature that converges to 0.
         """
-        [log_alpha, label] = self.encoder_network([state, action, reward, label, state_prime])
+        [log_alpha, label] = self.encoder_network([state, action, reward, state_prime, label])
         return tfp.distributions.Bernoulli(
             probs=tf.concat([tf.exp(log_alpha) / (tf.ones(tf.shape(log_alpha)) + tf.exp(log_alpha)), label], axis=-1))
 
@@ -284,6 +291,22 @@ def compute_apply_gradients(vae_mdp: VariationalMDPStateAbstraction, x, optimize
     return loss
 
 
+def load(tf_model_path: str) -> VariationalMDPStateAbstraction:
+    model = tf.keras.models.load_model(tf_model_path)
+    vae_mdp = VariationalMDPStateAbstraction(
+        tuple(model.encoder_network.input[0].shape.as_list()[1:]),
+        tuple(model.encoder_network.input[1].shape.as_list()[1:]),
+        tuple(model.encoder_network.input[2].shape.as_list()[1:]),
+        tuple(model.encoder_network.input[4].shape.as_list()[1:]),
+        model.encoder_network,
+        model.transition_network,
+        model.reward_network,
+        model.reconstruction_network,
+        model.transition_network.inputs[0].shape[-1],
+        pre_loaded_model=True)
+    return vae_mdp
+
+
 def train(vae_mdp: VariationalMDPStateAbstraction,
           dataset: tf.data.Dataset,
           epochs: int = 8,
@@ -313,7 +336,7 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
 
     for epoch in range(epochs):
         progressbar = Progbar(target=dataset_size,
-                              stateful_metrics=['steps', 'ELBO', 'State reconstruction MSE',
+                              stateful_metrics=['ELBO', 'State reconstruction MSE',
                                                 'Reward reconstruction MSE', 'KL terms'],
                               interval=0.1)
         loss = tf.keras.metrics.Mean()
@@ -327,8 +350,7 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
             gradients = compute_apply_gradients(vae_mdp, x, optimizer)
             loss(gradients)
 
-            progressbar.add(batch_size, values=[('steps', global_step.numpy()),
-                                                ('ELBO', - loss.result()),
+            progressbar.add(batch_size, values=[('ELBO', - loss.result()),
                                                 ('State reconstruction MSE', state_observer.result()),
                                                 ('Reward reconstruction MSE', reward_observer.result()),
                                                 ('KL terms', kl_observer.result())])
@@ -349,4 +371,3 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
                                          os.pardir,
                                          'vae_state_abstraction_step{}_ELBO{}'.format(
                                              global_step.numpy(), - loss.result())))
-
