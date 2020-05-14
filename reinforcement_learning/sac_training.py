@@ -77,7 +77,8 @@ class SACLearner:
                  batch_size: int = 256,
                  labeling_function: Callable = labeling_functions['HumanoidBulletEnv-v0'],
                  eval_video: bool = False,
-                 debug: bool = False):
+                 debug: bool = False,
+                 save_directory_location: str = '.'):
         self.env_name = env_name
 
         self.num_iterations = num_iterations
@@ -187,7 +188,7 @@ class SACLearner:
             num_steps=2).prefetch(3)
         self.iterator = iter(self.dataset)
 
-        self.checkpoint_dir = os.path.join('saves/', 'sac_training_checkpoint')
+        self.checkpoint_dir = os.path.join(save_directory_location, 'saves', 'sac_training_checkpoint')
         self.train_checkpointer = common.Checkpointer(
             ckpt_dir=self.checkpoint_dir,
             max_to_keep=1,
@@ -196,7 +197,7 @@ class SACLearner:
             replay_buffer=self.replay_buffer,
             global_step=self.global_step
         )
-        self.stochastic_policy_dir = os.path.join('saves/', 'stochastic_policy')
+        self.stochastic_policy_dir = os.path.join(save_directory_location, 'saves', 'stochastic_policy')
         self.stochastic_policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
 
         self.num_episodes = tf_metrics.NumberOfEpisodes()
@@ -216,6 +217,7 @@ class SACLearner:
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
         self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+        self.save_directory_location = save_directory_location
 
     def train_and_eval(self):
         # Optimize by wrapping some of the code in a graph using TF function.
@@ -296,7 +298,9 @@ class SACLearner:
             sample_batch_size=batch_size,
             num_steps=3)
         dataset_generator.gather_rl_observations(iter(observations_dataset),
-                                                 self.labeling_function)
+                                                 self.labeling_function,
+                                                 dataset_path=os.path.join(self.save_directory_location,
+                                                                           'dataset/reinforcement_learning'))
         print("observation dataset saved")
 
     def evaluate_policy_video(self, policy, observers=None, step=''):
