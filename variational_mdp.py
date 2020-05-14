@@ -33,6 +33,8 @@ class VariationalMDPStateAbstraction(Model):
                  latent_state_size: int = 16,
                  temperature_1: float = 2 / 3,
                  temperature_2: float = 1 / 2,
+                 temperature_1_decay_rate: float = 0,
+                 temperature_2_decay_rate: float = 0,
                  nb_gaussian_posteriors: int = 3,
                  action_pre_processing_network: Model = None,
                  state_pre_processing_network: Model = None,
@@ -40,6 +42,7 @@ class VariationalMDPStateAbstraction(Model):
                  pre_loaded_model: bool = False):
         super(VariationalMDPStateAbstraction, self).__init__()
         self.temperature = [temperature_1, temperature_2]
+        self.decay_temperature = [temperature_1_decay_rate, temperature_2_decay_rate]
         self.state_shape = state_shape
         self.action_shape = action_shape
         self.reward_shape = reward_shape
@@ -173,9 +176,8 @@ class VariationalMDPStateAbstraction(Model):
         The logistic random variable with location log_alpha is a binary concrete random variable before applying the
         sigmoid function.
         """
-        U = tf.random.uniform(shape=tf.shape(log_alpha), minval=epsilon, name="sample_U")
-        L = tf.math.log(U) - tf.math.log(tf.ones(shape=tf.shape(log_alpha), dtype=log_alpha.dtype) - U,
-                                         name="log-logistic_noise")
+        U = tf.random.uniform(shape=tf.shape(log_alpha), minval=epsilon)
+        L = tf.math.log(U) - tf.math.log(tf.ones(shape=tf.shape(log_alpha), dtype=log_alpha.dtype) - U)
         return logistic.sample(self.temperature[0], log_alpha, L)
 
     def encode(self, state, action, reward, state_prime, label) -> tfp.distributions.Distribution:
@@ -197,7 +199,9 @@ class VariationalMDPStateAbstraction(Model):
         return tfp.distributions.MixtureSameFamily(
             mixture_distribution=tfp.distributions.Categorical(probs=reconstruction_prior_components),
             components_distribution=tfp.distributions.MultivariateNormalDiag(
-                loc=reconstruction_mean, scale_diag=tf.math.exp(reconstruction_log_var)))
+                loc=reconstruction_mean, scale_diag=tf.math.exp(reconstruction_log_var),
+                validate_args=True, allow_nan_stats=False),
+            validate_args=True)
 
     def latent_transition_probability_distribution(self, latent_state, action) -> tfp.distributions.Distribution:
         """
@@ -218,6 +222,12 @@ class VariationalMDPStateAbstraction(Model):
         """
         [reward_mean, reward_log_var] = self.reward_network([latent_state, action, next_latent_state])
         return tfp.distributions.MultivariateNormalDiag(loc=reward_mean, scale_diag=tf.math.exp(reward_log_var))
+
+    def decay_temperatures(self, step: int = 0):
+        for i in (0, 1):
+            if self.decay_temperature[i] != 0:
+                self.temperature[i] = self.temperature[i] * (1 - self.decay_temperature[i]) if step == 0 \
+                    else self.temperature[i] * (1 - self.decay_temperature[i]) ** step
 
     def call(self, inputs, training=None, mask=None):
         # inputs are assumed to have shape
@@ -315,7 +325,9 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
           checkpoint: tf.train.Checkpoint = None,
           manager: tf.train.CheckpointManager = None,
           log_interval: int = 80,
-          dataset_size: int = None):
+          dataset_size: Optional[int] = None,
+          log_name: str = 'vae',
+          decay_period: int = 0):
     import datetime
 
     if checkpoint is not None and manager is not None:
@@ -326,40 +338,53 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
             print("Initializing from scratch.")
 
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
+    train_log_dir = os.path.join('logs/gradient_tape/', current_time, log_name + ' train')
     if not os.path.exists(train_log_dir):
         os.makedirs(train_log_dir)
     train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 
-    global_step = checkpoint.save_counter
+    global_step = checkpoint.save_counter if checkpoint else tf.Variable(0)
     print("Step: {}".format(global_step.numpy()))
+    if global_step.numpy() != 0 and decay_period != 0:
+        vae_mdp.decay_temperatures(global_step.numpy() // decay_period)
+
+    loss = tf.keras.metrics.Mean()
+    state_observer = tf.keras.metrics.Mean()
+    reward_observer = tf.keras.metrics.Mean()
+    kl_observer = tf.keras.metrics.Mean()
+    vae_mdp.attach_observers(state_observer, reward_observer, kl_observer)
 
     for epoch in range(epochs):
         progressbar = Progbar(target=dataset_size,
                               stateful_metrics=['ELBO', 'State reconstruction MSE',
                                                 'Reward reconstruction MSE', 'KL terms'],
                               interval=0.1)
-        loss = tf.keras.metrics.Mean()
-        reward_observer = tf.keras.metrics.Mean()
-        state_observer = tf.keras.metrics.Mean()
-        kl_observer = tf.keras.metrics.Mean()
-        vae_mdp.attach_observers(state_observer, reward_observer, kl_observer)
+
+        loss.reset_states()
+        state_observer.reset_states()
+        reward_observer.reset_states()
+        kl_observer.reset_states()
+
         print("Epoch: {}/{}".format(epoch + 1, epochs))
 
         for x in dataset.batch(batch_size, drop_remainder=True):
             gradients = compute_apply_gradients(vae_mdp, x, optimizer)
             loss(gradients)
+            if global_step.numpy() * batch_size // (epoch + 1) < dataset_size:
+                progressbar.add(batch_size, values=[('ELBO', - loss.result()),
+                                                    ('State reconstruction MSE', state_observer.result()),
+                                                    ('Reward reconstruction MSE', reward_observer.result()),
+                                                    ('KL terms', kl_observer.result())])
 
-            progressbar.add(batch_size, values=[('ELBO', - loss.result()),
-                                                ('State reconstruction MSE', state_observer.result()),
-                                                ('Reward reconstruction MSE', reward_observer.result()),
-                                                ('KL terms', kl_observer.result())])
+            if decay_period != 0 and global_step.numpy() % decay_period == 0:
+                vae_mdp.decay_temperatures()
 
             if checkpoint is not None and manager is not None:
                 global_step.assign_add(1)
 
             if global_step.numpy() % log_interval == 0:
-                manager.save()
+                if manager:
+                    manager.save()
                 with train_summary_writer.as_default():
                     tf.summary.scalar('ELBO', - loss.result(), step=global_step.numpy())
                     tf.summary.scalar('State reconstruction MSE', state_observer.result(), step=global_step.numpy())
@@ -369,5 +394,4 @@ def train(vae_mdp: VariationalMDPStateAbstraction,
         tf.saved_model.save(vae_mdp,
                             os.path.join(manager.directory,
                                          os.pardir,
-                                         'vae_state_abstraction_step{}_ELBO{}'.format(
-                                             global_step.numpy(), - loss.result())))
+                                         '{}_step{}_ELBO{}'.format(log_name, global_step.numpy(), - loss.result())))
