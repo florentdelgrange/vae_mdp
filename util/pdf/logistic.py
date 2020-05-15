@@ -18,6 +18,7 @@ def density(temperature, mu, square=np.square, exp=np.exp):
 def log_density(temperature, mu, log=np.log, exp=np.exp, log1p=np.log1p):
     """
     Log-Logistic probability density function
+    Warning: sensitive to overflow due to the exponential term
 
     :param temperature: scale of the logistic function (in (0, inf))
     :param mu: location (in the binary logistic case, mu is log_alpha)
