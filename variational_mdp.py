@@ -9,8 +9,6 @@ from tensorflow.keras.models import clone_model
 from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense
 from tensorflow.keras.utils import Progbar
 
-from util.pdf import logistic, binary_concrete
-
 debug = False
 #   if debug:
 #       tf.debugging.enable_check_numerics()
@@ -44,7 +42,7 @@ class VariationalMarkovDecisionProcess(Model):
                  pre_loaded_model: bool = False,
                  debug: bool = False):
         super(VariationalMarkovDecisionProcess, self).__init__()
-        self.temperature = [tf.cast(temperature_1, 'float32'), tf.cast(temperature_2, 'float32')]
+        self.temperature = [tf.cast(temperature_1, 'float64'), tf.cast(temperature_2, 'float64')]
         self.decay_temperature = [temperature_1_decay_rate, temperature_2_decay_rate]
         self.state_shape = state_shape
         self.action_shape = action_shape
@@ -85,7 +83,7 @@ class VariationalMarkovDecisionProcess(Model):
             encoder_input = Concatenate(name="encoder_input")([state, action, reward, next_state])
             encoder = encoder_network(encoder_input)
             log_alpha_layer = \
-                Dense(units=latent_state_size - np.prod(label_shape), activation='linear', name='log_alpha')(encoder)
+                Dense(units=latent_state_size - np.prod(label_shape), activation=None, name='log_alpha')(encoder)
             label_layer = Model(inputs=label, outputs=label, name='label_layer')
             self.encoder_network = \
                 Model(inputs=[input_state, action, reward, input_next_state, label],
@@ -100,7 +98,7 @@ class VariationalMarkovDecisionProcess(Model):
                 Concatenate(name="transition_network_input")([latent_state, action_layer_1])
             transition = transition_network(transition_network_input)
             transition_output_layer = \
-                Dense(units=latent_state_size, activation='linear', name='transition_logistic_locations')(transition)
+                Dense(units=latent_state_size, activation=None, name='transition_logistic_locations')(transition)
             self.transition_network = Model(inputs=[latent_state, action], outputs=transition_output_layer,
                                             name="transition_network")
 
@@ -110,9 +108,9 @@ class VariationalMarkovDecisionProcess(Model):
             reward_network_input = \
                 Concatenate(name="reward_network_input")([latent_state, action_layer_2, next_latent_state])
             reward_1 = reward_network(reward_network_input)
-            reward_mean = Dense(np.prod(reward_shape), activation='linear', name='reward_mean_0')(reward_1)
+            reward_mean = Dense(units=np.prod(reward_shape), activation=None, name='reward_mean_0')(reward_1)
             reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
-            reward_log_var = Dense(np.prod(reward_shape), activation='linear', name='reward_log_var_0')(reward_1)
+            reward_log_var = Dense(units=np.prod(reward_shape), activation=None, name='reward_log_var_0')(reward_1)
             reward_log_var = Reshape(reward_shape, name='reward_log_var')(reward_log_var)
             self.reward_network = Model(inputs=[latent_state, action, next_latent_state],
                                         outputs=[reward_mean, reward_log_var], name='reward_network')
@@ -124,19 +122,21 @@ class VariationalMarkovDecisionProcess(Model):
                 decoder = state_post_processing_network(decoder)
             # 1 mean per dimension, nb Normal Gaussian
             decoder_output_mean = \
-                Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear', name='GMM_means_0')(decoder)
+                Dense(units=nb_gaussian_posteriors * np.prod(state_shape), activation=None, name='GMM_means_0')(decoder)
             decoder_output_mean = \
                 Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_means")(decoder_output_mean)
-            # 1 var per dimension, nb Normal Gaussian
+            # n diagonal co-variance matrices
+            decoder_output_log_covar = Dense(
+                units=nb_gaussian_posteriors * np.prod(state_shape),
+                activation=None,
+                name='GMM_log_diag_covar_0'
+            )(decoder)
             decoder_output_log_var = \
-                Dense(nb_gaussian_posteriors * np.prod(state_shape), activation='linear', name='GMM_log_vars_0')(
-                    decoder)
-            decoder_output_log_var = \
-                Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_log_vars")(decoder_output_log_var)
-            # prior over Normal Gaussian
-            decoder_prior = Dense(nb_gaussian_posteriors, activation='softmax', name="GMM_priors")(decoder)
+                Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_log_diag_covar")(decoder_output_log_covar)
+            # number of Normal Gaussian forming the mixture model
+            decoder_prior = Dense(units=nb_gaussian_posteriors, activation='softmax', name="GMM_priors")(decoder)
             self.reconstruction_network = Model(inputs=next_latent_state,
-                                                outputs=[decoder_output_mean, decoder_output_log_var, decoder_prior],
+                                                outputs=[decoder_output_mean, decoder_output_log_covar, decoder_prior],
                                                 name='reconstruction_network')
         else:
             self.encoder_network = encoder_network
@@ -151,38 +151,25 @@ class VariationalMarkovDecisionProcess(Model):
                      Input(shape=(2,) + self.label_shape, name="labels")]
         self._set_inputs(vae_input)
 
-        self._reconstruction_state_observer: Optional[tf.metrics.Metric] = None
-        self._reconstruction_reward_observer: Optional[tf.metrics.Metric] = None
-        self._kl_terms_observer: Optional[tf.metrics.Metric] = None
+        self._observers = []
         self.debug = debug
 
-    def attach_observers(self,
-                         reconstruction_state_observer: Optional[tf.metrics.Metric] = None,
-                         reconstruction_reward_observer: Optional[tf.metrics.Metric] = None,
-                         kl_terms_observer: Optional[tf.metrics.Metric] = None):
+    def attach_observers(self, observers: List[Callable]):
+        self._observers += observers
 
-        self._reconstruction_state_observer: Optional[tf.metrics.Metric] = reconstruction_state_observer
-        self._reconstruction_reward_observer: Optional[tf.metrics.Metric] = reconstruction_reward_observer
-        self._kl_terms_observer: Optional[tf.metrics.Metric] = kl_terms_observer
-
-    def detach_observer(self, observers: List[str]):
-        if 'state' in observers:
-            self._reconstruction_state_observer = None
-        if 'reward' in observers:
-            self._reconstruction_reward_observer = None
-        if 'kl_terms' in observers:
-            self._kl_terms_observer = None
+    def detach_observers(self):
+        self._observers = []
 
     @tf.function
-    def sample_logistic(self, log_alpha: tf.Tensor):
+    def sample_logistic(self, temperature: float, log_alpha: tf.Tensor):
         """
         Reparameterization trick for sampling binary concrete random variables.
         The logistic random variable with location log_alpha is a binary concrete random variable before applying the
         sigmoid function.
         """
         U = tf.random.uniform(shape=tf.shape(log_alpha), minval=epsilon)
-        L = tf.math.log(U) - tf.math.log(tf.ones(shape=tf.shape(log_alpha), dtype=log_alpha.dtype) - U)
-        return logistic.sample(self.temperature[0], log_alpha, L)
+        L = tf.math.log(U) - tf.math.log(1 - U)
+        return (L + log_alpha) / temperature
 
     def encode(self, state, action, reward, state_prime, label) -> tfp.distributions.Distribution:
         """
@@ -191,8 +178,7 @@ class VariationalMarkovDecisionProcess(Model):
               a temperature that converges to 0.
         """
         [log_alpha, label] = self.encoder_network([state, action, reward, state_prime, label])
-        return tfp.distributions.Bernoulli(
-            probs=tf.concat([tf.exp(log_alpha) / (tf.ones(tf.shape(log_alpha)) + tf.exp(log_alpha)), label], axis=-1))
+        return tfp.distributions.Bernoulli(probs=tf.concat([tf.sigmoid(log_alpha), label], axis=-1))
 
     def decode(self, latent_state) -> tfp.distributions.Distribution:
         """
@@ -203,7 +189,7 @@ class VariationalMarkovDecisionProcess(Model):
         return tfp.distributions.MixtureSameFamily(
             mixture_distribution=tfp.distributions.Categorical(probs=reconstruction_prior_components),
             components_distribution=tfp.distributions.MultivariateNormalDiag(
-                loc=reconstruction_mean, scale_diag=tf.math.exp(reconstruction_log_var),
+                loc=reconstruction_mean, scale_diag=tf.exp(reconstruction_log_var),
                 allow_nan_stats=(not self.debug)),
             validate_args=self.debug)
 
@@ -215,8 +201,7 @@ class VariationalMarkovDecisionProcess(Model):
               a temperature that converges to 0.
         """
         log_alpha = self.transition_network([latent_state, action])
-        return tfp.distributions.Bernoulli(
-            probs=(tf.exp(log_alpha) / (tf.ones(tf.shape(latent_state)) + tf.exp(log_alpha))))
+        return tfp.distributions.Bernoulli(probs=(tf.sigmoid(log_alpha)))
 
     def reward_probability_distribution(self, latent_state, action, next_latent_state) \
             -> tfp.distributions.Distribution:
@@ -245,10 +230,11 @@ class VariationalMarkovDecisionProcess(Model):
         [log_alpha, label] = self.encoder_network([s_0, a_0, r_0, s_1, l_1])
         [log_alpha_prime, label_prime] = self.encoder_network([s_1, a_1, r_1, s_2, l_2])
 
-        # z, z' ~ BinConcrete = sigmoid(BinConcreteLogistic)
-        logistic_z, logistic_z_prime = self.sample_logistic(log_alpha), self.sample_logistic(log_alpha_prime)
-        z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1, name="concat_z")
-        z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1, name="concat_z_prime")
+        # z ~ BinConcrete(temperature, alpha) = sigmoid(z ~ Logistic(temperature, log alpha))
+        logistic_z = self.sample_logistic(self.temperature[0], log_alpha)
+        logistic_z_prime = self.sample_logistic(self.temperature[0], log_alpha_prime)
+        z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1)
+        z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1)
 
         if debug:
             tf.print(logistic_z, "sampled logistic z")
@@ -256,28 +242,30 @@ class VariationalMarkovDecisionProcess(Model):
             tf.print(z, "sampled z")
             tf.print(z_prime, "sampled z'")
 
-        # binary-concrete log-logistic probability Q(logistic_z'|s_1, a_1, r_1, s_2, l_2),
-        # logistic_z' ~ Logistic(alpha')
-        log_q_z_prime = \
-            binary_concrete.log_logistic_density(self.temperature[0], log_alpha_prime,
-                                                 tf.math.log, tf.math.exp, tf.math.log1p)(logistic_z_prime)
+        # log logistic probability Q(logistic_z'|s_1, a_1, r_1, s_2, l_2),
+        # with logistic_z' ~ Logistic(temperature_0, log alpha')
+        log_q_z_prime = tfp.distributions.Logistic(
+            scale=1 / self.temperature[0], loc=log_alpha_prime / self.temperature[0]
+        ).log_prob(logistic_z_prime)
 
         if debug:
             tf.print(log_q_z_prime, "Log-logistic Q(z')")
 
         # change label l'=1 to 100 and label l'=0 to -100 so that
         # sigmoid(logistic_z'[l']) = 1 if l'=1 and sigmoid(logistic_z'[l']) = 0 if l'=0
-        logistic_label_prime = ((label_prime * 2) - tf.ones(tf.shape(label_prime))) * 1e2
-        logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1, name="concat_logistic_z_prime")
+        logistic_label_prime = ((label_prime * 2) - 1) * 1e2
+        logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1)
 
         if debug:
             tf.print(logistic_z_prime, "Logistic sampled z' with logistic labels")
 
-        # logistic log probability P(logistic_z'|z, a_1)
-        log_p_z_prime = logistic.log_density(self.temperature[1], self.transition_network([z, a_1]))(logistic_z_prime)
+        # log logistic probability P(logistic_z'|z, a_1) -- prior distribution over z'
+        log_p_z_prime = tfp.distributions.Logistic(
+            scale=1 / self.temperature[1], loc=self.transition_network([z, a_1]) / self.temperature[1]
+        ).log_prob(logistic_z_prime)
 
         if debug:
-            tf.print(self.transition_network([z, a_1]), "logistic locations P_transition")
+            tf.print(self.transition_network([z, a_1]), "log logistic locations P_transition")
             tf.print(log_p_z_prime, "log P(logistic z'|z, a)")
 
         # Normal log-probability P(r_1 | z, a_1, z')
@@ -293,27 +281,26 @@ class VariationalMarkovDecisionProcess(Model):
 
         if debug:
             tf.print(self.decode(z_prime).prob(s_2), "P(s' | z')")
-            tf.print(self.decode(z_prime).mean(), "mean")
-            tf.print(self.decode(z_prime).variance(), "variance")
             tf.print(log_p_reconstruction, "log P(s' | z')")
 
-    # the probability of encoding labels into z' is one
-        log_q_z_prime = tf.concat([log_q_z_prime, tf.zeros(shape=tf.shape(label_prime))], axis=-1,
-                                  name="q_z_prime_final")
+        # the probability of encoding labels into z' is one
+        log_q_z_prime = tf.concat([log_q_z_prime, tf.zeros(shape=tf.shape(label_prime))], axis=-1)
 
         if debug:
-            tf.print(log_q_z_prime, "Log Q(z') concatenated with proba 1 labels")
+            tf.print(log_q_z_prime, "Log Q(z')")
 
         kl_terms = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
 
-        if self._reconstruction_state_observer:
-            self._reconstruction_state_observer(
-                tf.reduce_sum(tf.square(reward_distribution.sample(sample_shape=tf.shape(s_2)) - s_2), axis=1))
-        if self._reconstruction_reward_observer:
-            self._reconstruction_reward_observer(
-                tf.reduce_sum(tf.square(reward_distribution.sample(sample_shape=tf.shape(r_1)) - r_1), axis=1))
-        if self._kl_terms_observer:
-            self._kl_terms_observer(kl_terms)
+        observables = {
+            'next_state': s_2,
+            'reward': r_1,
+            'kl_terms': kl_terms,
+            'reconstruction_state_distribution': state_distribution,
+            'reconstruction_reward_distribution': reward_distribution,
+        }
+
+        for observer in self._observers:
+            observer(observables)
 
         return [log_p_reconstruction, log_p_rewards, kl_terms]
 
@@ -395,11 +382,24 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         vae_mdp.decay_temperatures(global_step.numpy() // decay_period)
 
     loss = tf.keras.metrics.Mean()
-    state_observer = tf.keras.metrics.Mean()
-    reward_observer = tf.keras.metrics.Mean()
-    kl_observer = tf.keras.metrics.Mean()
-    vae_mdp.attach_observers(state_observer, reward_observer, kl_observer)
+    state_mse = tf.keras.metrics.Mean()
+    reward_mse = tf.keras.metrics.Mean()
+    kl_terms_mean = tf.keras.metrics.Mean()
     mean_bits_used = tf.keras.metrics.Mean()
+    metrics = [loss, state_mse, reward_mse, kl_terms_mean, mean_bits_used]
+    vae_mdp.attach_observers(
+        [
+            lambda observables: state_mse(
+                tf.reduce_sum(tf.square(
+                    observables['reconstruction_state_distribution']
+                    .sample(sample_shape=tf.shape(observables['next_state'])) - observables['next_state']), axis=1)),
+            lambda observables: reward_mse(
+                tf.reduce_sum(tf.square(
+                    observables['reconstruction_reward_distribution']
+                    .sample(sample_shape=tf.shape(observables['reward'])) - observables['reward']), axis=1)),
+            lambda observables: kl_terms_mean(observables['kl_terms'])
+        ]
+    )
 
     for epoch in range(epochs):
         progressbar = Progbar(target=dataset_size,
@@ -412,17 +412,17 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         if dataset_generator is not None:
             dataset = dataset_generator()
 
-        for x in dataset.batch(batch_size, drop_remainder=True):
+        for x in dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE).shuffle(51200):
 
             gradients = compute_apply_gradients(vae_mdp, x, optimizer)
             loss(gradients)
             mean_bits_used(mean_latent_bits_used(vae_mdp, x))
 
-            metrics = [('ELBO', - loss.result()),
-                       ('state_MSE', state_observer.result()),
-                       ('reward_MSE', reward_observer.result()),
-                       ('KL_terms', kl_observer.result()),
-                       ('bits_used', mean_bits_used.result())]
+            metrics_values = [('ELBO', - loss.result()),
+                              ('state_MSE', state_mse.result()),
+                              ('reward_MSE', reward_mse.result()),
+                              ('KL_terms', kl_terms_mean.result()),
+                              ('bits_used', mean_bits_used.result())]
 
             if decay_period != 0:
                 metrics.append(('t_1', vae_mdp.temperature[0].numpy()))
@@ -430,7 +430,7 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
 
             if dataset_size is not None and display_progressbar and \
                     (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
-                progressbar.add(batch_size, values=metrics)
+                progressbar.add(batch_size, values=metrics_values)
 
             if decay_period != 0 and global_step.numpy() % decay_period == 0:
                 vae_mdp.decay_temperatures()
@@ -443,31 +443,19 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
                     manager.save()
                 if logs:
                     with train_summary_writer.as_default():
-                        tf.summary.scalar('ELBO', - loss.result(), step=global_step.numpy())
-                        tf.summary.scalar('State reconstruction MSE', state_observer.result(),
-                                          step=global_step.numpy())
-                        tf.summary.scalar('Reward reconstruction MSE', reward_observer.result(),
-                                          step=global_step.numpy())
-                        tf.summary.scalar('KL terms', kl_observer.result(), step=global_step.numpy())
-                        tf.summary.scalar('Latent bits used', mean_bits_used.result(), step=global_step.numpy())
-                        if decay_period != 0:
-                            tf.summary.scalar('Encoder temperature', vae_mdp.temperature[0].numpy(),
-                                              step=global_step.numpy())
-                            tf.summary.scalar('Decoder temperature', vae_mdp.temperature[1].numpy(),
-                                              step=global_step.numpy())
+                        for key, values in metrics_values:
+                            tf.summary.scalar(key, values, step=global_step.numpy())
+
         tf.saved_model.save(vae_mdp,
                             os.path.join(manager.directory,
                                          os.pardir,
                                          '{}_step{}_ELBO{}'.format(log_name, global_step.numpy(), - loss.result())))
 
-        loss.reset_states()
-        state_observer.reset_states()
-        reward_observer.reset_states()
-        kl_observer.reset_states()
-        mean_bits_used.reset_states()
+        for metric in metrics:
+            metric.reset_states()
 
 
-def mean_latent_bits_used(vae_mdp: VariationalMarkovDecisionProcess, batch, eps=1e-6):
+def mean_latent_bits_used(vae_mdp: VariationalMarkovDecisionProcess, batch, eps=1e-3):
     """
     Compute the mean number of bits used in the latent space for the given dataset batch.
     This allows monitoring if the latent space is effectively used by the VAE or if posterior collapse happens.
