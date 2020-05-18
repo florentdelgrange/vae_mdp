@@ -35,7 +35,7 @@ class VariationalMarkovDecisionProcess(Model):
                  temperature_2: float = 1 / 2,
                  temperature_1_decay_rate: float = 0,
                  temperature_2_decay_rate: float = 0,
-                 nb_gaussian_posteriors: int = 3,
+                 mixture_components: int = 3,
                  action_pre_processing_network: Model = None,
                  state_pre_processing_network: Model = None,
                  state_post_processing_network: Model = None,
@@ -49,6 +49,7 @@ class VariationalMarkovDecisionProcess(Model):
         self.reward_shape = reward_shape
         self.latent_state_size = latent_state_size
         self.label_shape = label_shape
+        self.mixture_components = mixture_components
 
         if not (len(state_shape) == len(action_shape) == len(reward_shape) == len(label_shape)):
             if state_pre_processing_network is None:
@@ -110,10 +111,12 @@ class VariationalMarkovDecisionProcess(Model):
             reward_1 = reward_network(reward_network_input)
             reward_mean = Dense(units=np.prod(reward_shape), activation=None, name='reward_mean_0')(reward_1)
             reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
-            reward_log_var = Dense(units=np.prod(reward_shape), activation=None, name='reward_log_var_0')(reward_1)
-            reward_log_var = Reshape(reward_shape, name='reward_log_var')(reward_log_var)
+            reward_log_covar = Dense(units=np.prod(reward_shape),
+                                     activation=None,
+                                     name='reward_log_diag_covar_0')(reward_1)
+            reward_log_covar = Reshape(reward_shape, name='reward_log_diag_covar')(reward_log_covar)
             self.reward_network = Model(inputs=[latent_state, action, next_latent_state],
-                                        outputs=[reward_mean, reward_log_var], name='reward_network')
+                                        outputs=[reward_mean, reward_log_covar], name='reward_network')
 
             # Reconstruction network
             # inputs are binary concrete random variables, outputs are given in parameter
@@ -122,19 +125,19 @@ class VariationalMarkovDecisionProcess(Model):
                 decoder = state_post_processing_network(decoder)
             # 1 mean per dimension, nb Normal Gaussian
             decoder_output_mean = \
-                Dense(units=nb_gaussian_posteriors * np.prod(state_shape), activation=None, name='GMM_means_0')(decoder)
+                Dense(units=mixture_components * np.prod(state_shape), activation=None, name='GMM_means_0')(decoder)
             decoder_output_mean = \
-                Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_means")(decoder_output_mean)
+                Reshape((mixture_components,) + state_shape, name="GMM_means")(decoder_output_mean)
             # n diagonal co-variance matrices
             decoder_output_log_covar = Dense(
-                units=nb_gaussian_posteriors * np.prod(state_shape),
+                units=mixture_components * np.prod(state_shape),
                 activation=None,
                 name='GMM_log_diag_covar_0'
             )(decoder)
             decoder_output_log_var = \
-                Reshape((nb_gaussian_posteriors,) + state_shape, name="GMM_log_diag_covar")(decoder_output_log_covar)
+                Reshape((mixture_components,) + state_shape, name="GMM_log_diag_covar")(decoder_output_log_covar)
             # number of Normal Gaussian forming the mixture model
-            decoder_prior = Dense(units=nb_gaussian_posteriors, activation='softmax', name="GMM_priors")(decoder)
+            decoder_prior = Dense(units=mixture_components, activation='softmax', name="GMM_priors")(decoder)
             self.reconstruction_network = Model(inputs=next_latent_state,
                                                 outputs=[decoder_output_mean, decoder_output_log_covar, decoder_prior],
                                                 name='reconstruction_network')
@@ -184,14 +187,23 @@ class VariationalMarkovDecisionProcess(Model):
         """
         Decode a binary latent state into a probability distribution over original states of the MDP, modeled by a GMM
         """
-        [reconstruction_mean, reconstruction_log_var, reconstruction_prior_components] = \
+        [reconstruction_mean, reconstruction_log_diag_covar, reconstruction_prior_components] = \
             self.reconstruction_network(latent_state)
-        return tfp.distributions.MixtureSameFamily(
-            mixture_distribution=tfp.distributions.Categorical(probs=reconstruction_prior_components),
-            components_distribution=tfp.distributions.MultivariateNormalDiag(
-                loc=reconstruction_mean, scale_diag=tf.exp(reconstruction_log_var),
-                allow_nan_stats=(not self.debug)),
-            validate_args=self.debug)
+        if self.mixture_components == 1:
+            return tfp.distributions.MultivariateNormalDiag(
+                loc=reconstruction_mean[0],
+                scale_diag=tf.exp(reconstruction_log_diag_covar[0]),
+                allow_nan_stats=(not self.debug),
+                validate_args=self.debug
+            )
+        else:
+            return tfp.distributions.MixtureSameFamily(
+                mixture_distribution=tfp.distributions.Categorical(probs=reconstruction_prior_components),
+                components_distribution=tfp.distributions.MultivariateNormalDiag(
+                    loc=reconstruction_mean,
+                    scale_diag=tf.exp(reconstruction_log_diag_covar),
+                    allow_nan_stats=(not self.debug)),
+                validate_args=self.debug)
 
     def latent_transition_probability_distribution(self, latent_state, action) -> tfp.distributions.Distribution:
         """
@@ -209,9 +221,9 @@ class VariationalMarkovDecisionProcess(Model):
         Retrieves a probability distribution P(r|z, a, z') over rewards obtained when the latent transition z -> z' is
         encountered when action a is chosen
         """
-        [reward_mean, reward_log_var] = self.reward_network([latent_state, action, next_latent_state])
+        [reward_mean, reward_log_diag_covar] = self.reward_network([latent_state, action, next_latent_state])
         return tfp.distributions.MultivariateNormalDiag(loc=reward_mean,
-                                                        scale_diag=tf.math.exp(reward_log_var),
+                                                        scale_diag=tf.math.exp(reward_log_diag_covar),
                                                         allow_nan_stats=(not self.debug),
                                                         validate_args=self.debug)
 
