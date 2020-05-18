@@ -1,5 +1,3 @@
-import os
-
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import Input, Model
@@ -9,13 +7,12 @@ from util.io import dataset_generator
 import variational_mdp
 
 if __name__ == '__main__':
-    sess = tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(log_device_placement=True))
-
     dataset_path = '/home/florent/Documents/hpc-cluster/dataset/reinforcement_learning'
+    # dataset_path = 'reinforcement_learning/dataset/reinforcement_learning'
     batch_size = 128
     num_of_gaussian_posteriors = 3
     latent_state_size = 16 + 1  # depends on the number of bits reserved for labels
-    vae_name = 'DELETEvae_decay_temperature_latent{}'.format(latent_state_size)
+    vae_name = 'vae_latent{}_annealing'.format(latent_state_size)
     cycle_length = 8
     block_length = batch_size // cycle_length
 
@@ -77,5 +74,5 @@ if __name__ == '__main__':
     manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
 
     variational_mdp.train(vae_mdp_model, dataset_generator=dataset,
-                          batch_size=batch_size, optimizer=optimizer, checkpoint=None, manager=None,
+                          batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint, manager=manager,
                           dataset_size=dataset_size, decay_period=1, log_name=vae_name, logs=True)

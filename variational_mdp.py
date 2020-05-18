@@ -6,7 +6,7 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow.keras import Model
 from tensorflow.keras.models import clone_model
-from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense, Lambda
+from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense
 from tensorflow.keras.utils import Progbar
 
 from util.pdf import logistic, binary_concrete
@@ -274,9 +274,7 @@ class VariationalMarkovDecisionProcess(Model):
             tf.print(logistic_z_prime, "Logistic sampled z' with logistic labels")
 
         # logistic log probability P(logistic_z'|z, a_1)
-        log_p_z_prime = tfp.distributions.Logistic(
-            loc=self.transition_network([z, a_1]),
-            scale=self.temperature[1]).log_prob(logistic_z_prime)
+        log_p_z_prime = logistic.log_density(self.temperature[1], self.transition_network([z, a_1]))(logistic_z_prime)
 
         if debug:
             tf.print(self.transition_network([z, a_1]), "logistic locations P_transition")
@@ -371,7 +369,8 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
           log_name: str = 'vae',
           decay_period: int = 0,
           logs: bool = True,
-          display_progressbar: bool = True):
+          display_progressbar: bool = True,
+          eval_ratio: float = 0.1):
     if (dataset is None and dataset_generator is None) or (dataset is not None and dataset_generator is not None):
         raise ValueError("Both a dataset and a dataset generator are passed, or neither.")
 
@@ -413,55 +412,59 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         if dataset_generator is not None:
             dataset = dataset_generator()
 
-        with tf.profiler.experimental.Profile(train_log_dir):
+        for x in dataset.batch(batch_size, drop_remainder=True):
 
-            for x in dataset.batch(batch_size, drop_remainder=True):
+            gradients = compute_apply_gradients(vae_mdp, x, optimizer)
+            loss(gradients)
+            mean_bits_used(mean_latent_bits_used(vae_mdp, x))
 
-                gradients = compute_apply_gradients(vae_mdp, x, optimizer)
-                loss(gradients)
-                mean_bits_used(mean_latent_bits_used(vae_mdp, x))
+            metrics = [('ELBO', - loss.result()),
+                       ('state_MSE', state_observer.result()),
+                       ('reward_MSE', reward_observer.result()),
+                       ('KL_terms', kl_observer.result()),
+                       ('bits_used', mean_bits_used.result())]
 
-                metrics = [('ELBO', - loss.result()),
-                           ('state_MSE', state_observer.result()),
-                           ('reward_MSE', reward_observer.result()),
-                           ('KL_terms', kl_observer.result()),
-                           ('bits_used', mean_bits_used.result())]
+            if decay_period != 0:
+                metrics.append(('t_1', vae_mdp.temperature[0].numpy()))
+                metrics.append(('t_2', vae_mdp.temperature[1].numpy()))
 
-                if decay_period != 0:
-                    metrics.append(('t_1', vae_mdp.temperature[0].numpy()))
-                    metrics.append(('t_2', vae_mdp.temperature[1].numpy()))
+            if dataset_size is not None and display_progressbar and \
+                    (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
+                progressbar.add(batch_size, values=metrics)
 
-                if dataset_size is not None and display_progressbar and \
-                        (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
-                    progressbar.add(batch_size, values=metrics)
+            if decay_period != 0 and global_step.numpy() % decay_period == 0:
+                vae_mdp.decay_temperatures()
 
-                if decay_period != 0 and global_step.numpy() % decay_period == 0:
-                    vae_mdp.decay_temperatures()
+            if checkpoint is not None and manager is not None:
+                global_step.assign_add(1)
 
-                if checkpoint is not None and manager is not None:
-                    global_step.assign_add(1)
-
-                if global_step.numpy() % log_interval == 0:
-                    if manager:
-                        manager.save()
-                    if logs:
-                        with train_summary_writer.as_default():
-                            tf.summary.scalar('ELBO', - loss.result(), step=global_step.numpy())
-                            tf.summary.scalar('State reconstruction MSE', state_observer.result(),
+            if global_step.numpy() % log_interval == 0:
+                if manager:
+                    manager.save()
+                if logs:
+                    with train_summary_writer.as_default():
+                        tf.summary.scalar('ELBO', - loss.result(), step=global_step.numpy())
+                        tf.summary.scalar('State reconstruction MSE', state_observer.result(),
+                                          step=global_step.numpy())
+                        tf.summary.scalar('Reward reconstruction MSE', reward_observer.result(),
+                                          step=global_step.numpy())
+                        tf.summary.scalar('KL terms', kl_observer.result(), step=global_step.numpy())
+                        tf.summary.scalar('Latent bits used', mean_bits_used.result(), step=global_step.numpy())
+                        if decay_period != 0:
+                            tf.summary.scalar('Encoder temperature', vae_mdp.temperature[0].numpy(),
                                               step=global_step.numpy())
-                            tf.summary.scalar('Reward reconstruction MSE', reward_observer.result(),
+                            tf.summary.scalar('Decoder temperature', vae_mdp.temperature[1].numpy(),
                                               step=global_step.numpy())
-                            tf.summary.scalar('KL terms', kl_observer.result(), step=global_step.numpy())
-                            tf.summary.scalar('Latent bits used', mean_bits_used.result(), step=global_step.numpy())
-                            if decay_period != 0:
-                                tf.summary.scalar('Encoder temperature', vae_mdp.temperature[0].numpy(),
-                                                  step=global_step.numpy())
-                                tf.summary.scalar('Decoder temperature', vae_mdp.temperature[1].numpy(),
-                                                  step=global_step.numpy())
         tf.saved_model.save(vae_mdp,
                             os.path.join(manager.directory,
                                          os.pardir,
                                          '{}_step{}_ELBO{}'.format(log_name, global_step.numpy(), - loss.result())))
+
+        loss.reset_states()
+        state_observer.reset_states()
+        reward_observer.reset_states()
+        kl_observer.reset_states()
+        mean_bits_used.reset_states()
 
 
 def mean_latent_bits_used(vae_mdp: VariationalMarkovDecisionProcess, batch, eps=1e-6):

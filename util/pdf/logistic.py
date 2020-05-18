@@ -1,4 +1,5 @@
 import numpy as np
+import tensorflow_probability
 
 
 def density(temperature, mu, square=np.square, exp=np.exp):
@@ -15,20 +16,25 @@ def density(temperature, mu, square=np.square, exp=np.exp):
     return lambda x: temperature * exp(- temperature * x + mu) / square(1 + exp(- temperature * x + mu))
 
 
-def log_density(temperature, mu, log=np.log, exp=np.exp, log1p=np.log1p):
+def log_density(temperature, mu, log=np.log, exp=np.exp, log1p=np.log1p, tfp=True):
     """
     Log-Logistic probability density function
-    Warning: sensitive to overflow due to the exponential term
 
     :param temperature: scale of the logistic function (in (0, inf))
     :param mu: location (in the binary logistic case, mu is log_alpha)
     :param log: log function
     :param exp: exp function
     :param log1p: log1p function
+    :param tfp: use Tensorflow probability, less sensitive to overflow
     :return: the log-logistic density function of scale temperature and location mu
     """
     # :param x: logistic random variable (in (0, 1))
-    return lambda x: log(temperature) + (- temperature * x + mu) - 2 * log1p(exp(mu - temperature * x))
+    if tfp:
+        return lambda x: tensorflow_probability.distributions.Logistic(
+            scale=1/temperature, loc=mu/temperature
+        ).log_prob(x)
+    else:
+        return lambda x: log(temperature) + (- temperature * x + mu) - 2 * log1p(exp(mu - temperature * x))
 
 
 def log_diff(temperature, mu_0, mu_1, exp=np.exp, log1p=np.log1p):
