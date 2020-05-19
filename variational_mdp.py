@@ -9,9 +9,7 @@ from tensorflow.keras.models import clone_model
 from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense
 from tensorflow.keras.utils import Progbar
 
-debug = True
-if debug:
-   tf.debugging.enable_check_numerics()
+debug = False
 
 epsilon = 1e-12
 max_val = 1e9
@@ -273,7 +271,8 @@ class VariationalMarkovDecisionProcess(Model):
         ).log_prob(logistic_z_prime) if not self.eval else self.encode(s_1, a_1, r_1, s_2, l_2).log_prob(z_prime)
 
         if debug:
-            tf.print(log_q_z_prime, "Log-logistic Q(z')")
+            tf.print(log_alpha_prime, "log-locations Q")
+            tf.print(log_q_z_prime, "Log Q(logistic z'|s, a, r, s', l')")
 
         # log logistic probability P(logistic_z'|z, a_1)
         # prior distribution over logistic z' ~ Logistic(temperature_1, transition_locations)
@@ -283,7 +282,7 @@ class VariationalMarkovDecisionProcess(Model):
             self.latent_transition_probability_distribution(z, a_1).log_prob(z_prime)
 
         if debug:
-            tf.print(self.transition_network([z, a_1]), "log logistic locations P_transition")
+            tf.print(self.transition_network([z, a_1]), "log-locations P_transition")
             tf.print(log_p_z_prime, "log P(logistic z'|z, a)")
 
         # Normal log-probability P(r_1 | z, a_1, z')
@@ -291,16 +290,22 @@ class VariationalMarkovDecisionProcess(Model):
         log_p_rewards = reward_distribution.log_prob(r_1)
 
         if debug:
-            tf.print(log_p_rewards, "log P(r | z, a, z')")
+            tf.print(tf.exp(log_p_rewards), "P(r | z, a, z')")
 
         # Reconstruction P(s_2 | z')
         state_distribution = self.decode(z_prime)
         log_p_reconstruction = state_distribution.log_prob(s_2)
 
         if debug:
+            [reconstruction_mean, reconstruction_log_diag_covar, reconstruction_prior_components] = \
+                self.reconstruction_network(z_prime)
+            tf.print(reconstruction_mean, 'mean(s | z)')
+            tf.print(reconstruction_prior_components, 'GMM: prior components')
             tf.print(log_p_reconstruction, "log P(s' | z')")
 
         kl_terms = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
+        if debug:
+            tf.print(log_q_z_prime - log_p_z_prime, "Q(z') - P(z')")
 
         observables = {
             'next_state': s_2,
@@ -379,13 +384,13 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
           logs: bool = True,
           display_progressbar: bool = True,
           eval_ratio: float = 0.1):
-
     assert 0 <= eval_ratio < 1
     eval = False
 
     if (dataset is None and dataset_generator is None) or (dataset is not None and dataset_generator is not None):
         raise ValueError("Both a dataset and a dataset generator are passed, or neither.")
 
+    # Load checkpoint
     if checkpoint is not None and manager is not None:
         checkpoint.restore(manager.latest_checkpoint)
         if manager.latest_checkpoint:
@@ -393,6 +398,7 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         else:
             print("Initializing from scratch.")
 
+    # initialize logs
     import datetime
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     train_log_dir = os.path.join('logs/gradient_tape', log_name, current_time)
@@ -400,6 +406,7 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         os.makedirs(train_log_dir)
     train_summary_writer = tf.summary.create_file_writer(train_log_dir) if logs else None
 
+    # Load step
     global_step = checkpoint.save_counter if checkpoint else tf.Variable(0)
     start_step = global_step.numpy()
     print("Step: {}".format(global_step.numpy()))
@@ -421,23 +428,23 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
     for metric, condition, flag in ((metrics, False, ''), (eval_metrics, True, 'eval_')):
 
         def observe_state_reconstruction(observable, metric=metric, condition=condition, flag=flag):
-            if 'next_state' and 'reconstruction_state_distribution' in observable and eval is condition:
+            if 'next_state' and 'reconstruction_state_distribution' in observable and eval == condition:
                 return metric[flag + 'state_mse'](
-                    tf.reduce_sum(tf.square(observable['reconstruction_state_distribution'].sample(
-                        sample_shape=tf.shape(observable['next_state'])) - observable['next_state']), axis=1))
+                    tf.reduce_mean(tf.square(
+                        observable['reconstruction_state_distribution'].mean() - observable['next_state']), axis=1))
             else:
                 return None
 
         def observe_reward_reconstruction(observable, metric=metric, condition=condition, flag=flag):
-            if 'reward' and 'reconstruction_reward_distribution' in observable and eval is condition:
+            if 'reward' and 'reconstruction_reward_distribution' in observable and eval == condition:
                 return metric[flag + 'reward_mse'](
-                    tf.reduce_sum(tf.square(observable['reconstruction_reward_distribution'].sample(
-                        sample_shape=tf.shape(observable['reward'])) - observable['reward']), axis=1))
+                    tf.reduce_mean(tf.square(
+                        observable['reconstruction_reward_distribution'].mean() - observable['reward']), axis=1))
             else:
                 return None
 
         def observe_kl_terms(observable, metric=metric, condition=condition, flag=flag):
-            if 'kl_terms' in observable and eval is condition:
+            if 'kl_terms' in observable and eval == condition:
                 return metric[flag + 'kl_terms'](observable['kl_terms'])
             else:
                 return None
@@ -450,55 +457,55 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             if dataset_size is not None else (None, None)
 
         progressbar = Progbar(target=dataset_train_size,
-                              stateful_metrics=['ELBO', 'state_MSE',
-                                                'reward_MSE', 'KL_terms', 't1', 't2', 'bits_used'],
+                              stateful_metrics=['ELBO', 'state_mse', 'reward_mse', 'kl_terms', 't1', 't2',
+                                                'mean_bits_used'],
                               interval=0.1) if display_progressbar else None
-
         print("Epoch: {}/{}".format(epoch + 1, epochs))
 
         if dataset_generator is not None:
             dataset = dataset_generator()
 
         for x in dataset.batch(batch_size, drop_remainder=True):
+            eval = global_step.numpy() * batch_size // (epoch + 1) >= dataset_size * (1 - eval_ratio)
 
             if not eval:
                 gradients = compute_apply_gradients(vae_mdp, x, optimizer)
                 metrics['loss'](gradients)
-
                 metrics['mean_bits_used'](mean_latent_bits_used(vae_mdp, x))
-
-                metrics_values = [('ELBO', - metrics['loss'].result()),
-                                  ('state_MSE', metrics['state_mse'].result()),
-                                  ('reward_MSE', metrics['reward_mse'].result()),
-                                  ('KL_terms', metrics['kl_terms'].result()),
-                                  ('bits_used', metrics['mean_bits_used'].result())]
-
-                if decay_period != 0:
-                    metrics_values.append(('t_1', vae_mdp.temperature[0].numpy()))
-                    metrics_values.append(('t_2', vae_mdp.temperature[1].numpy()))
-
-                if dataset_size is not None and display_progressbar and \
-                        (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
-                    progressbar.add(batch_size, values=metrics_values)
 
                 if decay_period != 0 and global_step.numpy() % decay_period == 0:
                     vae_mdp.decay_temperatures()
 
             else:
-                compute_loss(vae_mdp, x, eval=True)
+                loss = compute_loss(vae_mdp, x, eval=True)
+                eval_metrics['eval_loss'](loss)
 
+            multiplier = lambda key: -1 if key == 'loss' else 1
+            rename = lambda key: 'ELBO' if key == 'loss' else key
+            metrics_key_values = [(rename(key), multiplier(key) * value.result()) for key, value in metrics.items()]
+            if decay_period != 0:
+                metrics_key_values.append(('t_1', vae_mdp.temperature[0].numpy()))
+                metrics_key_values.append(('t_2', vae_mdp.temperature[1].numpy()))
+            # update progressbar
+            if dataset_size is not None and display_progressbar and \
+                    (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
+                progressbar.add(batch_size, values=metrics_key_values)
+
+            # update step
             if checkpoint is not None and manager is not None:
                 global_step.assign_add(1)
 
+            # log and save
             if global_step.numpy() % log_interval == 0:
-                if manager:
+                if manager is not None:
                     manager.save()
                 if logs:
                     with train_summary_writer.as_default():
-                        for key, values in metrics.items():
-                            tf.summary.scalar(key, values, step=global_step.numpy())
-
-            eval = (global_step.numpy() - start_step) * batch_size // (epoch + 1) >= dataset_size * (1 - eval_ratio)
+                        for key in metrics.keys():
+                            flag = 'eval_' if eval else ''
+                            metric = eval_metrics if eval else metrics
+                            tf.summary.scalar(flag + rename(key), multiplier(key) * metric[flag + key].result(),
+                                              step=global_step.numpy())
 
         tf.saved_model.save(
             vae_mdp,
@@ -514,8 +521,6 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
 
         if epoch == 0:
             dataset_size = (global_step.numpy() - start_step) * batch_size
-
-        eval = False
 
 
 def mean_latent_bits_used(vae_mdp: VariationalMarkovDecisionProcess, batch, eps=1e-3):
