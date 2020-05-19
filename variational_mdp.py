@@ -9,9 +9,9 @@ from tensorflow.keras.models import clone_model
 from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense
 from tensorflow.keras.utils import Progbar
 
-debug = False
-#   if debug:
-#       tf.debugging.enable_check_numerics()
+debug = True
+if debug:
+   tf.debugging.enable_check_numerics()
 
 epsilon = 1e-12
 max_val = 1e9
@@ -42,7 +42,7 @@ class VariationalMarkovDecisionProcess(Model):
                  pre_loaded_model: bool = False,
                  debug: bool = False):
         super(VariationalMarkovDecisionProcess, self).__init__()
-        self.temperature = [tf.cast(temperature_1, 'float64'), tf.cast(temperature_2, 'float64')]
+        self.temperature = [tf.cast(temperature_1, 'float32'), tf.cast(temperature_2, 'float32')]
         self.decay_temperature = [temperature_1_decay_rate, temperature_2_decay_rate]
         self.state_shape = state_shape
         self.action_shape = action_shape
@@ -85,10 +85,9 @@ class VariationalMarkovDecisionProcess(Model):
             encoder = encoder_network(encoder_input)
             log_alpha_layer = \
                 Dense(units=latent_state_size - np.prod(label_shape), activation=None, name='log_alpha')(encoder)
-            label_layer = Model(inputs=label, outputs=label, name='label_layer')
             self.encoder_network = \
                 Model(inputs=[input_state, action, reward, input_next_state, label],
-                      outputs=[log_alpha_layer, label_layer.output], name='encoder')
+                      outputs=log_alpha_layer, name='encoder')
 
             # Transition network
             # inputs are binary concrete random variables, outputs are locations of logistic distributions
@@ -134,7 +133,7 @@ class VariationalMarkovDecisionProcess(Model):
                 activation=None,
                 name='GMM_log_diag_covar_0'
             )(decoder)
-            decoder_output_log_var = \
+            decoder_output_log_covar = \
                 Reshape((mixture_components,) + state_shape, name="GMM_log_diag_covar")(decoder_output_log_covar)
             # number of Normal Gaussian forming the mixture model
             decoder_prior = Dense(units=mixture_components, activation='softmax', name="GMM_priors")(decoder)
@@ -156,9 +155,10 @@ class VariationalMarkovDecisionProcess(Model):
 
         self._observers = []
         self.debug = debug
+        self.eval = False  # flag used for testing
 
     def attach_observers(self, observers: List[Callable]):
-        self._observers += observers
+        self._observers.extend(observers)
 
     def detach_observers(self):
         self._observers = []
@@ -170,9 +170,13 @@ class VariationalMarkovDecisionProcess(Model):
         The logistic random variable with location log_alpha is a binary concrete random variable before applying the
         sigmoid function.
         """
-        U = tf.random.uniform(shape=tf.shape(log_alpha), minval=epsilon)
-        L = tf.math.log(U) - tf.math.log(1 - U)
+        L = logistic_noise(shape=tf.shape(log_alpha))
         return (L + log_alpha) / temperature
+
+    @tf.function
+    def sample_bernoulli(self, log_alpha: tf.Tensor):
+        L = logistic_noise(shape=tf.shape(log_alpha))
+        return tf.map_fn(lambda x: 1 if x + log_alpha >= 0 else 0, L)
 
     def encode(self, state, action, reward, state_prime, label) -> tfp.distributions.Distribution:
         """
@@ -180,7 +184,7 @@ class VariationalMarkovDecisionProcess(Model):
         Note: the Bernoulli distribution is constructed via the Binary Concrete distribution learned by the encoder with
               a temperature that converges to 0.
         """
-        [log_alpha, label] = self.encoder_network([state, action, reward, state_prime, label])
+        log_alpha = self.encoder_network([state, action, reward, state_prime, label])
         return tfp.distributions.Bernoulli(probs=tf.concat([tf.sigmoid(log_alpha), label], axis=-1))
 
     def decode(self, latent_state) -> tfp.distributions.Distribution:
@@ -239,14 +243,22 @@ class VariationalMarkovDecisionProcess(Model):
         s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
         s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
 
-        [log_alpha, label] = self.encoder_network([s_0, a_0, r_0, s_1, l_1])
-        [log_alpha_prime, label_prime] = self.encoder_network([s_1, a_1, r_1, s_2, l_2])
+        log_alpha = self.encoder_network([s_0, a_0, r_0, s_1, l_1])
+        log_alpha_prime = self.encoder_network([s_1, a_1, r_1, s_2, l_2])
 
         # z ~ BinConcrete(temperature, alpha) = sigmoid(z ~ Logistic(temperature, log alpha))
         logistic_z = self.sample_logistic(self.temperature[0], log_alpha)
         logistic_z_prime = self.sample_logistic(self.temperature[0], log_alpha_prime)
-        z = tf.concat([tf.sigmoid(logistic_z), label], axis=-1)
-        z_prime = tf.concat([tf.sigmoid(logistic_z_prime), label_prime], axis=-1)
+        z = tf.concat([tf.sigmoid(logistic_z), l_1], axis=-1) if not self.eval else \
+            tf.concat([self.sample_bernoulli(log_alpha), l_1], axis=-1)
+        z_prime = tf.concat([tf.sigmoid(logistic_z_prime), l_2], axis=-1) if not self.eval else \
+            tf.concat([self.sample_bernoulli(log_alpha_prime), l_2], axis=-1)
+
+        # change label l_2=1 to 100 or label l_2=0 to -100 so that
+        # sigmoid(logistic_z'[-1]) = 1 if l_2=1 and sigmoid(logistic_z'[-1]) = 0 if l_2=0
+        logistic_l_2 = ((l_2 * 2) - 1) * 1e2
+        logistic_z_prime = tf.concat([logistic_z_prime, logistic_l_2], axis=-1)
+        log_alpha_prime = tf.concat([log_alpha_prime, logistic_l_2 * self.temperature[0]], axis=-1)
 
         if debug:
             tf.print(logistic_z, "sampled logistic z")
@@ -258,23 +270,17 @@ class VariationalMarkovDecisionProcess(Model):
         # with logistic_z' ~ Logistic(temperature_0, log alpha')
         log_q_z_prime = tfp.distributions.Logistic(
             scale=1 / self.temperature[0], loc=log_alpha_prime / self.temperature[0]
-        ).log_prob(logistic_z_prime)
+        ).log_prob(logistic_z_prime) if not self.eval else self.encode(s_1, a_1, r_1, s_2, l_2).log_prob(z_prime)
 
         if debug:
             tf.print(log_q_z_prime, "Log-logistic Q(z')")
 
-        # change label l'=1 to 100 and label l'=0 to -100 so that
-        # sigmoid(logistic_z'[l']) = 1 if l'=1 and sigmoid(logistic_z'[l']) = 0 if l'=0
-        logistic_label_prime = ((label_prime * 2) - 1) * 1e2
-        logistic_z_prime = tf.concat([logistic_z_prime, logistic_label_prime], axis=-1)
-
-        if debug:
-            tf.print(logistic_z_prime, "Logistic sampled z' with logistic labels")
-
-        # log logistic probability P(logistic_z'|z, a_1) -- prior distribution over z'
+        # log logistic probability P(logistic_z'|z, a_1)
+        # prior distribution over logistic z' ~ Logistic(temperature_1, transition_locations)
         log_p_z_prime = tfp.distributions.Logistic(
             scale=1 / self.temperature[1], loc=self.transition_network([z, a_1]) / self.temperature[1]
-        ).log_prob(logistic_z_prime)
+        ).log_prob(logistic_z_prime) if not self.eval else \
+            self.latent_transition_probability_distribution(z, a_1).log_prob(z_prime)
 
         if debug:
             tf.print(self.transition_network([z, a_1]), "log logistic locations P_transition")
@@ -292,14 +298,7 @@ class VariationalMarkovDecisionProcess(Model):
         log_p_reconstruction = state_distribution.log_prob(s_2)
 
         if debug:
-            tf.print(self.decode(z_prime).prob(s_2), "P(s' | z')")
             tf.print(log_p_reconstruction, "log P(s' | z')")
-
-        # the probability of encoding labels into z' is one
-        log_q_z_prime = tf.concat([log_q_z_prime, tf.zeros(shape=tf.shape(label_prime))], axis=-1)
-
-        if debug:
-            tf.print(log_q_z_prime, "Log Q(z')")
 
         kl_terms = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
 
@@ -310,16 +309,26 @@ class VariationalMarkovDecisionProcess(Model):
             'reconstruction_state_distribution': state_distribution,
             'reconstruction_reward_distribution': reward_distribution,
         }
-
         for observer in self._observers:
             observer(observables)
 
         return [log_p_reconstruction, log_p_rewards, kl_terms]
 
 
+def logistic_noise(shape: tf.TensorShape):
+    U = tf.random.uniform(shape=shape, minval=epsilon)
+    return tf.math.log(U) - tf.math.log(1 - U)
+
+
 @tf.function
-def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x):
+def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x, eval=False):
+    eval_flag = vae_mdp.eval
+    vae_mdp.eval = eval
+
     log_p_states, log_p_rewards, kl_terms = vae_mdp(x)
+
+    vae_mdp.eval = eval_flag
+
     return - tf.reduce_mean(
         log_p_states + log_p_rewards - kl_terms
     )
@@ -370,6 +379,10 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
           logs: bool = True,
           display_progressbar: bool = True,
           eval_ratio: float = 0.1):
+
+    assert 0 <= eval_ratio < 1
+    eval = False
+
     if (dataset is None and dataset_generator is None) or (dataset is not None and dataset_generator is not None):
         raise ValueError("Both a dataset and a dataset generator are passed, or neither.")
 
@@ -393,28 +406,50 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
     if global_step.numpy() != 0 and decay_period != 0:
         vae_mdp.decay_temperatures(global_step.numpy() // decay_period)
 
-    loss = tf.keras.metrics.Mean()
-    state_mse = tf.keras.metrics.Mean()
-    reward_mse = tf.keras.metrics.Mean()
-    kl_terms_mean = tf.keras.metrics.Mean()
-    mean_bits_used = tf.keras.metrics.Mean()
-    metrics = [loss, state_mse, reward_mse, kl_terms_mean, mean_bits_used]
-    vae_mdp.attach_observers(
-        [
-            lambda observables: state_mse(
-                tf.reduce_sum(tf.square(
-                    observables['reconstruction_state_distribution']
-                    .sample(sample_shape=tf.shape(observables['next_state'])) - observables['next_state']), axis=1)),
-            lambda observables: reward_mse(
-                tf.reduce_sum(tf.square(
-                    observables['reconstruction_reward_distribution']
-                    .sample(sample_shape=tf.shape(observables['reward'])) - observables['reward']), axis=1)),
-            lambda observables: kl_terms_mean(observables['kl_terms'])
-        ]
-    )
+    # Metrics
+    def initialize_metrics(group_name: str = ''):
+        return {
+            group_name + 'loss': tf.keras.metrics.Mean(),
+            group_name + 'state_mse': tf.keras.metrics.Mean(),
+            group_name + 'reward_mse': tf.keras.metrics.Mean(),
+            group_name + 'kl_terms': tf.keras.metrics.Mean(),
+            group_name + 'mean_bits_used': tf.keras.metrics.Mean()
+        }
+
+    metrics = initialize_metrics()
+    eval_metrics = initialize_metrics('eval_')
+    for metric, condition, flag in ((metrics, False, ''), (eval_metrics, True, 'eval_')):
+
+        def observe_state_reconstruction(observable, metric=metric, condition=condition, flag=flag):
+            if 'next_state' and 'reconstruction_state_distribution' in observable and eval is condition:
+                return metric[flag + 'state_mse'](
+                    tf.reduce_sum(tf.square(observable['reconstruction_state_distribution'].sample(
+                        sample_shape=tf.shape(observable['next_state'])) - observable['next_state']), axis=1))
+            else:
+                return None
+
+        def observe_reward_reconstruction(observable, metric=metric, condition=condition, flag=flag):
+            if 'reward' and 'reconstruction_reward_distribution' in observable and eval is condition:
+                return metric[flag + 'reward_mse'](
+                    tf.reduce_sum(tf.square(observable['reconstruction_reward_distribution'].sample(
+                        sample_shape=tf.shape(observable['reward'])) - observable['reward']), axis=1))
+            else:
+                return None
+
+        def observe_kl_terms(observable, metric=metric, condition=condition, flag=flag):
+            if 'kl_terms' in observable and eval is condition:
+                return metric[flag + 'kl_terms'](observable['kl_terms'])
+            else:
+                return None
+
+        vae_mdp.attach_observers([observe_state_reconstruction, observe_reward_reconstruction, observe_kl_terms])
 
     for epoch in range(epochs):
-        progressbar = Progbar(target=dataset_size,
+
+        dataset_train_size, dataset_test_size = (1 - eval_ratio) * dataset_size, eval_ratio * dataset_size \
+            if dataset_size is not None else (None, None)
+
+        progressbar = Progbar(target=dataset_train_size,
                               stateful_metrics=['ELBO', 'state_MSE',
                                                 'reward_MSE', 'KL_terms', 't1', 't2', 'bits_used'],
                               interval=0.1) if display_progressbar else None
@@ -424,28 +459,33 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         if dataset_generator is not None:
             dataset = dataset_generator()
 
-        for x in dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE).shuffle(51200):
+        for x in dataset.batch(batch_size, drop_remainder=True):
 
-            gradients = compute_apply_gradients(vae_mdp, x, optimizer)
-            loss(gradients)
-            mean_bits_used(mean_latent_bits_used(vae_mdp, x))
+            if not eval:
+                gradients = compute_apply_gradients(vae_mdp, x, optimizer)
+                metrics['loss'](gradients)
 
-            metrics_values = [('ELBO', - loss.result()),
-                              ('state_MSE', state_mse.result()),
-                              ('reward_MSE', reward_mse.result()),
-                              ('KL_terms', kl_terms_mean.result()),
-                              ('bits_used', mean_bits_used.result())]
+                metrics['mean_bits_used'](mean_latent_bits_used(vae_mdp, x))
 
-            if decay_period != 0:
-                metrics.append(('t_1', vae_mdp.temperature[0].numpy()))
-                metrics.append(('t_2', vae_mdp.temperature[1].numpy()))
+                metrics_values = [('ELBO', - metrics['loss'].result()),
+                                  ('state_MSE', metrics['state_mse'].result()),
+                                  ('reward_MSE', metrics['reward_mse'].result()),
+                                  ('KL_terms', metrics['kl_terms'].result()),
+                                  ('bits_used', metrics['mean_bits_used'].result())]
 
-            if dataset_size is not None and display_progressbar and \
-                    (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
-                progressbar.add(batch_size, values=metrics_values)
+                if decay_period != 0:
+                    metrics_values.append(('t_1', vae_mdp.temperature[0].numpy()))
+                    metrics_values.append(('t_2', vae_mdp.temperature[1].numpy()))
 
-            if decay_period != 0 and global_step.numpy() % decay_period == 0:
-                vae_mdp.decay_temperatures()
+                if dataset_size is not None and display_progressbar and \
+                        (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
+                    progressbar.add(batch_size, values=metrics_values)
+
+                if decay_period != 0 and global_step.numpy() % decay_period == 0:
+                    vae_mdp.decay_temperatures()
+
+            else:
+                compute_loss(vae_mdp, x, eval=True)
 
             if checkpoint is not None and manager is not None:
                 global_step.assign_add(1)
@@ -455,16 +495,27 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
                     manager.save()
                 if logs:
                     with train_summary_writer.as_default():
-                        for key, values in metrics_values:
+                        for key, values in metrics.items():
                             tf.summary.scalar(key, values, step=global_step.numpy())
 
-        tf.saved_model.save(vae_mdp,
-                            os.path.join(manager.directory,
-                                         os.pardir,
-                                         '{}_step{}_ELBO{}'.format(log_name, global_step.numpy(), - loss.result())))
+            eval = (global_step.numpy() - start_step) * batch_size // (epoch + 1) >= dataset_size * (1 - eval_ratio)
 
-        for metric in metrics:
+        tf.saved_model.save(
+            vae_mdp,
+            os.path.join(manager.directory, os.pardir,
+                         '{}_step{}_eval_ELBO{}'.format(log_name, global_step.numpy(),
+                                                        - eval_metrics['eval_loss'].result())))
+        print('\nEvaluation')
+        for metric in metrics.values():
             metric.reset_states()
+        for key, metric in eval_metrics.items():
+            print(key, metric.result())
+            metric.reset_states()
+
+        if epoch == 0:
+            dataset_size = (global_step.numpy() - start_step) * batch_size
+
+        eval = False
 
 
 def mean_latent_bits_used(vae_mdp: VariationalMarkovDecisionProcess, batch, eps=1e-3):
