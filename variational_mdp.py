@@ -40,7 +40,9 @@ class VariationalMarkovDecisionProcess(Model):
                  state_pre_processing_network: Model = None,
                  state_post_processing_network: Model = None,
                  pre_loaded_model: bool = False,
-                 debug: bool = False):
+                 debug: bool = False,
+                 regularizer_scale_factor: float = 1e2,
+                 regularizer_decay_rate: float = 0.3):
         super(VariationalMarkovDecisionProcess, self).__init__()
         self.temperature = [tf.cast(temperature_1, 'float32'), tf.cast(temperature_2, 'float32')]
         self.decay_temperature = [temperature_1_decay_rate, temperature_2_decay_rate]
@@ -50,6 +52,8 @@ class VariationalMarkovDecisionProcess(Model):
         self.latent_state_size = latent_state_size
         self.label_shape = label_shape
         self.mixture_components = mixture_components
+        self.regularizer_scale_factor = regularizer_scale_factor
+        self.regularizer_decay_rate = regularizer_decay_rate
 
         if not (len(state_shape) == len(action_shape) == len(reward_shape) == len(label_shape)):
             if state_pre_processing_network is None:
@@ -250,6 +254,7 @@ class VariationalMarkovDecisionProcess(Model):
             if self.decay_temperature[i] != 0:
                 self.temperature[i] = self.temperature[i] * (1 - self.decay_temperature[i]) if step == 0 \
                     else self.temperature[i] * (1 - self.decay_temperature[i]) ** step
+        self.regularizer_decay_rate *= (1 - self.regularizer_decay_rate)
 
     def call(self, inputs, training=None, mask=None):
         # inputs are assumed to have shape
@@ -272,7 +277,7 @@ class VariationalMarkovDecisionProcess(Model):
         log_q_z_prime = latent_distribution_prime.log_prob(z_prime)
 
         if debug:
-            tf.print(self.encoder_network([s_0, a_0, r_0, s_1, l_1]), "log locations of Q")
+            tf.print(self.encoder_network([s_1, a_1, r_1, s_2, l_2]), "log locations[:-1] of Q")
             tf.print(log_q_z_prime, "Log Q(logistic z'|s, a, r, s', l')")
 
         log_p_z_prime = \
@@ -284,6 +289,9 @@ class VariationalMarkovDecisionProcess(Model):
             tf.print(log_p_z_prime, "log P(logistic z'|z, a)")
 
         z_prime = tf.sigmoid(z_prime) if not self.eval else z_prime  # retrieve the binary concrete sample if not eval
+
+        if debug:
+            tf.print(z_prime, "sampled z'")
 
         # Normal log-probability P(r_1 | z, a_1, z')
         reward_distribution = self.reward_probability_distribution(z, a_1, z_prime)
@@ -304,8 +312,15 @@ class VariationalMarkovDecisionProcess(Model):
             tf.print(log_p_reconstruction, "log P(s' | z')")
 
         kl_terms = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
+
         if debug:
             tf.print(log_q_z_prime - log_p_z_prime, "log Q(z') - log P(z')")
+
+        log_alpha = self.encoder_network([s_1, a_1, r_1, s_2, l_2])
+        discrete_latent_distribution = tfd.Bernoulli(probs=tf.sigmoid(log_alpha))
+        uniform_distribution = tfd.Bernoulli(probs=0.5 * tf.ones(shape=tf.shape(log_alpha)))
+        cross_entropy_regularizer = self.regularizer_scale_factor * tf.reduce_sum(
+            uniform_distribution.kl_divergence(discrete_latent_distribution), axis=1)
 
         observables = {
             'next_state': s_2,
@@ -313,11 +328,12 @@ class VariationalMarkovDecisionProcess(Model):
             'kl_terms': kl_terms,
             'reconstruction_state_distribution': state_distribution,
             'reconstruction_reward_distribution': reward_distribution,
+            'regularizer': cross_entropy_regularizer
         }
         for observer in self._observers:
             observer(observables)
 
-        return [log_p_reconstruction, log_p_rewards, kl_terms]
+        return [log_p_reconstruction, log_p_rewards, kl_terms, cross_entropy_regularizer]
 
 
 @tf.function
@@ -325,12 +341,12 @@ def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x, eval=False):
     eval_flag = vae_mdp.eval
     vae_mdp.eval = eval
 
-    log_p_states, log_p_rewards, kl_terms = vae_mdp(x)
+    log_p_states, log_p_rewards, kl_terms, cross_entropy_regularizer = vae_mdp(x)
 
     vae_mdp.eval = eval_flag
 
     return - tf.reduce_mean(
-        log_p_states + log_p_rewards - kl_terms
+        log_p_states + log_p_rewards - kl_terms - cross_entropy_regularizer
     )
 
 
@@ -415,7 +431,8 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             group_name + 'state_mse': tf.keras.metrics.Mean(),
             group_name + 'reward_mse': tf.keras.metrics.Mean(),
             group_name + 'kl_terms': tf.keras.metrics.Mean(),
-            group_name + 'mean_bits_used': tf.keras.metrics.Mean()
+            group_name + 'mean_bits_used': tf.keras.metrics.Mean(),
+            group_name + 'regularizer': tf.keras.metrics.Mean()
         }
 
     metrics = initialize_metrics()
@@ -446,7 +463,15 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             else:
                 return None
 
-        vae_mdp.attach_observers([observe_state_reconstruction, observe_reward_reconstruction, observe_kl_terms])
+        def observe_regularization(observable, metric=metric, condition=condition, flag=flag):
+            if 'kl_terms' in observable and eval == condition:
+                return metric[flag + 'regularizer'](observable['regularizer'])
+            else:
+                return None
+
+        vae_mdp.attach_observers(
+            [observe_state_reconstruction, observe_reward_reconstruction, observe_kl_terms, observe_regularization]
+        )
 
     for epoch in range(epochs):
 
