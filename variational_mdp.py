@@ -9,6 +9,8 @@ from tensorflow.keras.models import clone_model
 from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense
 from tensorflow.keras.utils import Progbar
 
+tfd = tfp.distributions
+
 debug = False
 
 epsilon = 1e-12
@@ -161,73 +163,87 @@ class VariationalMarkovDecisionProcess(Model):
     def detach_observers(self):
         self._observers = []
 
-    @tf.function
-    def sample_logistic(self, temperature: float, log_alpha: tf.Tensor):
+    def binary_encode(
+            self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor
+    ) -> tfd.Distribution:
         """
-        Reparameterization trick for sampling binary concrete random variables.
-        The logistic random variable with location log_alpha is a binary concrete random variable before applying the
-        sigmoid function.
-        """
-        L = logistic_noise(shape=tf.shape(log_alpha))
-        return (L + log_alpha) / temperature
-
-    @tf.function
-    def sample_bernoulli(self, log_alpha: tf.Tensor):
-        L = logistic_noise(shape=tf.shape(log_alpha))
-        return tf.map_fn(lambda x: 1 if x + log_alpha >= 0 else 0, L)
-
-    def encode(self, state, action, reward, state_prime, label) -> tfp.distributions.Distribution:
-        """
-        Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states z
-        Note: the Bernoulli distribution is constructed via the Binary Concrete distribution learned by the encoder with
-              a temperature that converges to 0.
+        Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states z.
         """
         log_alpha = self.encoder_network([state, action, reward, state_prime, label])
-        return tfp.distributions.Bernoulli(probs=tf.concat([tf.sigmoid(log_alpha), label], axis=-1))
+        return tfd.Bernoulli(probs=tf.concat([tf.sigmoid(log_alpha), label], axis=-1))
 
-    def decode(self, latent_state) -> tfp.distributions.Distribution:
+    def relaxed_encoding(
+            self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor,
+            temperature: float) -> tfd.Distribution:
+        """
+        Encode the sample (s, a, r, l, s') into a into a Binary Concrete probability distribution over relaxed binary
+        latent states z.
+        Note: the Binary Concrete distribution is replaced by a Logistic distribution to avoid underflow issues:
+              z ~ BinaryConcrete(loc=alpha, temperature) = sigmoid(z_logistic)
+              with z_logistic ~ Logistic(loc=log alpha / temperature, scale=1. / temperature))
+        """
+        log_alpha = self.encoder_network([state, action, reward, state_prime, label])
+        # change label = 1 to 100 or label = 0 to -100 so that
+        # sigmoid(logistic_z[-1]) = 1 if label = 1 and sigmoid(logistic_z[-1]) = 0 if label = 0
+        logistic_label = (label * 2. - 1.) * 1e2
+        log_alpha = tf.concat([log_alpha, logistic_label * temperature], axis=-1)
+        return tfd.Logistic(loc=log_alpha / temperature, scale=1. / temperature)
+
+    def decode(self, latent_state: tf.Tensor) -> tfd.Distribution:
         """
         Decode a binary latent state into a probability distribution over original states of the MDP, modeled by a GMM
         """
         [reconstruction_mean, reconstruction_log_diag_covar, reconstruction_prior_components] = \
             self.reconstruction_network(latent_state)
         if self.mixture_components == 1:
-            return tfp.distributions.MultivariateNormalDiag(
+            return tfd.MultivariateNormalDiag(
                 loc=reconstruction_mean[0],
                 scale_diag=tf.exp(reconstruction_log_diag_covar[0]),
                 allow_nan_stats=(not self.debug),
                 validate_args=self.debug
             )
         else:
-            return tfp.distributions.MixtureSameFamily(
-                mixture_distribution=tfp.distributions.Categorical(probs=reconstruction_prior_components),
-                components_distribution=tfp.distributions.MultivariateNormalDiag(
+            return tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(probs=reconstruction_prior_components),
+                components_distribution=tfd.MultivariateNormalDiag(
                     loc=reconstruction_mean,
                     scale_diag=tf.exp(reconstruction_log_diag_covar),
                     allow_nan_stats=(not self.debug)),
                 validate_args=self.debug)
 
-    def latent_transition_probability_distribution(self, latent_state, action) -> tfp.distributions.Distribution:
+    def discrete_latent_transition_probability_distribution(
+            self, latent_state: tf.Tensor, action: tf.Tensor
+    ) -> tfd.Distribution:
         """
-        Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states z', given a binary
-        latent state z and action a.
-        Note: the Bernoulli distribution is constructed via the Binary Concrete distribution learned by the encoder with
-              a temperature that converges to 0.
+        Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states z', given a binary latent
+        state z and action a.
         """
         log_alpha = self.transition_network([latent_state, action])
-        return tfp.distributions.Bernoulli(probs=(tf.sigmoid(log_alpha)))
+        return tfd.Bernoulli(probs=(tf.sigmoid(log_alpha)))
 
-    def reward_probability_distribution(self, latent_state, action, next_latent_state) \
-            -> tfp.distributions.Distribution:
+    def relaxed_latent_transition_probability_distribution(
+            self, latent_state: tf.Tensor, action: tf.Tensor, temperature: float
+    ) -> tfd.Distribution:
+        """
+        Retrieves a Binary Concrete probability distribution P(z'|z, a) over successor latent states z', given a binary
+        latent state z and action a.
+        Note: the Binary Concrete distribution is replaced by a Logistic distribution to avoid underflow issues:
+              z ~ BinaryConcrete(loc=alpha, temperature) = sigmoid(z_logistic)
+              with z_logistic ~ Logistic(loc=log alpha / temperature, scale=1. / temperature))
+        """
+        log_alpha = self.transition_network([latent_state, action])
+        return tfd.Logistic(loc=log_alpha / temperature, scale=1. / temperature)
+
+    def reward_probability_distribution(self, latent_state, action, next_latent_state) -> tfd.Distribution:
         """
         Retrieves a probability distribution P(r|z, a, z') over rewards obtained when the latent transition z -> z' is
         encountered when action a is chosen
         """
         [reward_mean, reward_log_diag_covar] = self.reward_network([latent_state, action, next_latent_state])
-        return tfp.distributions.MultivariateNormalDiag(loc=reward_mean,
-                                                        scale_diag=tf.math.exp(reward_log_diag_covar),
-                                                        allow_nan_stats=(not self.debug),
-                                                        validate_args=self.debug)
+        return tfd.MultivariateNormalDiag(loc=reward_mean,
+                                          scale_diag=tf.math.exp(reward_log_diag_covar),
+                                          allow_nan_stats=(not self.debug),
+                                          validate_args=self.debug)
 
     def decay_temperatures(self, step: int = 0):
         for i in (0, 1):
@@ -241,49 +257,33 @@ class VariationalMarkovDecisionProcess(Model):
         s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
         s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
 
-        log_alpha = self.encoder_network([s_0, a_0, r_0, s_1, l_1])
-        log_alpha_prime = self.encoder_network([s_1, a_1, r_1, s_2, l_2])
+        latent_distribution = self.relaxed_encoding(s_0, a_0, r_0, s_1, l_1, self.temperature[0]) \
+            if not self.eval else self.binary_encode(s_0, a_0, r_0, s_1, l_1)
+        latent_distribution_prime = self.relaxed_encoding(s_1, a_1, r_1, s_2, l_2, self.temperature[0]) \
+            if not self.eval else self.binary_encode(s_1, a_1, r_1, s_2, l_2)
 
-        # z ~ BinConcrete(temperature, alpha) = sigmoid(z ~ Logistic(temperature, log alpha))
-        logistic_z = self.sample_logistic(self.temperature[0], log_alpha)
-        logistic_z_prime = self.sample_logistic(self.temperature[0], log_alpha_prime)
-        z = tf.concat([tf.sigmoid(logistic_z), l_1], axis=-1) if not self.eval else \
-            tf.concat([self.sample_bernoulli(log_alpha), l_1], axis=-1)
-        z_prime = tf.concat([tf.sigmoid(logistic_z_prime), l_2], axis=-1) if not self.eval else \
-            tf.concat([self.sample_bernoulli(log_alpha_prime), l_2], axis=-1)
-
-        # change label l_2=1 to 100 or label l_2=0 to -100 so that
-        # sigmoid(logistic_z'[-1]) = 1 if l_2=1 and sigmoid(logistic_z'[-1]) = 0 if l_2=0
-        logistic_l_2 = ((l_2 * 2) - 1) * 1e2
-        logistic_z_prime = tf.concat([logistic_z_prime, logistic_l_2], axis=-1)
-        log_alpha_prime = tf.concat([log_alpha_prime, logistic_l_2 * self.temperature[0]], axis=-1)
+        z = tf.sigmoid(latent_distribution.sample()) if not self.eval else latent_distribution.sample()
+        z_prime = latent_distribution_prime.sample()  # logistic sample if not eval
 
         if debug:
-            tf.print(logistic_z, "sampled logistic z")
-            tf.print(logistic_z_prime, "sampled logistic z'")
             tf.print(z, "sampled z")
-            tf.print(z_prime, "sampled z'")
+            tf.print(z_prime, "sampled (logistic) z'")
 
-        # log logistic probability Q(logistic_z'|s_1, a_1, r_1, s_2, l_2),
-        # with logistic_z' ~ Logistic(temperature_0, log alpha')
-        log_q_z_prime = tfp.distributions.Logistic(
-            scale=1 / self.temperature[0], loc=log_alpha_prime / self.temperature[0]
-        ).log_prob(logistic_z_prime) if not self.eval else self.encode(s_1, a_1, r_1, s_2, l_2).log_prob(z_prime)
+        log_q_z_prime = latent_distribution_prime.log_prob(z_prime)
 
         if debug:
-            tf.print(log_alpha_prime, "log-locations Q")
+            tf.print(self.encoder_network([s_0, a_0, r_0, s_1, l_1]), "log locations of Q")
             tf.print(log_q_z_prime, "Log Q(logistic z'|s, a, r, s', l')")
 
-        # log logistic probability P(logistic_z'|z, a_1)
-        # prior distribution over logistic z' ~ Logistic(temperature_1, transition_locations)
-        log_p_z_prime = tfp.distributions.Logistic(
-            scale=1 / self.temperature[1], loc=self.transition_network([z, a_1]) / self.temperature[1]
-        ).log_prob(logistic_z_prime) if not self.eval else \
-            self.latent_transition_probability_distribution(z, a_1).log_prob(z_prime)
+        log_p_z_prime = \
+            self.relaxed_latent_transition_probability_distribution(z, a_1, self.temperature[1]).log_prob(z_prime) \
+                if not self.eval else self.discrete_latent_transition_probability_distribution(z, a_1).log_prob(z_prime)
 
         if debug:
             tf.print(self.transition_network([z, a_1]), "log-locations P_transition")
             tf.print(log_p_z_prime, "log P(logistic z'|z, a)")
+
+        z_prime = tf.sigmoid(z_prime) if not self.eval else z_prime  # retrieve the binary concrete sample if not eval
 
         # Normal log-probability P(r_1 | z, a_1, z')
         reward_distribution = self.reward_probability_distribution(z, a_1, z_prime)
@@ -297,7 +297,7 @@ class VariationalMarkovDecisionProcess(Model):
         log_p_reconstruction = state_distribution.log_prob(s_2)
 
         if debug:
-            [reconstruction_mean, reconstruction_log_diag_covar, reconstruction_prior_components] = \
+            [reconstruction_mean, _, reconstruction_prior_components] = \
                 self.reconstruction_network(z_prime)
             tf.print(reconstruction_mean, 'mean(s | z)')
             tf.print(reconstruction_prior_components, 'GMM: prior components')
@@ -305,7 +305,7 @@ class VariationalMarkovDecisionProcess(Model):
 
         kl_terms = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
         if debug:
-            tf.print(log_q_z_prime - log_p_z_prime, "Q(z') - P(z')")
+            tf.print(log_q_z_prime - log_p_z_prime, "log Q(z') - log P(z')")
 
         observables = {
             'next_state': s_2,
@@ -318,11 +318,6 @@ class VariationalMarkovDecisionProcess(Model):
             observer(observables)
 
         return [log_p_reconstruction, log_p_rewards, kl_terms]
-
-
-def logistic_noise(shape: tf.TensorShape):
-    U = tf.random.uniform(shape=shape, minval=epsilon)
-    return tf.math.log(U) - tf.math.log(1 - U)
 
 
 @tf.function
@@ -430,7 +425,9 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         def observe_state_reconstruction(observable, metric=metric, condition=condition, flag=flag):
             if 'next_state' and 'reconstruction_state_distribution' in observable and eval == condition:
                 return metric[flag + 'state_mse'](
-                    tf.reduce_mean(tf.square(
+                    tf.reduce_sum(tf.square(
+                        # Note: we pick the mean here due to the need of resources for sampling from a GMM with a large
+                        # number of components
                         observable['reconstruction_state_distribution'].mean() - observable['next_state']), axis=1))
             else:
                 return None
@@ -438,7 +435,7 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         def observe_reward_reconstruction(observable, metric=metric, condition=condition, flag=flag):
             if 'reward' and 'reconstruction_reward_distribution' in observable and eval == condition:
                 return metric[flag + 'reward_mse'](
-                    tf.reduce_mean(tf.square(
+                    tf.reduce_sum(tf.square(
                         observable['reconstruction_reward_distribution'].mean() - observable['reward']), axis=1))
             else:
                 return None
@@ -467,7 +464,6 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
 
         for x in dataset.batch(batch_size, drop_remainder=True):
             eval = global_step.numpy() * batch_size // (epoch + 1) >= dataset_size * (1 - eval_ratio)
-
             if not eval:
                 gradients = compute_apply_gradients(vae_mdp, x, optimizer)
                 metrics['loss'](gradients)
@@ -525,13 +521,13 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
 
 def mean_latent_bits_used(vae_mdp: VariationalMarkovDecisionProcess, batch, eps=1e-3):
     """
-    Compute the mean number of bits used in the latent space for the given dataset batch.
+    Compute the mean number of bits used in the latent space of the vae_mdp for the given dataset batch.
     This allows monitoring if the latent space is effectively used by the VAE or if posterior collapse happens.
     """
     mean_bits_used = 0
     for i in (0, 1):
         s, a, r, s_prime, l_prime = (x[:, i, :] for x in batch)
-        mean = tf.reduce_mean(vae_mdp.encode(s, a, r, s_prime, l_prime).mean(), axis=0)
+        mean = tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).mean(), axis=0)
         check = lambda x: 1 if 1 - eps > x > eps else 0
         mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
     return mean_bits_used / 2
