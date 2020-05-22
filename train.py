@@ -63,8 +63,9 @@ if __name__ == '__main__':
         state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
         encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
         latent_state_size=latent_state_size, mixture_components=num_of_gaussian_posteriors,
-        temperature_1=0.99, temperature_2=0.95, temperature_1_decay_rate=5e-3, temperature_2_decay_rate=1e-3,
-        debug=False, regularizer_scale_factor=100.)
+        encoder_temperature=0.99, prior_temperature=0.95,
+        encoder_temperature_decay_rate=3e-3, prior_temperature_decay_rate=5e-3,
+        regularizer_scale_factor=100., regularizer_decay_rate=1./3)
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 
@@ -75,4 +76,5 @@ if __name__ == '__main__':
 
     variational_mdp.train(vae_mdp_model, dataset_generator=generate_dataset,
                           batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint, manager=manager,
-                          dataset_size=dataset_size, decay_period=int(5e3), log_name=vae_name, logs=True)
+                          dataset_size=dataset_size, annealing_period=int(5e3), start_annealing_step=int(2e4),
+                          log_name=vae_name, logs=True)
