@@ -10,9 +10,10 @@ if __name__ == '__main__':
     dataset_path = '/home/florent/Documents/hpc-cluster/dataset/reinforcement_learning'
     # dataset_path = 'reinforcement_learning/dataset/reinforcement_learning'
     batch_size = 128
-    num_of_gaussian_posteriors = 64
+    num_of_gaussian_posteriors = 16
     latent_state_size = 16 + 1  # depends on the number of bits reserved for labels
-    vae_name = 'TESTING_vae_latent{}_annealing'.format(latent_state_size)
+    vae_name = 'vae_{}cross_entropy_regularization_annealing_mixture_components{}'.format(latent_state_size,
+                                                                                          num_of_gaussian_posteriors)
     cycle_length = 8
     block_length = batch_size // cycle_length
     activation = tf.nn.leaky_relu
@@ -64,17 +65,17 @@ if __name__ == '__main__':
         encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
         latent_state_size=latent_state_size, mixture_components=num_of_gaussian_posteriors,
         encoder_temperature=0.99, prior_temperature=0.95,
-        encoder_temperature_decay_rate=3e-3, prior_temperature_decay_rate=5e-3,
-        regularizer_scale_factor=100., regularizer_decay_rate=1./3)
+        encoder_temperature_decay_rate=1e-6, prior_temperature_decay_rate=2e-6,
+        regularizer_scale_factor=100., regularizer_decay_rate=3e-5)
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 
     step = tf.compat.v1.train.get_or_create_global_step()
-    checkpoint_directory = "saves/{}_{}gp/training_checkpoints".format(vae_name, num_of_gaussian_posteriors)
+    checkpoint_directory = "saves/{}/training_checkpoints".format(vae_name)
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
     manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
 
     variational_mdp.train(vae_mdp_model, dataset_generator=generate_dataset,
                           batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint, manager=manager,
-                          dataset_size=dataset_size, annealing_period=int(5e3), start_annealing_step=int(2e4),
+                          dataset_size=dataset_size, annealing_period=1, start_annealing_step=10000,
                           log_name=vae_name, logs=True)
