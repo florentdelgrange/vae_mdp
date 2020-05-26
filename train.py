@@ -97,8 +97,10 @@ def main(argv):
     batch_size = params['batch_size']
     mixture_components = params['mixture_components']
     latent_state_size = params['latent_size']  # depends on the number of bits reserved for labels
-    vae_name = 'vae_entropyloss_{}cross_entropy_regularization_annealing_mixture_components{}'.format(
-        latent_state_size, mixture_components)
+    vae_name = 'vae_LS{}_MC{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}'.format(
+        latent_state_size, mixture_components, params['regularizer_scale_factor'], params['kl_annealing_scale_factor'],
+        params['encoder_temperature'], params['prior_temperature'],
+        params['encoder_temperature_decay_rate'], params['prior_temperature_decay_rate'])
     cycle_length = 8
     block_length = batch_size // cycle_length
     activation = getattr(tf.nn, params["activation"])
