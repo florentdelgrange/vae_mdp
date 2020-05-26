@@ -459,13 +459,13 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             metrics_key_values = [('step', global_step.numpy()), ('loss', loss.numpy())] + \
                                  [(key, value.result()) for key, value in vae_mdp.loss_metrics.items()] + \
                                  [('mean_bits_used', mean_latent_bits_used(vae_mdp, x))]
+            if annealing_period != 0:
+                metrics_key_values.append(('t_1', vae_mdp.temperatures[0].numpy()))
+                metrics_key_values.append(('t_2', vae_mdp.temperatures[1].numpy()))
+                metrics_key_values.append(('regularizer_scale_factor', vae_mdp.regularizer_scale_factor))
+                metrics_key_values.append(('kl_annealing_scale_factor', vae_mdp.kl_annealing_scale_factor))
             if dataset_size is not None and display_progressbar and \
                     (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
-                if annealing_period != 0:
-                    metrics_key_values.append(('t_1', vae_mdp.temperatures[0].numpy()))
-                    metrics_key_values.append(('t_2', vae_mdp.temperatures[1].numpy()))
-                    metrics_key_values.append(('regularizer_scale_factor', vae_mdp.regularizer_scale_factor))
-                    metrics_key_values.append(('kl_annealing_scale_factor', vae_mdp.kl_annealing_scale_factor))
                 progressbar.add(batch_size, values=metrics_key_values)
 
             # update step
