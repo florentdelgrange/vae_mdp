@@ -13,11 +13,9 @@ tfd = tfp.distributions
 
 debug = False
 
-epsilon = 1e-12
+epsilon = 1e-6
 max_val = 1e9
 min_val = -1e9
-max_log_val = np.log(1e9)
-min_log_val = np.log(epsilon)
 
 
 class VariationalMarkovDecisionProcess(Model):
@@ -37,6 +35,8 @@ class VariationalMarkovDecisionProcess(Model):
                  prior_temperature_decay_rate: float = 0,
                  regularizer_scale_factor: float = 1e2,
                  regularizer_decay_rate: float = 0.3,
+                 kl_annealing_scale_factor: float = 1.,
+                 kl_annealing_growth_rate: float = 0.,
                  mixture_components: int = 3,
                  action_pre_processing_network: Model = None,
                  state_pre_processing_network: Model = None,
@@ -45,7 +45,8 @@ class VariationalMarkovDecisionProcess(Model):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
         self.temperatures = [tf.cast(encoder_temperature, tf.float32), tf.cast(prior_temperature, tf.float32)]
-        self.decay_rates = [encoder_temperature_decay_rate, prior_temperature_decay_rate, regularizer_decay_rate]
+        self.decay_rates = [encoder_temperature_decay_rate, prior_temperature_decay_rate,
+                            regularizer_decay_rate, kl_annealing_growth_rate]
         self.state_shape = state_shape
         self.action_shape = action_shape
         self.reward_shape = reward_shape
@@ -53,6 +54,7 @@ class VariationalMarkovDecisionProcess(Model):
         self.label_shape = label_shape
         self.mixture_components = mixture_components
         self.regularizer_scale_factor = regularizer_scale_factor
+        self._kl_annealing_scale_factor = 1. - kl_annealing_scale_factor
 
         if not (len(state_shape) == len(action_shape) == len(reward_shape) == len(label_shape)):
             if state_pre_processing_network is None:
@@ -153,7 +155,9 @@ class VariationalMarkovDecisionProcess(Model):
             'state_mse': tf.keras.metrics.MeanSquaredError(name='state_mse'),
             'reward_mse': tf.keras.metrics.MeanSquaredError('reward_mse'),
             'kl_terms': tf.keras.metrics.Mean('kl_terms'),
-            'regularizer': tf.keras.metrics.Mean('regularizer')
+            'annealed_kl_terms': tf.keras.metrics.Mean('annealed_kl_terms'),
+            'cross_entropy_regularizer': tf.keras.metrics.Mean('cross_entropy_regularizer'),
+            'encoder_entropy': tf.keras.metrics.Mean('entropy')
         }
 
         vae_input = [Input(shape=(2,) + self.state_shape, name="incident_states"),
@@ -167,6 +171,10 @@ class VariationalMarkovDecisionProcess(Model):
         for value in self.loss_metrics.values():
             value.reset_states()
         #  super().reset_metrics()
+
+    @property
+    def kl_annealing_scale_factor(self):
+        return 1. - self._kl_annealing_scale_factor
 
     def binary_encode(
             self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor
@@ -247,13 +255,15 @@ class VariationalMarkovDecisionProcess(Model):
                                           scale_diag=tf.math.exp(reward_log_diag_covar))
 
     def anneal(self, steps: int = 0):
-        for i in range(3):
+        for i in range(4):
             if self.decay_rates[i] != 0:
-                decay = 1 - self.decay_rates[i] if steps == 0 else (1 - self.decay_rates[i]) ** steps
+                decay = 1. - self.decay_rates[i] if steps == 0 else (1. - self.decay_rates[i]) ** steps
                 if i in (0, 1):
                     self.temperatures[i] *= decay
+                elif i == 2:
+                    self.regularizer_scale_factor *= decay if self.regularizer_scale_factor > epsilon else 0.
                 else:
-                    self.regularizer_scale_factor *= decay if self.regularizer_scale_factor > 1e-6 else 0.
+                    self._kl_annealing_scale_factor *= decay if self._kl_annealing_scale_factor > epsilon else 0.
 
     def call(self, inputs, training=None, mask=None):
         # inputs are assumed to have shape
@@ -313,6 +323,8 @@ class VariationalMarkovDecisionProcess(Model):
         if debug:
             tf.print(log_q_z_prime - log_p_z_prime, "log Q(z') - log P(z')")
 
+        q_entropy = tf.reduce_sum(latent_distribution_prime.entropy(), axis=1)
+
         # cross-entropy regularization
         log_alpha = self.encoder_network([s_1, a_1, r_1, s_2])
         discrete_latent_distribution = tfd.Bernoulli(probs=tf.sigmoid(log_alpha))
@@ -325,16 +337,22 @@ class VariationalMarkovDecisionProcess(Model):
         self.loss_metrics['state_mse'](s_2, state_distribution.sample())
         self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
         self.loss_metrics['kl_terms'](kl_terms)
-        self.loss_metrics['regularizer'](cross_entropy_regularizer)
+        self.loss_metrics['annealed_kl_terms'](self.kl_annealing_scale_factor * kl_terms)
+        self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
+        self.loss_metrics['encoder_entropy'](q_entropy)
 
-        return [log_p_reconstruction, log_p_rewards, kl_terms, cross_entropy_regularizer]
+        log_p_transition = tf.reduce_sum(log_p_z_prime, axis=1)
+        return [log_p_reconstruction, log_p_rewards, log_p_transition, kl_terms, q_entropy, cross_entropy_regularizer]
 
 
 @tf.function
 def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x):
-    log_p_states, log_p_rewards, kl_terms, cross_entropy_regularizer = vae_mdp(x)
+    log_p_states, log_p_rewards, log_p_transition, kl_terms, q_entropy, cross_entropy_regularizer = \
+        vae_mdp(x)
     return - tf.reduce_mean(
-        log_p_states + log_p_rewards - kl_terms - vae_mdp.regularizer_scale_factor * cross_entropy_regularizer
+        log_p_states + log_p_rewards +
+        vae_mdp.kl_annealing_scale_factor * (log_p_transition - q_entropy) -
+        vae_mdp.regularizer_scale_factor * cross_entropy_regularizer
     )
 
 
@@ -359,7 +377,7 @@ def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
         tuple(model.encoder_network.input[0].shape.as_list()[1:]),
         tuple(model.encoder_network.input[1].shape.as_list()[1:]),
         tuple(model.encoder_network.input[2].shape.as_list()[1:]),
-        (label_shape, ),
+        (label_shape,),
         model.encoder_network,
         model.transition_network,
         model.reward_network,
@@ -378,13 +396,15 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
           checkpoint: Optional[tf.train.Checkpoint] = None,
           manager: Optional[tf.train.CheckpointManager] = None,
           log_interval: int = 80,
+          save_model_interval: int = 12800,
           dataset_size: Optional[int] = None,
           log_name: str = 'vae',
           annealing_period: int = 0,
           start_annealing_step: int = 0,
           logs: bool = True,
           display_progressbar: bool = True,
-          eval_ratio: float = 0.1):
+          eval_ratio: float = 0.05,
+          max_steps: int = int(7.5e5)):
     assert 0 < eval_ratio < 1
 
     if (dataset is None and dataset_generator is None) or (dataset is not None and dataset_generator is not None):
@@ -413,14 +433,14 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
     if 0 < start_annealing_step < global_step.numpy() and annealing_period != 0:
         vae_mdp.anneal(steps=(global_step.numpy() - start_annealing_step) // annealing_period)
 
-    loss = tf.metrics.Mean()
     vae_mdp.reset_metrics()
 
     # start training
     for epoch in range(epochs):
         progressbar = Progbar(
             target=dataset_size,
-            stateful_metrics=['loss'] + list(vae_mdp.loss_metrics.keys()) + ['t_1', 't_2', 'regularizer_scale_factor', 'step'],
+            stateful_metrics=list(vae_mdp.loss_metrics.keys()) + ['t_1', 't_2', 'regularizer_scale_factor',
+                                                                  'step'],
             interval=0.1) if display_progressbar else None
         print("Epoch: {}/{}".format(epoch + 1, epochs))
 
@@ -429,14 +449,14 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
 
         for x in dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE):
             gradients = compute_apply_gradients(vae_mdp, x, optimizer)
-            loss(gradients)
+            loss = gradients
 
             if annealing_period > 0 and \
                     global_step.numpy() % annealing_period == 0 and global_step.numpy() > start_annealing_step:
                 vae_mdp.anneal()
 
             # update progressbar
-            metrics_key_values = [('step', global_step.numpy()), ('loss', loss.result())] + \
+            metrics_key_values = [('step', global_step.numpy()), ('loss', loss.numpy())] + \
                                  [(key, value.result()) for key, value in vae_mdp.loss_metrics.items()] + \
                                  [('mean_bits_used', mean_latent_bits_used(vae_mdp, x))]
             if dataset_size is not None and display_progressbar and \
@@ -445,11 +465,11 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
                     metrics_key_values.append(('t_1', vae_mdp.temperatures[0].numpy()))
                     metrics_key_values.append(('t_2', vae_mdp.temperatures[1].numpy()))
                     metrics_key_values.append(('regularizer_scale_factor', vae_mdp.regularizer_scale_factor))
+                    metrics_key_values.append(('kl_annealing_scale_factor', vae_mdp.kl_annealing_scale_factor))
                 progressbar.add(batch_size, values=metrics_key_values)
 
             # update step
-            if checkpoint is not None and manager:
-                global_step.assign_add(1)
+            global_step.assign_add(1)
 
             # log and save
             if global_step.numpy() % log_interval == 0:
@@ -459,6 +479,13 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
                     with train_summary_writer.as_default():
                         for key, value in metrics_key_values:
                             tf.summary.scalar(key, value, step=global_step.numpy())
+            if manager is not None and global_step.numpy() % save_model_interval == 0:
+                model_name = '{}_step{}_elbo{}'.format(log_name, global_step.numpy(),
+                                                       vae_mdp.loss_metrics['ELBO'].result())
+                tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
+
+            if global_step.numpy() > max_steps:
+                break
 
         # reset metrics
         vae_mdp.reset_metrics()
@@ -466,17 +493,21 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         # display and reset metrics states
         print('\nEvaluation')
         eval_set = iter(dataset.batch(dataset_size * eval_ratio)) if dataset_generator is None else \
-            dataset_generator().batch(dataset_size * eval_ratio)
+            dataset_generator().batch(int(dataset_size * eval_ratio))
         eval_elbo = eval(vae_mdp, eval_set).numpy()
         print('eval ELBO: ', eval_elbo)
 
         # Save model
-        model_name = '{}_step{}_eval_elbo{}'.format(log_name, global_step.numpy(), eval_elbo.numpy())
-        tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
+        if manager is not None:
+            model_name = '{}_step{}_eval_elbo{}'.format(log_name, global_step.numpy(), eval_elbo.numpy())
+            tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
 
         # retrieve the real dataset size
         if epoch == 0:
             dataset_size = (global_step.numpy() - start_step) * batch_size
+
+        if global_step.numpy() > max_steps:
+            return
 
 
 def eval(vae_mdp: VariationalMarkovDecisionProcess, inputs):
@@ -489,6 +520,7 @@ def eval(vae_mdp: VariationalMarkovDecisionProcess, inputs):
     z_prime = latent_distribution_prime.sample()
 
     transition_distribution = vae_mdp.discrete_latent_transition_probability_distribution(z_prime, a_1)
+    log_p_transition = tf.reduce_sum(transition_distribution.log_prob(z_prime), axis=1)
 
     reward_distribution = vae_mdp.reward_probability_distribution(z, a_1, z_prime)
     log_p_rewards = reward_distribution.log_prob(r_1)
@@ -496,9 +528,10 @@ def eval(vae_mdp: VariationalMarkovDecisionProcess, inputs):
     state_distribution = vae_mdp.decode(z_prime)
     log_p_reconstruction = state_distribution.log_prob(s_2)
 
-    kl_terms = tf.reduce_sum(latent_distribution_prime.kl_divergence(transition_distribution), axis=1)
+    # kl_terms = tf.reduce_sum(latent_distribution_prime.kl_divergence(transition_distribution), axis=1)
+    q_entropy = tf.reduce_sum(latent_distribution_prime.entropy(), axis=1)
 
-    return tf.reduce_mean(log_p_reconstruction + log_p_rewards - kl_terms)
+    return tf.reduce_mean(log_p_reconstruction + log_p_rewards + log_p_transition - q_entropy)
 
 
 def mean_latent_bits_used(vae_mdp: VariationalMarkovDecisionProcess, batch, eps=1e-3):
