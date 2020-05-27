@@ -400,7 +400,8 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
           logs: bool = True,
           display_progressbar: bool = True,
           eval_ratio: float = 0.05,
-          max_steps: int = int(7.5e5)):
+          max_steps: int = int(7.5e5),
+          save_directory='.'):
     assert 0 < eval_ratio < 1
 
     if (dataset is None and dataset_generator is None) or (dataset is not None and dataset_generator is not None):
@@ -469,10 +470,9 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             if global_step.numpy() % save_model_interval == 0:
                 model_name = '{}_step{}_elbo{}'.format(log_name, global_step.numpy(),
                                                        vae_mdp.loss_metrics['ELBO'].result())
-                if manager is not None:
-                    tf.debugging.disable_check_numerics()
-                    tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
-                    tf.debugging.enable_check_numerics()
+                tf.debugging.disable_check_numerics()
+                tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
+                tf.debugging.enable_check_numerics()
             if global_step.numpy() % log_interval == 0:
                 if manager is not None:
                     manager.save()
@@ -490,15 +490,14 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         vae_mdp.reset_metrics()
 
         # evaluate and save the model
-        tf.debugging.disable_check_numerics()
         print('\nEvaluation')
         eval_set = iter(dataset.batch(dataset_size * eval_ratio)) if dataset_generator is None else \
             dataset_generator().batch(int(dataset_size * eval_ratio))
         eval_elbo = eval(vae_mdp, next(eval_set)).numpy()
         print('eval ELBO: ', eval_elbo)
-        if manager is not None:
-            model_name = '{}_step{}_eval_elbo{}'.format(log_name, global_step.numpy(), eval_elbo.numpy())
-            tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
+        model_name = '{}_step{}_eval_elbo{}'.format(log_name, global_step.numpy(), eval_elbo.numpy())
+        tf.debugging.disable_check_numerics()
+        tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
         tf.debugging.enable_check_numerics()
 
         # retrieve the real dataset size

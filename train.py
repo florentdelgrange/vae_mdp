@@ -171,7 +171,8 @@ def main(argv):
                           dataset_size=dataset_size, annealing_period=1,
                           start_annealing_step=params['start_annealing_step'],
                           log_name=vae_name, logs=True, max_steps=params['max_steps'],
-                          display_progressbar=params['display_progressbar'])
+                          display_progressbar=params['display_progressbar'],
+                          save_directory=params['save_dir'])
 
 
 if __name__ == '__main__':
