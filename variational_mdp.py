@@ -169,15 +169,6 @@ class VariationalMarkovDecisionProcess(Model):
     def kl_annealing_scale_factor(self):
         return 1. - self._kl_annealing_scale_factor
 
-    def binary_encode(
-            self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor
-    ) -> tfd.Distribution:
-        """
-        Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states z.
-        """
-        log_alpha = self.encoder_network([state, action, reward, state_prime])
-        return tfd.Bernoulli(probs=tf.concat([tf.sigmoid(log_alpha), label], axis=-1), allow_nan_stats=False)
-
     def relaxed_encoding(
             self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor,
             temperature: float) -> tfd.Distribution:
@@ -194,6 +185,15 @@ class VariationalMarkovDecisionProcess(Model):
         logistic_label = (label * 2. - 1.) * 1e2
         log_alpha = tf.concat([log_alpha, logistic_label * temperature], axis=-1)
         return tfd.Logistic(loc=log_alpha / temperature, scale=1. / temperature, allow_nan_stats=False)
+
+    def binary_encode(
+            self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor
+    ) -> tfd.Distribution:
+        """
+        Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states z.
+        """
+        log_alpha = self.encoder_network([state, action, reward, state_prime])
+        return tfd.Bernoulli(logits=tf.concat([log_alpha, (label * 2. - 1.) * 1e2], axis=-1), allow_nan_stats=False)
 
     def decode(self, latent_state: tf.Tensor) -> tfd.Distribution:
         """
@@ -217,16 +217,6 @@ class VariationalMarkovDecisionProcess(Model):
                 ), allow_nan_stats=False
             )
 
-    def discrete_latent_transition_probability_distribution(
-            self, latent_state: tf.Tensor, action: tf.Tensor
-    ) -> tfd.Distribution:
-        """
-        Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states z', given a binary latent
-        state z and action a.
-        """
-        log_alpha = self.transition_network([latent_state, action])
-        return tfd.Bernoulli(probs=(tf.sigmoid(log_alpha)), allow_nan_stats=False)
-
     def relaxed_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, action: tf.Tensor, temperature: float
     ) -> tfd.Distribution:
@@ -239,6 +229,16 @@ class VariationalMarkovDecisionProcess(Model):
         """
         log_alpha = self.transition_network([latent_state, action])
         return tfd.Logistic(loc=log_alpha / temperature, scale=1. / temperature, allow_nan_stats=False)
+
+    def discrete_latent_transition_probability_distribution(
+            self, latent_state: tf.Tensor, action: tf.Tensor
+    ) -> tfd.Distribution:
+        """
+        Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states z', given a binary latent
+        state z and action a.
+        """
+        log_alpha = self.transition_network([latent_state, action])
+        return tfd.Bernoulli(logits=log_alpha, allow_nan_stats=False)
 
     def reward_probability_distribution(self, latent_state, action, next_latent_state) -> tfd.Distribution:
         """
@@ -286,7 +286,6 @@ class VariationalMarkovDecisionProcess(Model):
         log_p_z_prime = self.relaxed_latent_transition_probability_distribution(
             z, a_1, self.temperatures[1]
         ).log_prob(logistic_z_prime)
-        # log_p_transition = tf.reduce_sum(log_p_z_prime, axis=1)
 
         if debug:
             tf.print(self.transition_network([z, a_1]), "log-locations P_transition")
@@ -325,7 +324,7 @@ class VariationalMarkovDecisionProcess(Model):
         # cross-entropy regularization
         if self.regularizer_scale_factor > 0:
             log_alpha = self.encoder_network([s_1, a_1, r_1, s_2])
-            discrete_latent_distribution = tfd.Bernoulli(probs=tf.sigmoid(log_alpha))
+            discrete_latent_distribution = tfd.Bernoulli(logits=log_alpha)
             uniform_distribution = tfd.Bernoulli(probs=0.5 * tf.ones(shape=tf.shape(log_alpha)))
             cross_entropy_regularizer = tf.reduce_sum(
                 uniform_distribution.kl_divergence(discrete_latent_distribution),
@@ -430,8 +429,6 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
     if 0 < start_annealing_step < global_step.numpy() and annealing_period != 0:
         vae_mdp.anneal(steps=(global_step.numpy() - start_annealing_step) // annealing_period)
 
-    vae_mdp.reset_metrics()
-
     # start training
     for epoch in range(epochs):
         progressbar = Progbar(
@@ -468,14 +465,7 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             # update step
             global_step.assign_add(1)
 
-            # log and save
-            if global_step.numpy() % log_interval == 0:
-                if manager is not None:
-                    manager.save()
-                if logs:
-                    with train_summary_writer.as_default():
-                        for key, value in metrics_key_values:
-                            tf.summary.scalar(key, value, step=global_step.numpy())
+            # save and log
             if global_step.numpy() % save_model_interval == 0:
                 model_name = '{}_step{}_elbo{}'.format(log_name, global_step.numpy(),
                                                        vae_mdp.loss_metrics['ELBO'].result())
@@ -483,6 +473,15 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
                     tf.debugging.disable_check_numerics()
                     tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
                     tf.debugging.enable_check_numerics()
+            if global_step.numpy() % log_interval == 0:
+                if manager is not None:
+                    manager.save()
+                if logs:
+                    with train_summary_writer.as_default():
+                        for key, value in metrics_key_values:
+                            tf.summary.scalar(key, value, step=global_step.numpy())
+                # reset metrics
+                vae_mdp.reset_metrics()
 
             if global_step.numpy() > max_steps:
                 break
@@ -490,19 +489,17 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         # reset metrics
         vae_mdp.reset_metrics()
 
-        # display and reset metrics states
+        # evaluate and save the model
+        tf.debugging.disable_check_numerics()
         print('\nEvaluation')
         eval_set = iter(dataset.batch(dataset_size * eval_ratio)) if dataset_generator is None else \
             dataset_generator().batch(int(dataset_size * eval_ratio))
         eval_elbo = eval(vae_mdp, next(eval_set)).numpy()
         print('eval ELBO: ', eval_elbo)
-
-        # Save model
         if manager is not None:
             model_name = '{}_step{}_eval_elbo{}'.format(log_name, global_step.numpy(), eval_elbo.numpy())
-            tf.debugging.disable_check_numerics()
             tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
-            tf.debugging.enable_check_numerics()
+        tf.debugging.enable_check_numerics()
 
         # retrieve the real dataset size
         if epoch == 0:
@@ -522,16 +519,13 @@ def eval(vae_mdp: VariationalMarkovDecisionProcess, inputs):
     z_prime = latent_distribution_prime.sample()
 
     transition_distribution = vae_mdp.discrete_latent_transition_probability_distribution(z_prime, a_1)
-    # log_p_transition = tf.reduce_sum(transition_distribution.log_prob(z_prime), axis=1)
+    kl_terms = tf.reduce_sum(latent_distribution_prime.kl_divergence(transition_distribution), axis=1)
 
     reward_distribution = vae_mdp.reward_probability_distribution(z, a_1, z_prime)
     log_p_rewards = reward_distribution.log_prob(r_1)
 
     state_distribution = vae_mdp.decode(z_prime)
     log_p_reconstruction = state_distribution.log_prob(s_2)
-
-    kl_terms = tf.reduce_sum(latent_distribution_prime.kl_divergence(transition_distribution), axis=1)
-    # q_entropy = tf.reduce_sum(latent_distribution_prime.entropy(), axis=1)
 
     return tf.reduce_mean(log_p_reconstruction + log_p_rewards - kl_terms)
 
