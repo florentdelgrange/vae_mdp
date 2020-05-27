@@ -483,10 +483,11 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
                     with train_summary_writer.as_default():
                         for key, value in metrics_key_values:
                             tf.summary.scalar(key, value, step=global_step.numpy())
-            if manager is not None and global_step.numpy() % save_model_interval == 0:
+            if global_step.numpy() % save_model_interval == 0:
                 model_name = '{}_step{}_elbo{}'.format(log_name, global_step.numpy(),
                                                        vae_mdp.loss_metrics['ELBO'].result())
-                tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
+                if manager is not None:
+                    tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
 
             if global_step.numpy() > max_steps:
                 break
@@ -498,7 +499,7 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         print('\nEvaluation')
         eval_set = iter(dataset.batch(dataset_size * eval_ratio)) if dataset_generator is None else \
             dataset_generator().batch(int(dataset_size * eval_ratio))
-        eval_elbo = eval(vae_mdp, eval_set).numpy()
+        eval_elbo = eval(vae_mdp, next(eval_set)).numpy()
         print('eval ELBO: ', eval_elbo)
 
         # Save model
