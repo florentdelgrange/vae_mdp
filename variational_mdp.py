@@ -160,13 +160,6 @@ class VariationalMarkovDecisionProcess(Model):
             'cross_entropy_regularizer': tf.keras.metrics.Mean('cross_entropy_regularizer'),
         }
 
-        vae_input = [Input(shape=(2,) + self.state_shape, name="incident_states"),
-                     Input(shape=(2,) + self.action_shape, name="actions"),
-                     Input(shape=(2,) + self.reward_shape, name="rewards"),
-                     Input(shape=(2,) + self.state_shape, name="next_states"),
-                     Input(shape=(2,) + self.label_shape, name="labels")]
-        self._set_inputs(vae_input)
-
     def reset_metrics(self):
         for value in self.loss_metrics.values():
             value.reset_states()
@@ -395,12 +388,12 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
           dataset: Optional[tf.data.Dataset] = None,
           dataset_generator: Optional[Callable[[], tf.data.Dataset]] = None,
           epochs: int = 8,
-          batch_size: int = 128,
+          batch_size: int = int(1e4),
           optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
           checkpoint: Optional[tf.train.Checkpoint] = None,
           manager: Optional[tf.train.CheckpointManager] = None,
           log_interval: int = 80,
-          save_model_interval: int = 12800,
+          save_model_interval: int = 128, #int(1e4),
           dataset_size: Optional[int] = None,
           log_name: str = 'vae',
           annealing_period: int = 0,
@@ -487,7 +480,9 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
                 model_name = '{}_step{}_elbo{}'.format(log_name, global_step.numpy(),
                                                        vae_mdp.loss_metrics['ELBO'].result())
                 if manager is not None:
+                    tf.debugging.disable_check_numerics()
                     tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
+                    tf.debugging.enable_check_numerics()
 
             if global_step.numpy() > max_steps:
                 break
@@ -505,7 +500,9 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         # Save model
         if manager is not None:
             model_name = '{}_step{}_eval_elbo{}'.format(log_name, global_step.numpy(), eval_elbo.numpy())
+            tf.debugging.disable_check_numerics()
             tf.saved_model.save(vae_mdp, os.path.join(manager.directory, os.pardir, model_name))
+            tf.debugging.enable_check_numerics()
 
         # retrieve the real dataset size
         if epoch == 0:
