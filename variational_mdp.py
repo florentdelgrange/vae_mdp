@@ -399,8 +399,8 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
           start_annealing_step: int = 0,
           logs: bool = True,
           display_progressbar: bool = True,
-          eval_ratio: float = 0.05,
-          max_steps: int = int(7.5e5),
+          eval_ratio: float = 1e-3,
+          max_steps: int = int(1e6),
           save_directory='.'):
     assert 0 < eval_ratio < 1
 
@@ -466,13 +466,11 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             # update step
             global_step.assign_add(1)
 
-            # save and log
+            # eval, save and log
             if global_step.numpy() % save_model_interval == 0:
-                model_name = '{}_step{}_elbo{}'.format(log_name, global_step.numpy(),
-                                                       vae_mdp.loss_metrics['ELBO'].result())
-                tf.debugging.disable_check_numerics()
-                tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
-                tf.debugging.enable_check_numerics()
+                eval_and_save(vae_mdp=vae_mdp, dataset=dataset if dataset_generator is None else dataset_generator(),
+                              batch_size=batch_size, eval_steps=int(dataset_size * eval_ratio) // batch_size,
+                              global_step=int(global_step.numpy()), save_directory=save_directory, log_name=log_name)
             if global_step.numpy() % log_interval == 0:
                 if manager is not None:
                     manager.save()
@@ -489,17 +487,6 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
         # reset metrics
         vae_mdp.reset_metrics()
 
-        # evaluate and save the model
-        print('\nEvaluation')
-        eval_set = iter(dataset.batch(dataset_size * eval_ratio)) if dataset_generator is None else \
-            dataset_generator().batch(int(dataset_size * eval_ratio))
-        eval_elbo = eval(vae_mdp, next(eval_set)).numpy()
-        print('eval ELBO: ', eval_elbo)
-        model_name = '{}_step{}_eval_elbo{}'.format(log_name, global_step.numpy(), eval_elbo.numpy())
-        tf.debugging.disable_check_numerics()
-        tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
-        tf.debugging.enable_check_numerics()
-
         # retrieve the real dataset size
         if epoch == 0:
             dataset_size = (global_step.numpy() - start_step) * batch_size
@@ -508,7 +495,33 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             return
 
 
+def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
+                  dataset: tf.data.Dataset,
+                  batch_size: int,
+                  eval_steps: int,
+                  global_step: int,
+                  save_directory: str,
+                  log_name: str):
+    print('\nEvaluation')
+    eval_elbo = tf.metrics.Mean()
+    eval_set = dataset.batch(batch_size)
+    for step, x in enumerate(eval_set):
+        eval_elbo(eval(vae_mdp, x))
+        if step > eval_steps:
+            tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
+            print('eval ELBO: ', eval_elbo.result().numpy())
+            model_name = '{}_step{}_eval_elbo{:.3f}'.format(log_name, global_step, eval_elbo.result())
+            tf.debugging.disable_check_numerics()
+            tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
+            tf.debugging.enable_check_numerics()
+            return eval_elbo
+
+
 def eval(vae_mdp: VariationalMarkovDecisionProcess, inputs):
+    """
+    Use binary latent states instead of binary concrete continuous relaxation of the latent states to evaluate
+    the VAE.
+    """
     s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
     s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
 
