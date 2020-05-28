@@ -527,8 +527,8 @@ def eval(vae_mdp: VariationalMarkovDecisionProcess, inputs):
 
     latent_distribution = vae_mdp.binary_encode(s_0, a_0, r_0, s_1, l_1)
     latent_distribution_prime = vae_mdp.binary_encode(s_1, a_1, r_1, s_2, l_2)
-    z = latent_distribution.sample()
-    z_prime = latent_distribution_prime.sample()
+    z = tf.cast(latent_distribution.sample(), tf.float32)
+    z_prime = tf.cast(latent_distribution_prime.sample(), tf.float32)
 
     transition_distribution = vae_mdp.discrete_latent_transition_probability_distribution(z_prime, a_1)
     kl_terms = tf.reduce_sum(latent_distribution_prime.kl_divergence(transition_distribution), axis=1)
