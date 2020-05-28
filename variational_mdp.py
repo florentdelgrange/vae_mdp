@@ -456,7 +456,8 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             if global_step.numpy() % save_model_interval == 0:
                 eval_and_save(vae_mdp=vae_mdp, dataset=dataset if dataset_generator is None else dataset_generator(),
                               batch_size=batch_size, eval_steps=int(dataset_size * eval_ratio) // batch_size,
-                              global_step=int(global_step.numpy()), save_directory=save_directory, log_name=log_name)
+                              global_step=int(global_step.numpy()), save_directory=save_directory, log_name=log_name,
+                              train_summary_writer=train_summary_writer)
             if global_step.numpy() % log_interval == 0:
                 if manager is not None:
                     manager.save()
@@ -487,14 +488,17 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                   eval_steps: int,
                   global_step: int,
                   save_directory: str,
-                  log_name: str):
+                  log_name: str,
+                  train_summary_writer: Optional[tf.summary.SummaryWriter] = None):
     print('\nEvaluation')
     eval_elbo = tf.metrics.Mean()
     eval_set = dataset.batch(batch_size)
     for step, x in enumerate(eval_set):
         eval_elbo(eval(vae_mdp, x))
         if step > eval_steps:
-            tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
+            if train_summary_writer is not None:
+                with train_summary_writer.as_default():
+                    tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
             model_name = '{}_step{}_eval_elbo{:.3f}'.format(log_name, global_step, eval_elbo.result())
             tf.debugging.disable_check_numerics()
