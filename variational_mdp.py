@@ -271,55 +271,25 @@ class VariationalMarkovDecisionProcess(Model):
         latent_distribution_prime = self.relaxed_encoding(s_1, a_1, r_1, s_2, l_2, self.temperatures[0])
 
         z = tf.sigmoid(latent_distribution.sample())
-        logistic_z_prime = latent_distribution_prime.sample()  # logistic sample if not eval
-
-        if debug:
-            tf.print(z, "sampled z")
-            tf.print(logistic_z_prime, "sampled (logistic) z'")
+        logistic_z_prime = latent_distribution_prime.sample()
 
         log_q_z_prime = latent_distribution_prime.log_prob(logistic_z_prime)
-
-        if debug:
-            tf.print(self.encoder_network([s_1, a_1, r_1, s_2]), "log locations[:-1] of Q")
-            tf.print(log_q_z_prime, "Log Q(logistic z'|s, a, r, s', l')")
 
         log_p_z_prime = self.relaxed_latent_transition_probability_distribution(
             z, a_1, self.temperatures[1]
         ).log_prob(logistic_z_prime)
 
-        if debug:
-            tf.print(self.transition_network([z, a_1]), "log-locations P_transition")
-            tf.print(log_p_z_prime, "log P(logistic z'|z, a)")
-
         z_prime = tf.sigmoid(logistic_z_prime)
-
-        if debug:
-            tf.print(z_prime, "sampled z'")
 
         # Normal log-probability P(r_1 | z, a_1, z')
         reward_distribution = self.reward_probability_distribution(z, a_1, z_prime)
         log_p_rewards = reward_distribution.log_prob(r_1)
 
-        if debug:
-            tf.print(tf.exp(log_p_rewards), "P(r | z, a, z')")
-
         # Reconstruction P(s_2 | z')
         state_distribution = self.decode(z_prime)
         log_p_reconstruction = state_distribution.log_prob(s_2)
 
-        if debug:
-            [reconstruction_mean, _, reconstruction_prior_components] = \
-                self.reconstruction_network(z_prime)
-            tf.print(reconstruction_mean, 'mean(s | z)')
-            tf.print(reconstruction_prior_components, 'GMM: prior components')
-            tf.print(log_p_reconstruction, "log P(s' | z')")
-
         kl_terms = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
-
-        if debug:
-            tf.print(log_q_z_prime - log_p_z_prime, "log Q(z') - log P(z')")
-
-        # q_entropy = tf.reduce_sum(latent_distribution_prime.entropy(), axis=1)
 
         # cross-entropy regularization
         if self.regularizer_scale_factor > 0:
@@ -338,6 +308,22 @@ class VariationalMarkovDecisionProcess(Model):
         self.loss_metrics['kl_terms'](kl_terms)
         self.loss_metrics['annealed_kl_terms'](self.kl_annealing_scale_factor * kl_terms)
         self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
+
+        if debug:
+            tf.print(z, "sampled z")
+            tf.print(logistic_z_prime, "sampled (logistic) z'")
+            tf.print(self.encoder_network([s_1, a_1, r_1, s_2]), "log locations[:-1] of Q")
+            tf.print(log_q_z_prime, "Log Q(logistic z'|s, a, r, s', l')")
+            tf.print(self.transition_network([z, a_1]), "log-locations P_transition")
+            tf.print(log_p_z_prime, "log P(logistic z'|z, a)")
+            tf.print(z_prime, "sampled z'")
+            tf.print(tf.exp(log_p_rewards), "P(r | z, a, z')")
+            [reconstruction_mean, _, reconstruction_prior_components] = \
+                self.reconstruction_network(z_prime)
+            tf.print(reconstruction_mean, 'mean(s | z)')
+            tf.print(reconstruction_prior_components, 'GMM: prior components')
+            tf.print(log_p_reconstruction, "log P(s' | z')")
+            tf.print(log_q_z_prime - log_p_z_prime, "log Q(z') - log P(z')")
 
         return [log_p_reconstruction, log_p_rewards, kl_terms, cross_entropy_regularizer]
 
