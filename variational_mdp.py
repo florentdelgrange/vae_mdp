@@ -155,8 +155,9 @@ class VariationalMarkovDecisionProcess(Model):
             'ELBO': tf.keras.metrics.Mean(name='ELBO'),
             'state_mse': tf.keras.metrics.MeanSquaredError(name='state_mse'),
             'reward_mse': tf.keras.metrics.MeanSquaredError('reward_mse'),
-            'kl_terms': tf.keras.metrics.Mean('kl_terms'),
-            'annealed_kl_terms': tf.keras.metrics.Mean('annealed_kl_terms'),
+            'distortion': tf.keras.metrics.Mean('distortion'),
+            'rate': tf.keras.metrics.Mean('rate'),
+            'annealed_rate': tf.keras.metrics.Mean('annealed_rate'),
             'cross_entropy_regularizer': tf.keras.metrics.Mean('cross_entropy_regularizer'),
         }
 
@@ -287,9 +288,10 @@ class VariationalMarkovDecisionProcess(Model):
 
         # Reconstruction P(s_2 | z')
         state_distribution = self.decode(z_prime)
-        log_p_reconstruction = state_distribution.log_prob(s_2)
+        log_p_state = state_distribution.log_prob(s_2)
 
-        kl_terms = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
+        rate = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
+        distortion = -1. * (log_p_state + log_p_rewards)
 
         # cross-entropy regularization
         if self.regularizer_scale_factor > 0:
@@ -302,11 +304,12 @@ class VariationalMarkovDecisionProcess(Model):
         else:
             cross_entropy_regularizer = 0.
 
-        self.loss_metrics['ELBO'](log_p_reconstruction + log_p_rewards - kl_terms)
+        self.loss_metrics['ELBO'](-1 * (distortion + rate))
         self.loss_metrics['state_mse'](s_2, state_distribution.sample())
         self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
-        self.loss_metrics['kl_terms'](kl_terms)
-        self.loss_metrics['annealed_kl_terms'](self.kl_annealing_scale_factor * kl_terms)
+        self.loss_metrics['distortion'](distortion)
+        self.loss_metrics['rate'](rate)
+        self.loss_metrics['annealed_rate'](self.kl_annealing_scale_factor * rate)
         self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
 
         if debug:
@@ -322,18 +325,17 @@ class VariationalMarkovDecisionProcess(Model):
                 self.reconstruction_network(z_prime)
             tf.print(reconstruction_mean, 'mean(s | z)')
             tf.print(reconstruction_prior_components, 'GMM: prior components')
-            tf.print(log_p_reconstruction, "log P(s' | z')")
+            tf.print(log_p_state, "log P(s' | z')")
             tf.print(log_q_z_prime - log_p_z_prime, "log Q(z') - log P(z')")
 
-        return [log_p_reconstruction, log_p_rewards, kl_terms, cross_entropy_regularizer]
+        return [distortion, rate, cross_entropy_regularizer]
 
 
 @tf.function
 def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x):
-    log_p_states, log_p_rewards, kl_terms, cross_entropy_regularizer = vae_mdp(x)
+    distortion, rate, cross_entropy_regularizer = vae_mdp(x)
     return - tf.reduce_mean(
-        log_p_states + log_p_rewards -
-        vae_mdp.kl_annealing_scale_factor * kl_terms -
+        - distortion - vae_mdp.kl_annealing_scale_factor * rate -
         vae_mdp.regularizer_scale_factor * cross_entropy_regularizer
     )
 
@@ -420,8 +422,7 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
     for epoch in range(epochs):
         progressbar = Progbar(
             target=dataset_size,
-            stateful_metrics=list(vae_mdp.loss_metrics.keys()) + ['t_1', 't_2', 'regularizer_scale_factor',
-                                                                  'step'],
+            stateful_metrics=list(vae_mdp.loss_metrics.keys()) + ['t_1', 't_2', 'regularizer_scale_factor', 'step'],
             interval=0.1) if display_progressbar else None
         print("Epoch: {}/{}".format(epoch + 1, epochs))
 
@@ -521,7 +522,7 @@ def eval(vae_mdp: VariationalMarkovDecisionProcess, inputs):
     z_prime = tf.cast(latent_distribution_prime.sample(), tf.float32)
 
     transition_distribution = vae_mdp.discrete_latent_transition_probability_distribution(z_prime, a_1)
-    kl_terms = tf.reduce_sum(latent_distribution_prime.kl_divergence(transition_distribution), axis=1)
+    rate = tf.reduce_sum(latent_distribution_prime.kl_divergence(transition_distribution), axis=1)
 
     reward_distribution = vae_mdp.reward_probability_distribution(z, a_1, z_prime)
     log_p_rewards = reward_distribution.log_prob(r_1)
@@ -529,7 +530,7 @@ def eval(vae_mdp: VariationalMarkovDecisionProcess, inputs):
     state_distribution = vae_mdp.decode(z_prime)
     log_p_reconstruction = state_distribution.log_prob(s_2)
 
-    return tf.reduce_mean(log_p_reconstruction + log_p_rewards - kl_terms)
+    return tf.reduce_mean(log_p_reconstruction + log_p_rewards - rate)
 
 
 def mean_latent_bits_used(vae_mdp: VariationalMarkovDecisionProcess, batch, eps=1e-3):
