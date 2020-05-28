@@ -260,7 +260,7 @@ class VariationalMarkovDecisionProcess(Model):
                 elif i == 2:
                     self.regularizer_scale_factor *= decay if self.regularizer_scale_factor > epsilon else 0.
                 else:
-                    self._kl_annealing_scale_factor *= decay if self._kl_annealing_scale_factor > epsilon else 0.
+                    self._kl_annealing_scale_factor *= decay
 
     def call(self, inputs, training=None, mask=None):
         # inputs are assumed to have shape
@@ -334,8 +334,8 @@ class VariationalMarkovDecisionProcess(Model):
 @tf.function
 def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x):
     distortion, rate, cross_entropy_regularizer = vae_mdp(x)
-    return - tf.reduce_mean(
-        - distortion - vae_mdp.kl_annealing_scale_factor * rate -
+    return tf.reduce_mean(
+        distortion + vae_mdp.kl_annealing_scale_factor * rate +
         vae_mdp.regularizer_scale_factor * cross_entropy_regularizer
     )
 
