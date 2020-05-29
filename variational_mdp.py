@@ -36,8 +36,8 @@ class VariationalMarkovDecisionProcess(Model):
                  prior_temperature: float = 1. / 2,
                  encoder_temperature_decay_rate: float = 0.,
                  prior_temperature_decay_rate: float = 0.,
-                 regularizer_scale_factor: float = 1e2,
-                 regularizer_decay_rate: float = 0.3,
+                 regularizer_scale_factor: float = 0.,
+                 regularizer_decay_rate: float = 0.,
                  kl_scale_factor: float = 1.,
                  kl_annealing_growth_rate: float = 0.,
                  mixture_components: int = 3,
@@ -263,7 +263,7 @@ class VariationalMarkovDecisionProcess(Model):
             (self.regularizer_scale_factor, self.regularizer_decay_rate),
             (self._decay_kl_scale_factor, self.kl_growth_rate)
         ]:
-            if decay_rate > 0:
+            if decay_rate.numpy().all() > 0:
                 var.assign(var * 1. - decay_rate)
             if self.kl_growth_rate > 0:
                 self.kl_scale_factor.assign(
@@ -308,10 +308,11 @@ class VariationalMarkovDecisionProcess(Model):
             return tf.reduce_sum(uniform_distribution.kl_divergence(discrete_latent_distribution), axis=1)
 
         # cross-entropy regularization
-        cross_entropy_regularizer = tf.cond(tf.math.greater(self.regularizer_scale_factor,
-                                                            tf.constant(epsilon, dtype=tf.float32)),
-                                            compute_cross_entropy_regularization,
-                                            lambda: tf.zeros(shape=tf.shape(rate)))
+        cross_entropy_regularizer = compute_cross_entropy_regularization()
+        # tf.cond(tf.math.greater(self.regularizer_scale_factor,
+        #                         tf.constant(epsilon, dtype=tf.float32)),
+        #         compute_cross_entropy_regularization,
+        #         lambda: tf.zeros(shape=tf.shape(rate)))
 
         self.loss_metrics['ELBO'](-1 * (distortion + rate))
         self.loss_metrics['state_mse'](s_2, state_distribution.sample())

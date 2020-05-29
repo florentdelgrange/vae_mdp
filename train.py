@@ -50,7 +50,7 @@ flags.DEFINE_float(
 )
 flags.DEFINE_float(
     "regularizer_decay_rate",
-    default=1.,
+    default=0.,
     help="Cross-entropy regularizer decay rate."
 )
 flags.DEFINE_float(
