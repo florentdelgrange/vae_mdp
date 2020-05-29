@@ -270,7 +270,6 @@ class VariationalMarkovDecisionProcess(Model):
                     self._initial_kl_scale_factor + (1. - self._initial_kl_scale_factor) *
                     (1. - self._decay_kl_scale_factor))
 
-    @tf.function
     def call(self, inputs, training=None, mask=None):
         # inputs are assumed to have shape
         # [(?, 2, state_shape), (?, 2, action_shape), (?, 2, reward_shape), (?, 2, state_shape), (?, 2, label_shape)]
@@ -299,19 +298,20 @@ class VariationalMarkovDecisionProcess(Model):
         state_distribution = self.decode(z_prime)
         log_p_state = state_distribution.log_prob(s_2)
 
-        rate = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
         distortion = -1. * (log_p_state + log_p_rewards)
+        rate = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
 
-        # cross-entropy regularization
-        if self.regularizer_scale_factor > 0:
+        def compute_cross_entropy_regularization():
             log_alpha = self.encoder_network([s_1, a_1, r_1, s_2])
             discrete_latent_distribution = tfd.Bernoulli(logits=log_alpha)
             uniform_distribution = tfd.Bernoulli(probs=0.5 * tf.ones(shape=tf.shape(log_alpha)))
-            cross_entropy_regularizer = tf.reduce_sum(
-                uniform_distribution.kl_divergence(discrete_latent_distribution),
-                axis=1)
-        else:
-            cross_entropy_regularizer = 0.
+            return tf.reduce_sum(uniform_distribution.kl_divergence(discrete_latent_distribution), axis=1)
+
+        # cross-entropy regularization
+        cross_entropy_regularizer = tf.cond(tf.math.greater(self.regularizer_scale_factor,
+                                                            tf.constant(epsilon, dtype=tf.float32)),
+                                            compute_cross_entropy_regularization,
+                                            lambda: tf.zeros(shape=tf.shape(rate)))
 
         self.loss_metrics['ELBO'](-1 * (distortion + rate))
         self.loss_metrics['state_mse'](s_2, state_distribution.sample())
