@@ -18,7 +18,7 @@ flags.DEFINE_integer("batch_size", default=128, help="Batch size.")
 flags.DEFINE_integer(
     "mixture_components",
     default=1,
-    help="Number of gaussian mixture components to use for the posterior distribution over states.")
+    help="Number of gaussian mixture components used to model the posterior distribution over states.")
 flags.DEFINE_string(
     "activation",
     default="leaky_relu",
@@ -56,7 +56,7 @@ flags.DEFINE_float(
 flags.DEFINE_float(
     "kl_annealing_scale_factor",
     default=1.,
-    help='Scale factor to anneal the KL terms of the ELBO in the early stage of the training.'
+    help='Scale factor of the KL terms of the ELBO.'
 )
 flags.DEFINE_float(
     "kl_annealing_growth_rate",
@@ -154,7 +154,7 @@ def main(argv):
         prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
         regularizer_scale_factor=params['regularizer_scale_factor'],
         regularizer_decay_rate=params['regularizer_decay_rate'],
-        kl_annealing_scale_factor=params['kl_annealing_scale_factor'],
+        kl_scale_factor=params['kl_annealing_scale_factor'],
         kl_annealing_growth_rate=params['kl_annealing_growth_rate'])
     # regularizer_scale_factor = 100., regularizer_decay_rate = 1.5e-4, )
     # kl_annealing_growth_rate=2e-5, kl_annealing_scale_factor=2e-5)
