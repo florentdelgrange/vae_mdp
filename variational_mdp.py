@@ -264,7 +264,7 @@ class VariationalMarkovDecisionProcess(Model):
             (self._decay_kl_scale_factor, self.kl_growth_rate)
         ]:
             if decay_rate.numpy().all() > 0:
-                var.assign(var * 1. - decay_rate)
+                var.assign(var * (1. - decay_rate))
             if self.kl_growth_rate > 0:
                 self.kl_scale_factor.assign(
                     self._initial_kl_scale_factor + (1. - self._initial_kl_scale_factor) *
