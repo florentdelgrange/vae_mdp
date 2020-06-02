@@ -41,6 +41,7 @@ class VariationalMarkovDecisionProcess(Model):
                  kl_scale_factor: float = 1.,
                  kl_annealing_growth_rate: float = 0.,
                  mixture_components: int = 3,
+                 multivariate_normal_raw_scale_diag_activation: Callable[[tf.Tensor], tf.Tensor] = tf.nn.softplus,
                  action_pre_processing_network: Model = None,
                  state_pre_processing_network: Model = None,
                  state_post_processing_network: Model = None,
@@ -65,6 +66,8 @@ class VariationalMarkovDecisionProcess(Model):
         self.prior_temperature_decay_rate = tf.constant(prior_temperature_decay_rate, dtype=tf.float32)
         self.regularizer_decay_rate = tf.constant(regularizer_decay_rate, dtype=tf.float32)
         self.kl_growth_rate = tf.constant(kl_annealing_growth_rate, dtype=tf.float32)
+
+        self.multivariate_normal_scale_diag_activation = multivariate_normal_raw_scale_diag_activation
 
         if not (len(state_shape) == len(action_shape) == len(reward_shape) == len(label_shape)):
             if state_pre_processing_network is None:
@@ -201,7 +204,7 @@ class VariationalMarkovDecisionProcess(Model):
         log_alpha = self.encoder_network([state, action, reward, state_prime])
         return tfd.Bernoulli(logits=tf.concat([log_alpha, (label * 2. - 1.) * 1e2], axis=-1), allow_nan_stats=False)
 
-    def decode(self, latent_state: tf.Tensor, raw_scale_activation=tf.nn.softplus) -> tfd.Distribution:
+    def decode(self, latent_state: tf.Tensor) -> tfd.Distribution:
         """
         Decode a binary latent state into a probability distribution over original states of the MDP, modeled by a GMM
         """
@@ -210,7 +213,7 @@ class VariationalMarkovDecisionProcess(Model):
         if self.mixture_components == 1:
             return tfd.MultivariateNormalDiag(
                 loc=reconstruction_mean[0],
-                scale_diag=raw_scale_activation(reconstruction_raw_diag_covar[0]),
+                scale_diag=self.multivariate_normal_scale_diag_activation(reconstruction_raw_diag_covar[0]),
                 allow_nan_stats=False
             )
         else:
@@ -218,7 +221,7 @@ class VariationalMarkovDecisionProcess(Model):
                 mixture_distribution=tfd.Categorical(probs=reconstruction_prior_components),
                 components_distribution=tfd.MultivariateNormalDiag(
                     loc=reconstruction_mean,
-                    scale_diag=raw_scale_activation(reconstruction_raw_diag_covar),
+                    scale_diag=self.multivariate_normal_scale_diag_activation(reconstruction_raw_diag_covar),
                     allow_nan_stats=False
                 ), allow_nan_stats=False
             )
@@ -247,16 +250,17 @@ class VariationalMarkovDecisionProcess(Model):
         return tfd.Bernoulli(logits=log_alpha, allow_nan_stats=False)
 
     def reward_probability_distribution(
-            self, latent_state, action, next_latent_state, raw_scale_activation=tf.nn.softplus
+            self, latent_state, action, next_latent_state
     ) -> tfd.Distribution:
         """
         Retrieves a probability distribution P(r|z, a, z') over rewards obtained when the latent transition z -> z' is
         encountered when action a is chosen
         """
         [reward_mean, reward_raw_diag_covar] = self.reward_network([latent_state, action, next_latent_state])
-        return tfd.MultivariateNormalDiag(loc=reward_mean,
-                                          scale_diag=raw_scale_activation(reward_raw_diag_covar),
-                                          allow_nan_stats=False)
+        return tfd.MultivariateNormalDiag(
+            loc=reward_mean,
+            scale_diag=self.multivariate_normal_scale_diag_activation(reward_raw_diag_covar),
+            allow_nan_stats=False)
 
     def anneal(self):
         for var, decay_rate in [
