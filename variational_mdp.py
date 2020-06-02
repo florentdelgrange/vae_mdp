@@ -124,12 +124,12 @@ class VariationalMarkovDecisionProcess(Model):
             reward_1 = reward_network(reward_network_input)
             reward_mean = Dense(units=np.prod(reward_shape), activation=None, name='reward_mean_0')(reward_1)
             reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
-            reward_log_covar = Dense(units=np.prod(reward_shape),
+            reward_raw_covar = Dense(units=np.prod(reward_shape),
                                      activation=None,
-                                     name='reward_log_diag_covar_0')(reward_1)
-            reward_log_covar = Reshape(reward_shape, name='reward_log_diag_covar')(reward_log_covar)
+                                     name='reward_raw_diag_covar_0')(reward_1)
+            reward_raw_covar = Reshape(reward_shape, name='reward_raw_diag_covar')(reward_raw_covar)
             self.reward_network = Model(inputs=[latent_state, action, next_latent_state],
-                                        outputs=[reward_mean, reward_log_covar], name='reward_network')
+                                        outputs=[reward_mean, reward_raw_covar], name='reward_network')
 
             # Reconstruction network
             # inputs are latent binary states, outputs are given in parameter
@@ -142,17 +142,17 @@ class VariationalMarkovDecisionProcess(Model):
             decoder_output_mean = \
                 Reshape((mixture_components,) + state_shape, name="GMM_means")(decoder_output_mean)
             # n diagonal co-variance matrices
-            decoder_output_log_covar = Dense(
+            decoder_output_raw_covar = Dense(
                 units=mixture_components * np.prod(state_shape),
                 activation=None,
-                name='GMM_log_diag_covar_0'
+                name='GMM_raw_diag_covar_0'
             )(decoder)
-            decoder_output_log_covar = \
-                Reshape((mixture_components,) + state_shape, name="GMM_log_diag_covar")(decoder_output_log_covar)
+            decoder_output_raw_covar = \
+                Reshape((mixture_components,) + state_shape, name="GMM_raw_diag_covar")(decoder_output_raw_covar)
             # number of Normal Gaussian forming the mixture model
             decoder_prior = Dense(units=mixture_components, activation='softmax', name="GMM_priors")(decoder)
             self.reconstruction_network = Model(inputs=next_latent_state,
-                                                outputs=[decoder_output_mean, decoder_output_log_covar, decoder_prior],
+                                                outputs=[decoder_output_mean, decoder_output_raw_covar, decoder_prior],
                                                 name='reconstruction_network')
         else:
             self.encoder_network = encoder_network
@@ -163,11 +163,11 @@ class VariationalMarkovDecisionProcess(Model):
         self.loss_metrics = {
             'ELBO': tf.keras.metrics.Mean(name='ELBO'),
             'state_mse': tf.keras.metrics.MeanSquaredError(name='state_mse'),
-            'reward_mse': tf.keras.metrics.MeanSquaredError('reward_mse'),
-            'distortion': tf.keras.metrics.Mean('distortion'),
-            'rate': tf.keras.metrics.Mean('rate'),
-            'annealed_rate': tf.keras.metrics.Mean('annealed_rate'),
-            'cross_entropy_regularizer': tf.keras.metrics.Mean('cross_entropy_regularizer'),
+            'reward_mse': tf.keras.metrics.MeanSquaredError(name='reward_mse'),
+            'distortion': tf.keras.metrics.Mean(name='distortion'),
+            'rate': tf.keras.metrics.Mean(name='rate'),
+            'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
+            'cross_entropy_regularizer': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
         }
 
     def reset_metrics(self):
@@ -201,16 +201,16 @@ class VariationalMarkovDecisionProcess(Model):
         log_alpha = self.encoder_network([state, action, reward, state_prime])
         return tfd.Bernoulli(logits=tf.concat([log_alpha, (label * 2. - 1.) * 1e2], axis=-1), allow_nan_stats=False)
 
-    def decode(self, latent_state: tf.Tensor) -> tfd.Distribution:
+    def decode(self, latent_state: tf.Tensor, raw_scale_activation=tf.nn.softplus) -> tfd.Distribution:
         """
         Decode a binary latent state into a probability distribution over original states of the MDP, modeled by a GMM
         """
-        [reconstruction_mean, reconstruction_log_diag_covar, reconstruction_prior_components] = \
+        [reconstruction_mean, reconstruction_raw_diag_covar, reconstruction_prior_components] = \
             self.reconstruction_network(latent_state)
         if self.mixture_components == 1:
             return tfd.MultivariateNormalDiag(
                 loc=reconstruction_mean[0],
-                scale_diag=tf.exp(reconstruction_log_diag_covar[0]),
+                scale_diag=raw_scale_activation(reconstruction_raw_diag_covar[0]),
                 allow_nan_stats=False
             )
         else:
@@ -218,7 +218,7 @@ class VariationalMarkovDecisionProcess(Model):
                 mixture_distribution=tfd.Categorical(probs=reconstruction_prior_components),
                 components_distribution=tfd.MultivariateNormalDiag(
                     loc=reconstruction_mean,
-                    scale_diag=tf.exp(reconstruction_log_diag_covar),
+                    scale_diag=raw_scale_activation(reconstruction_raw_diag_covar),
                     allow_nan_stats=False
                 ), allow_nan_stats=False
             )
@@ -246,14 +246,16 @@ class VariationalMarkovDecisionProcess(Model):
         log_alpha = self.transition_network([latent_state, action])
         return tfd.Bernoulli(logits=log_alpha, allow_nan_stats=False)
 
-    def reward_probability_distribution(self, latent_state, action, next_latent_state) -> tfd.Distribution:
+    def reward_probability_distribution(
+            self, latent_state, action, next_latent_state, raw_scale_activation=tf.nn.softplus
+    ) -> tfd.Distribution:
         """
         Retrieves a probability distribution P(r|z, a, z') over rewards obtained when the latent transition z -> z' is
         encountered when action a is chosen
         """
-        [reward_mean, reward_log_diag_covar] = self.reward_network([latent_state, action, next_latent_state])
+        [reward_mean, reward_raw_diag_covar] = self.reward_network([latent_state, action, next_latent_state])
         return tfd.MultivariateNormalDiag(loc=reward_mean,
-                                          scale_diag=tf.math.exp(reward_log_diag_covar),
+                                          scale_diag=raw_scale_activation(reward_raw_diag_covar),
                                           allow_nan_stats=False)
 
     def anneal(self):
