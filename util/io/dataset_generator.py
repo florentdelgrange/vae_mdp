@@ -77,11 +77,11 @@ class DatasetGenerator:
                         else np.zeros(shape=state.shape[1:])
                     initial_action = self.initial_dummy_action if self.initial_dummy_action is not None \
                         else np.zeros(shape=action.shape[1:])
-                    yield np.stack((initial_state, state[0])), \
-                          np.stack((initial_action, action[0])), \
-                          np.stack((np.zeros(shape=reward.shape[1:]), reward[0])), \
-                          state, \
-                          np.stack((label[0], label[0]))
+                    yield (np.stack((initial_state, state[0])),
+                           np.stack((initial_action, action[0])),
+                           np.stack((np.zeros(shape=reward.shape[1:]), reward[0])),
+                           state,
+                           np.stack((label[0], label[0])))
 
                 yield state, action, reward, next_state, label
 
@@ -108,6 +108,7 @@ def create_dataset(cycle_length=4,
                    regex='*.hdf5'):
     file_list: List[str] = glob.glob(os.path.join(hdf5_files_path, regex), recursive=True)
     random.shuffle(file_list)
+    cycle_length = min(len(file_list), cycle_length)
 
     dataset = tf.data.Dataset.from_tensor_slices(file_list)
 

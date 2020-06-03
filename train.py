@@ -101,7 +101,7 @@ def main(argv):
         latent_state_size, mixture_components, params['regularizer_scale_factor'], params['kl_annealing_scale_factor'],
         params['encoder_temperature'], params['prior_temperature'],
         params['encoder_temperature_decay_rate'], params['prior_temperature_decay_rate'])
-    cycle_length = 8
+    cycle_length = batch_size // 2
     block_length = batch_size // cycle_length
     activation = getattr(tf.nn, params["activation"])
 
