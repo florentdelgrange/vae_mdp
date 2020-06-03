@@ -371,6 +371,9 @@ def compute_apply_gradients(vae_mdp: VariationalMarkovDecisionProcess, x, optimi
 
 
 def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
+    """
+    Note: only with TensorFlow>=2.2.0
+    """
     model = tf.keras.models.load_model(tf_model_path)
     label_shape = model.transition_network.output.get_shape()[1] - model.encoder_network.output.get_shape()[1]
     vae_mdp = VariationalMarkovDecisionProcess(
@@ -500,7 +503,7 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                   save_directory: str,
                   log_name: str,
                   train_summary_writer: Optional[tf.summary.SummaryWriter] = None):
-    print('\nEvaluation')
+    print('\nEvaluation over {} samples'.format(eval_steps * batch_size))
     eval_elbo = tf.metrics.Mean()
     eval_set = dataset.batch(batch_size)
     for step, x in enumerate(eval_set):
@@ -557,3 +560,26 @@ def mean_latent_bits_used(vae_mdp: VariationalMarkovDecisionProcess, batch, eps=
         check = lambda x: 1 if 1 - eps > x > eps else 0
         mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
     return mean_bits_used / 2
+
+
+def evaluate_encoder_distribution(vae_mdp: VariationalMarkovDecisionProcess,
+                                  dataset: tf.data.Dataset,
+                                  dataset_size: int,
+                                  display_progressbar: bool = True,
+                                  batch_size: int = 128):
+    mean = None
+    step = tf.Variable(0., dtype=tf.float32)
+    progressbar = Progbar(
+        target=dataset_size,
+        interval=0.1) if display_progressbar else None
+    for x in dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE):
+        for i in (0, 1):
+            s, a, r, s_prime, l_prime = (transition[:, i, :] for transition in x)
+            if mean is None:
+                mean = tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).probs_parameter(), axis=1)
+            else:
+                mean += tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).probs_parameter(), axis=1)
+        step.assign_add(1)
+        if step < dataset_size and display_progressbar:
+            progressbar.add(batch_size)
+    return mean / (2 * (step + 1))
