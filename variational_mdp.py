@@ -271,10 +271,11 @@ class VariationalMarkovDecisionProcess(Model):
         ]:
             if decay_rate.numpy().all() > 0:
                 var.assign(var * (1. - decay_rate))
-            if self.kl_growth_rate > 0:
-                self.kl_scale_factor.assign(
-                    self._initial_kl_scale_factor + (1. - self._initial_kl_scale_factor) *
-                    (1. - self._decay_kl_scale_factor))
+
+        if self.kl_growth_rate > 0:
+            self.kl_scale_factor.assign(
+                self._initial_kl_scale_factor + (1. - self._initial_kl_scale_factor) *
+                (1. - self._decay_kl_scale_factor))
 
     def call(self, inputs, training=None, mask=None):
         # inputs are assumed to have shape
@@ -405,7 +406,7 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
           start_annealing_step: int = 0,
           logs: bool = True,
           display_progressbar: bool = True,
-          eval_ratio: float = 1e-3,
+          eval_ratio: float = 5e-3,
           max_steps: int = int(1e6),
           save_directory='.'):
     assert 0 < eval_ratio < 1
@@ -576,9 +577,9 @@ def evaluate_encoder_distribution(vae_mdp: VariationalMarkovDecisionProcess,
         for i in (0, 1):
             s, a, r, s_prime, l_prime = (transition[:, i, :] for transition in x)
             if mean is None:
-                mean = tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).probs_parameter(), axis=1)
+                mean = tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).probs_parameter(), axis=0)
             else:
-                mean += tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).probs_parameter(), axis=1)
+                mean += tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).probs_parameter(), axis=0)
         step.assign_add(1)
         if step < dataset_size and display_progressbar:
             progressbar.add(batch_size)
