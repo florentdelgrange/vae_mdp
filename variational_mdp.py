@@ -393,7 +393,7 @@ def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
 
 def train(vae_mdp: VariationalMarkovDecisionProcess,
           dataset_generator: Optional[Callable[[], tf.data.Dataset]] = None,
-          epochs: int = 8,
+          epochs: int = 16,
           batch_size: int = 128,
           optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
           checkpoint: Optional[tf.train.Checkpoint] = None,
