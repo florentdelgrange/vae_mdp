@@ -183,7 +183,7 @@ class VariationalMarkovDecisionProcess(Model):
             temperature: float) -> tfd.Distribution:
         """
         Encode the sample (s, a, r, l, s') into a into a Binary Concrete probability distribution over relaxed binary
-        latent states z.
+        latent states.
         Note: the Binary Concrete distribution is replaced by a Logistic distribution to avoid underflow issues:
               z ~ BinaryConcrete(loc=alpha, temperature) = sigmoid(z_logistic)
               with z_logistic ~ Logistic(loc=log alpha / temperature, scale=1. / temperature))
@@ -199,7 +199,7 @@ class VariationalMarkovDecisionProcess(Model):
             self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor
     ) -> tfd.Distribution:
         """
-        Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states z.
+        Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states.
         """
         log_alpha = self.encoder_network([state, action, reward, state_prime])
         return tfd.Bernoulli(logits=tf.concat([log_alpha, (label * 2. - 1.) * 1e2], axis=-1), allow_nan_stats=False)
@@ -230,8 +230,8 @@ class VariationalMarkovDecisionProcess(Model):
             self, latent_state: tf.Tensor, action: tf.Tensor, temperature: float
     ) -> tfd.Distribution:
         """
-        Retrieves a Binary Concrete probability distribution P(z'|z, a) over successor latent states z', given a binary
-        latent state z and action a.
+        Retrieves a Binary Concrete probability distribution P(z'|z, a) over successor latent states, given a relaxed
+        binary latent state z and action a.
         Note: the Binary Concrete distribution is replaced by a Logistic distribution to avoid underflow issues:
               z ~ BinaryConcrete(loc=alpha, temperature) = sigmoid(z_logistic)
               with z_logistic ~ Logistic(loc=log alpha / temperature, scale=1. / temperature))
@@ -243,7 +243,7 @@ class VariationalMarkovDecisionProcess(Model):
             self, latent_state: tf.Tensor, action: tf.Tensor
     ) -> tfd.Distribution:
         """
-        Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states z', given a binary latent
+        Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states, given a binary latent
         state z and action a.
         """
         log_alpha = self.transition_network([latent_state, action])
@@ -254,7 +254,7 @@ class VariationalMarkovDecisionProcess(Model):
     ) -> tfd.Distribution:
         """
         Retrieves a probability distribution P(r|z, a, z') over rewards obtained when the latent transition z -> z' is
-        encountered when action a is chosen
+        encountered and action a is chosen
         """
         [reward_mean, reward_raw_diag_covar] = self.reward_network([latent_state, action, next_latent_state])
         return tfd.MultivariateNormalDiag(
@@ -568,19 +568,31 @@ def evaluate_encoder_distribution(vae_mdp: VariationalMarkovDecisionProcess,
                                   dataset_size: int,
                                   display_progressbar: bool = True,
                                   batch_size: int = 128):
+    from IPython.display import clear_output
+    import time
+
     mean = None
+
     step = tf.Variable(0., dtype=tf.float32)
-    progressbar = Progbar(
-        target=dataset_size,
-        interval=0.1) if display_progressbar else None
+    wait_time = 1.
+    progressbar = Progbar(target=dataset_size, interval=0.1) if display_progressbar else None
+    t = time.time()
+
     for x in dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE):
         for i in (0, 1):
             s, a, r, s_prime, l_prime = (transition[:, i, :] for transition in x)
+            probs = tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).probs_parameter(), axis=0)
             if mean is None:
-                mean = tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).probs_parameter(), axis=0)
+                mean = probs
             else:
-                mean += tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).probs_parameter(), axis=0)
+                mean += probs
         step.assign_add(1)
         if step < dataset_size and display_progressbar:
             progressbar.add(batch_size)
+        if not display_progressbar and time.time() - t > wait_time:
+            b = 'mean=' + str(mean / (2 * (step + 1)))
+            c = 'current=' + str(probs / 1.)
+            print('\n', b, '\n', c)
+            clear_output(wait=True)
+            t = time.time()
     return mean / (2 * (step + 1))
