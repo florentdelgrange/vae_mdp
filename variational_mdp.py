@@ -6,10 +6,12 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow.keras import Model
 from tensorflow.keras.models import clone_model
-from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense
+from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense, Lambda
 from tensorflow.keras.utils import Progbar
 
 tfd = tfp.distributions
+tfb = tfp.bijectors
+
 debug = False
 check_numerics = False
 
@@ -42,6 +44,7 @@ class VariationalMarkovDecisionProcess(Model):
                  kl_annealing_growth_rate: float = 0.,
                  mixture_components: int = 3,
                  multivariate_normal_raw_scale_diag_activation: Callable[[tf.Tensor], tf.Tensor] = tf.nn.softplus,
+                 multivariate_normal_full_covariance: bool = False,
                  action_pre_processing_network: Model = None,
                  state_pre_processing_network: Model = None,
                  state_post_processing_network: Model = None,
@@ -55,6 +58,7 @@ class VariationalMarkovDecisionProcess(Model):
         self.latent_state_size = latent_state_size
         self.label_shape = label_shape
         self.mixture_components = mixture_components
+        self.full_covariance = multivariate_normal_full_covariance
 
         self.encoder_temperature = tf.Variable(encoder_temperature, dtype=tf.float32, trainable=False)
         self.prior_temperature = tf.Variable(prior_temperature, dtype=tf.float32, trainable=False)
@@ -67,7 +71,7 @@ class VariationalMarkovDecisionProcess(Model):
         self.regularizer_decay_rate = tf.constant(regularizer_decay_rate, dtype=tf.float32)
         self.kl_growth_rate = tf.constant(kl_annealing_growth_rate, dtype=tf.float32)
 
-        self.multivariate_normal_scale_diag_activation = multivariate_normal_raw_scale_diag_activation
+        self.scale_activation = multivariate_normal_raw_scale_diag_activation
 
         if not (len(state_shape) == len(action_shape) == len(reward_shape) == len(label_shape)):
             if state_pre_processing_network is None:
@@ -129,8 +133,8 @@ class VariationalMarkovDecisionProcess(Model):
             reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
             reward_raw_covar = Dense(units=np.prod(reward_shape),
                                      activation=None,
-                                     name='reward_raw_diag_covar_0')(reward_1)
-            reward_raw_covar = Reshape(reward_shape, name='reward_raw_diag_covar')(reward_raw_covar)
+                                     name='reward_raw_diag_covariance_0')(reward_1)
+            reward_raw_covar = Reshape(reward_shape, name='reward_raw_diag_covariance')(reward_raw_covar)
             self.reward_network = Model(inputs=[latent_state, action, next_latent_state],
                                         outputs=[reward_mean, reward_raw_covar], name='reward_network')
 
@@ -144,18 +148,28 @@ class VariationalMarkovDecisionProcess(Model):
                 Dense(units=mixture_components * np.prod(state_shape), activation=None, name='GMM_means_0')(decoder)
             decoder_output_mean = \
                 Reshape((mixture_components,) + state_shape, name="GMM_means")(decoder_output_mean)
-            # n diagonal co-variance matrices
-            decoder_output_raw_covar = Dense(
-                units=mixture_components * np.prod(state_shape),
-                activation=None,
-                name='GMM_raw_diag_covar_0'
-            )(decoder)
-            decoder_output_raw_covar = \
-                Reshape((mixture_components,) + state_shape, name="GMM_raw_diag_covar")(decoder_output_raw_covar)
+            if self.full_covariance and len(state_shape) == 1:
+                d = np.prod(state_shape) * (np.prod(state_shape) + 1) / 2
+                decoder_raw_output = Dense(
+                    units=mixture_components * d,
+                    activation=None,
+                    name='GMM_tril_params_0'
+                )(decoder)
+                decoder_raw_output = Reshape((mixture_components, d,), name='GMM_tril_params_1')(decoder_raw_output)
+                decoder_raw_output = Lambda(lambda x: tfb.FillScaleTriL()(x), name='GMM_scale_tril')(decoder_raw_output)
+            else:
+                # n diagonal co-variance matrices
+                decoder_raw_output = Dense(
+                    units=mixture_components * np.prod(state_shape),
+                    activation=None,
+                    name='GMM_raw_diag_covariance_0'
+                )(decoder)
+                decoder_raw_output = \
+                    Reshape((mixture_components,) + state_shape, name="GMM_raw_diag_covar")(decoder_raw_output)
             # number of Normal Gaussian forming the mixture model
             decoder_prior = Dense(units=mixture_components, activation='softmax', name="GMM_priors")(decoder)
             self.reconstruction_network = Model(inputs=next_latent_state,
-                                                outputs=[decoder_output_mean, decoder_output_raw_covar, decoder_prior],
+                                                outputs=[decoder_output_mean, decoder_raw_output, decoder_prior],
                                                 name='reconstruction_network')
         else:
             self.encoder_network = encoder_network
@@ -208,23 +222,40 @@ class VariationalMarkovDecisionProcess(Model):
         """
         Decode a binary latent state into a probability distribution over original states of the MDP, modeled by a GMM
         """
-        [reconstruction_mean, reconstruction_raw_diag_covar, reconstruction_prior_components] = \
+        [reconstruction_mean, reconstruction_raw_covariance, reconstruction_prior_components] = \
             self.reconstruction_network(latent_state)
         if self.mixture_components == 1:
-            return tfd.MultivariateNormalDiag(
-                loc=reconstruction_mean[0],
-                scale_diag=self.multivariate_normal_scale_diag_activation(reconstruction_raw_diag_covar[0]),
-                allow_nan_stats=False
-            )
-        else:
-            return tfd.MixtureSameFamily(
-                mixture_distribution=tfd.Categorical(probs=reconstruction_prior_components),
-                components_distribution=tfd.MultivariateNormalDiag(
-                    loc=reconstruction_mean,
-                    scale_diag=self.multivariate_normal_scale_diag_activation(reconstruction_raw_diag_covar),
+            if self.full_covariance:
+                return tfd.MultivariateNormalTriL(
+                    loc=reconstruction_mean[0],
+                    scale_tril=reconstruction_raw_covariance[0],
                     allow_nan_stats=False
-                ), allow_nan_stats=False
-            )
+                )
+            else:
+                return tfd.MultivariateNormalDiag(
+                    loc=reconstruction_mean[0],
+                    scale_diag=self.scale_activation(reconstruction_raw_covariance[0]),
+                    allow_nan_stats=False
+                )
+        else:
+            if self.full_covariance:
+                return tfd.MixtureSameFamily(
+                    mixture_distribution=tfd.Categorical(probs=reconstruction_prior_components),
+                    components_distribution=tfd.MultivariateNormalTriL(
+                        loc=reconstruction_mean,
+                        scale_tril=reconstruction_raw_covariance,
+                        allow_nan_stats=False
+                    ), allow_nan_stats=False
+                )
+            else:
+                return tfd.MixtureSameFamily(
+                    mixture_distribution=tfd.Categorical(probs=reconstruction_prior_components),
+                    components_distribution=tfd.MultivariateNormalDiag(
+                        loc=reconstruction_mean,
+                        scale_diag=self.scale_activation(reconstruction_raw_covariance),
+                        allow_nan_stats=False
+                    ), allow_nan_stats=False
+                )
 
     def relaxed_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, action: tf.Tensor, temperature: float
@@ -256,10 +287,10 @@ class VariationalMarkovDecisionProcess(Model):
         Retrieves a probability distribution P(r|z, a, z') over rewards obtained when the latent transition z -> z' is
         encountered and action a is chosen
         """
-        [reward_mean, reward_raw_diag_covar] = self.reward_network([latent_state, action, next_latent_state])
+        [reward_mean, reward_raw_covariance] = self.reward_network([latent_state, action, next_latent_state])
         return tfd.MultivariateNormalDiag(
             loc=reward_mean,
-            scale_diag=self.multivariate_normal_scale_diag_activation(reward_raw_diag_covar),
+            scale_diag=self.scale_activation(reward_raw_covariance),
             allow_nan_stats=False)
 
     def anneal(self):

@@ -18,7 +18,13 @@ flags.DEFINE_integer("batch_size", default=128, help="Batch size.")
 flags.DEFINE_integer(
     "mixture_components",
     default=1,
-    help="Number of gaussian mixture components used to model the posterior distribution over states.")
+    help="Number of gaussian mixture components used to model the states reconstruction distribution.")
+flags.DEFINE_bool(
+    "full_covariance",
+    default=False,
+    help="If set, the states and rewards reconstruction distributions will use a full covariance matrix instead of"
+         "a diagonal matrix."
+)
 flags.DEFINE_string(
     "activation",
     default="leaky_relu",
@@ -155,7 +161,8 @@ def main(argv):
         regularizer_scale_factor=params['regularizer_scale_factor'],
         regularizer_decay_rate=params['regularizer_decay_rate'],
         kl_scale_factor=params['kl_annealing_scale_factor'],
-        kl_annealing_growth_rate=params['kl_annealing_growth_rate'])
+        kl_annealing_growth_rate=params['kl_annealing_growth_rate'],
+        multivariate_normal_full_covariance=params['full_covariance'])
     # regularizer_scale_factor = 100., regularizer_decay_rate = 1.5e-4, )
     # kl_annealing_growth_rate=2e-5, kl_annealing_scale_factor=2e-5)
 
