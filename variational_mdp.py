@@ -187,6 +187,13 @@ class VariationalMarkovDecisionProcess(Model):
             'cross_entropy_regularizer': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
         }
 
+        self.annealing_pairs = [
+            (self.encoder_temperature, self.encoder_temperature_decay_rate),
+            (self.prior_temperature, self.prior_temperature_decay_rate),
+            (self.regularizer_scale_factor, self.regularizer_decay_rate),
+            (self._decay_kl_scale_factor, self.kl_growth_rate)
+        ]
+
     def reset_metrics(self):
         for value in self.loss_metrics.values():
             value.reset_states()
@@ -294,12 +301,7 @@ class VariationalMarkovDecisionProcess(Model):
             allow_nan_stats=False)
 
     def anneal(self):
-        for var, decay_rate in [
-            (self.encoder_temperature, self.encoder_temperature_decay_rate),
-            (self.prior_temperature, self.prior_temperature_decay_rate),
-            (self.regularizer_scale_factor, self.regularizer_decay_rate),
-            (self._decay_kl_scale_factor, self.kl_growth_rate)
-        ]:
+        for var, decay_rate in self.annealing_pairs:
             if decay_rate.numpy().all() > 0:
                 var.assign(var * (1. - decay_rate))
 
