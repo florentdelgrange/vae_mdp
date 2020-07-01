@@ -37,13 +37,14 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                          vae_mdp.scale_activation, vae_mdp.full_covariance, pre_loaded_model=True)
 
         self.number_of_discrete_actions = number_of_discrete_actions
+        self._states_vae = vae_mdp
+
         self.action_encoder_temperature = tf.Variable(encoder_temperature, dtype=tf.float32, trainable=False)
         self.action_prior_temperature = tf.Variable(prior_temperature, dtype=tf.float32, trainable=False)
         self.action_encoder_temperature_decay_rate = tf.constant(encoder_temperature_decay_rate, dtype=tf.float32)
         self.action_prior_temperature_decay_rate = tf.constant(prior_temperature_decay_rate, dtype=tf.float32)
         self.annealing_pairs.append([(self.action_encoder_temperature, self.action_encoder_temperature_decay_rate,
                                       self.action_prior_temperature, self.action_prior_temperature_decay_rate)])
-
         # action encoder network
         latent_state = Input(shape=(self.latent_state_size,))
         action = Input(shape=self.action_shape)
@@ -105,3 +106,34 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         for layers in state_layers:
             for layer in layers:
                 layer.trainable = False
+
+    def relaxed_action_encoding(
+            self, latent_state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, next_latent_state: tf.Tensor,
+            temperature: float
+    ) -> tfd.Distribution:
+        encoder_logits = self.action_encoder(latent_state, action, reward, next_latent_state)
+        return tfd.ExpRelaxedOneHotCategorical(temperature=temperature, logits=encoder_logits, allow_nan_stats=False)
+
+    def relaxed_action_prior(self, temperature: float):
+        return tfd.ExpRelaxedOneHotCategorical(
+            temperature=temperature, logits=self.action_prior_logits, allow_nan_stats=False)
+
+    def discrete_latent_transition_probability_distribution(
+            self, latent_state: tf.Tensor, action: tf.Tensor
+    ) -> tfd.Distribution:
+        next_latent_state_logits = self.discrete_actions_transition_network(latent_state)
+        return tfd.MixtureSameFamily(mixture_distribution=tfd.Categorical(probs=action),
+                                     components_distribution=tfd.Bernoulli(logits=next_latent_state_logits),
+                                     allow_nan_stats=False)
+
+    def reward_probability_distribution(
+            self, latent_state, action, next_latent_state
+    ) -> tfd.Distribution:
+        [reward_mean, reward_raw_covariance] = self.discrete_actions_reward_network([latent_state, next_latent_state])
+        return tfd.MixtureSameFamily(
+            mixture_distribution=tfd.Categorical(probs=action),
+            components_distribution=tfd.MultivariateNormalDiag(
+                loc=reward_mean,
+                scale_diag=self.scale_activation(reward_raw_covariance),
+                allow_nan_stats=False)
+        )

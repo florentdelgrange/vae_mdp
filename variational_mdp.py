@@ -201,7 +201,8 @@ class VariationalMarkovDecisionProcess(Model):
 
     def relaxed_encoding(
             self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor,
-            temperature: float) -> tfd.Distribution:
+            temperature: float
+    ) -> tfd.Distribution:
         """
         Encode the sample (s, a, r, l, s') into a into a Binary Concrete probability distribution over relaxed binary
         latent states.
