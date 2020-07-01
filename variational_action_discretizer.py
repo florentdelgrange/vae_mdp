@@ -5,8 +5,8 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow.keras import Model
-from tensorflow.keras.models import clone_model
-from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense, Lambda
+from tensorflow.keras.models import clone_model, Sequential
+from tensorflow.keras.layers import Input, Concatenate, Reshape, Dense, Lambda
 from tensorflow.keras.utils import Progbar
 
 from variational_mdp import VariationalMarkovDecisionProcess
@@ -22,6 +22,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                  number_of_discrete_actions: int,
                  action_encoder_network: Model,
                  action_decoder_network: Model,
+                 transition_network: Model,
+                 reward_network: Model,
+                 pre_processing_network: Model = Sequential([Dense(units=256, activation=tf.nn.leaky_relu)]),
                  encoder_temperature: float = 1.,
                  prior_temperature: float = 1.,
                  encoder_temperature_decay_rate: float = 0.,
@@ -62,23 +65,25 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         # discrete actions transition network
         transition_outputs = []
-        for _ in range(number_of_discrete_actions):  # branching-actions network
-            transition_network = clone_model(self.transition_network)
-            transition_network.layers.pop(0)  # remove the old input
-            transition_network = transition_network(latent_state)
-            transition_outputs.append(transition_network)
+        transition_network_pre_processing = clone_model(pre_processing_network)(latent_state)
+        for _ in range(number_of_discrete_actions):  # branching-action network
+            _transition_network = clone_model(transition_network)
+            _transition_network.layers.pop(0)  # remove the old input
+            _transition_network = _transition_network(transition_network_pre_processing)
+            transition_outputs.append(_transition_network)
         next_latent_state_logits = Lambda(lambda outputs: tf.stack(outputs))(latent_state)
         self.discrete_actions_transition_network = Model(input=latent_state, outputs=next_latent_state_logits,
                                                          name="discrete_actions_transition_network")
 
         # discrete actions reward network
         reward_network_input = Concatenate()([latent_state, next_latent_state])
+        reward_network_pre_processing = clone_model(pre_processing_network)(reward_network_input)
         reward_network_outputs = []
-        for _ in range(number_of_discrete_actions):  # branching-actions network
-            reward_network = clone_model(self.reward_network)
-            reward_network.layers.pop(0)  # remove the old input
-            reward_network = reward_network(reward_network_input)
-            reward_network_outputs.append(reward_network)
+        for _ in range(number_of_discrete_actions):  # branching-action network
+            _reward_network = clone_model(reward_network)
+            _reward_network.layers.pop(0)  # remove the old input
+            _reward_network = reward_network(reward_network_pre_processing)
+            reward_network_outputs.append(_reward_network)
         reward_network_mean = \
             Lambda(lambda outputs: tf.stack(outputs))(list(mean for mean, covariance in reward_network_outputs))
         reward_network_raw_covariance = \
@@ -88,10 +93,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                                                      name="discrete_actions_reward_network")
 
         # discrete actions decoder
+        action_decoder_pre_processing = clone_model(pre_processing_network)(next_latent_state)
         action_decoder_outputs = []
-        for action in range(number_of_discrete_actions):  # branching-actions network
+        for action in range(number_of_discrete_actions):  # branching-action network
             action_decoder = clone_model(action_decoder_network)
-            action_decoder = action_decoder(next_latent_state)
+            action_decoder = action_decoder(action_decoder_pre_processing)
             action_decoder_mean = Dense(units=np.prod(self.action_shape), activation=None)(action_decoder)
             action_decoder_mean = \
                 Reshape(target_shape=self.action_shape,
@@ -123,7 +129,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self, latent_state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, next_latent_state: tf.Tensor,
             temperature: float
     ) -> tfd.Distribution:
-        encoder_logits = self.action_encoder(latent_state, action, reward, next_latent_state)
+        encoder_logits = self.action_encoder([latent_state, action, reward, next_latent_state])
         return tfd.ExpRelaxedOneHotCategorical(temperature=temperature, logits=encoder_logits, allow_nan_stats=False)
 
     def relaxed_action_prior(self, temperature: float):
@@ -131,19 +137,19 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             temperature=temperature, logits=self.action_prior_logits, allow_nan_stats=False)
 
     def discrete_latent_transition_probability_distribution(
-            self, latent_state: tf.Tensor, action: tf.Tensor
+            self, latent_state: tf.Tensor, latent_action: tf.Tensor
     ) -> tfd.Distribution:
         next_latent_state_logits = self.discrete_actions_transition_network(latent_state)
-        return tfd.MixtureSameFamily(mixture_distribution=tfd.Categorical(probs=action),
+        return tfd.MixtureSameFamily(mixture_distribution=tfd.Categorical(probs=latent_action),
                                      components_distribution=tfd.Bernoulli(logits=next_latent_state_logits),
                                      allow_nan_stats=False)
 
     def reward_probability_distribution(
-            self, latent_state, action, next_latent_state
+            self, latent_state, latent_action, next_latent_state
     ) -> tfd.Distribution:
         [reward_mean, reward_raw_covariance] = self.discrete_actions_reward_network([latent_state, next_latent_state])
         return tfd.MixtureSameFamily(
-            mixture_distribution=tfd.Categorical(probs=action),
+            mixture_distribution=tfd.Categorical(probs=latent_action),
             components_distribution=tfd.MultivariateNormalDiag(
                 loc=reward_mean,
                 scale_diag=self.scale_activation(reward_raw_covariance),
