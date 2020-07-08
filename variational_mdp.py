@@ -64,12 +64,10 @@ class VariationalMarkovDecisionProcess(Model):
         self.prior_temperature = tf.Variable(prior_temperature, dtype=tf.float32, trainable=False)
         self.regularizer_scale_factor = tf.Variable(regularizer_scale_factor, dtype=tf.float32, trainable=False)
         self.kl_scale_factor = tf.Variable(kl_scale_factor, dtype=tf.float32, trainable=False)
-        self._initial_kl_scale_factor = tf.Variable(kl_scale_factor, dtype=tf.float32, trainable=False)
-        self._decay_kl_scale_factor = tf.Variable(1., dtype=tf.float32, trainable=False)
         self.encoder_temperature_decay_rate = tf.constant(encoder_temperature_decay_rate, dtype=tf.float32)
         self.prior_temperature_decay_rate = tf.constant(prior_temperature_decay_rate, dtype=tf.float32)
         self.regularizer_decay_rate = tf.constant(regularizer_decay_rate, dtype=tf.float32)
-        self.kl_growth_rate = tf.constant(kl_annealing_growth_rate, dtype=tf.float32)
+        self.kl_growth_rate = kl_annealing_growth_rate
 
         self.scale_activation = multivariate_normal_raw_scale_diag_activation
 
@@ -187,17 +185,20 @@ class VariationalMarkovDecisionProcess(Model):
             'cross_entropy_regularizer': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
         }
 
-        self.annealing_pairs = [
-            (self.encoder_temperature, self.encoder_temperature_decay_rate),
-            (self.prior_temperature, self.prior_temperature_decay_rate),
-            (self.regularizer_scale_factor, self.regularizer_decay_rate),
-            (self._decay_kl_scale_factor, self.kl_growth_rate)
-        ]
-
     def reset_metrics(self):
         for value in self.loss_metrics.values():
             value.reset_states()
         #  super().reset_metrics()
+
+    @property
+    def kl_growth_rate(self):
+        return self._kl_growth_rate
+
+    @kl_growth_rate.setter
+    def kl_growth_rate(self, value):
+        self._initial_kl_scale_factor = tf.Variable(self.kl_scale_factor, dtype=tf.float32, trainable=False)
+        self._decay_kl_scale_factor = tf.Variable(1., dtype=tf.float32, trainable=False)
+        self._kl_growth_rate = tf.constant(value, dtype=tf.float32)
 
     def relaxed_encoding(
             self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor,
@@ -302,7 +303,12 @@ class VariationalMarkovDecisionProcess(Model):
             allow_nan_stats=False)
 
     def anneal(self):
-        for var, decay_rate in self.annealing_pairs:
+        for var, decay_rate in [
+            (self.encoder_temperature, self.encoder_temperature_decay_rate),
+            (self.prior_temperature, self.prior_temperature_decay_rate),
+            (self.regularizer_scale_factor, self.regularizer_decay_rate),
+            (self._decay_kl_scale_factor, self.kl_growth_rate)
+        ]:
             if decay_rate.numpy().all() > 0:
                 var.assign(var * (1. - decay_rate))
 
@@ -458,6 +464,10 @@ def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
         model.reward_network,
         model.reconstruction_network,
         model.transition_network.inputs[0].shape[-1],
+        encoder_temperature=model.encoder_temperature,
+        prior_temperature=model.prior_temperature,
+        regularizer_scale_factor=model.regularizer_scale_factor,
+        kl_scale_factor=model.kl_scale_factor,
         pre_loaded_model=True)
     return vae_mdp
 
