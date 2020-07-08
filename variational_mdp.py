@@ -381,6 +381,43 @@ class VariationalMarkovDecisionProcess(Model):
 
         return [distortion, rate, cross_entropy_regularizer]
 
+    def eval(self, inputs):
+        """
+        Use binary latent states instead of binary concrete continuous relaxation of the latent states to evaluate
+        the VAE.
+        """
+        s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
+        s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
+
+        latent_distribution = self.binary_encode(s_0, a_0, r_0, s_1, l_1)
+        latent_distribution_prime = self.binary_encode(s_1, a_1, r_1, s_2, l_2)
+        z = tf.cast(latent_distribution.sample(), tf.float32)
+        z_prime = tf.cast(latent_distribution_prime.sample(), tf.float32)
+
+        transition_distribution = self.discrete_latent_transition_probability_distribution(z_prime, a_1)
+        rate = tf.reduce_sum(latent_distribution_prime.kl_divergence(transition_distribution), axis=1)
+
+        reward_distribution = self.reward_probability_distribution(z, a_1, z_prime)
+        log_p_rewards = reward_distribution.log_prob(r_1)
+
+        state_distribution = self.decode(z_prime)
+        log_p_reconstruction = state_distribution.log_prob(s_2)
+
+        return tf.reduce_mean(log_p_reconstruction + log_p_rewards - rate)
+
+    def mean_latent_bits_used(self, inputs, eps=1e-3):
+        """
+        Compute the mean number of bits used in the latent space of the vae_mdp for the given dataset batch.
+        This allows monitoring if the latent space is effectively used by the VAE or if posterior collapse happens.
+        """
+        mean_bits_used = 0
+        for i in (0, 1):
+            s, a, r, s_prime, l_prime = (x[:, i, :] for x in inputs)
+            mean = tf.reduce_mean(self.binary_encode(s, a, r, s_prime, l_prime).mean(), axis=0)
+            check = lambda x: 1 if 1 - eps > x > eps else 0
+            mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
+        return mean_bits_used / 2
+
 
 @tf.function
 def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x):
@@ -487,7 +524,7 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             # update progressbar
             metrics_key_values = [('step', global_step.numpy()), ('loss', loss.numpy())] + \
                                  [(key, value.result()) for key, value in vae_mdp.loss_metrics.items()] + \
-                                 [('mean_bits_used', mean_latent_bits_used(vae_mdp, x))]
+                                 [('mean_bits_used', vae_mdp.mean_latent_bits_used(x))]
             if annealing_period != 0:
                 metrics_key_values.append(('t_1', vae_mdp.encoder_temperature.numpy()))
                 metrics_key_values.append(('t_2', vae_mdp.prior_temperature.numpy()))
@@ -542,7 +579,7 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
     eval_elbo = tf.metrics.Mean()
     eval_set = dataset.batch(batch_size)
     for step, x in enumerate(eval_set):
-        eval_elbo(eval(vae_mdp, x))
+        eval_elbo(vae_mdp.eval(x))
         if step > eval_steps:
             if train_summary_writer is not None:
                 with train_summary_writer.as_default():
@@ -556,45 +593,6 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                 tf.debugging.enable_check_numerics()
             del dataset
             return eval_elbo
-
-
-def eval(vae_mdp: VariationalMarkovDecisionProcess, inputs):
-    """
-    Use binary latent states instead of binary concrete continuous relaxation of the latent states to evaluate
-    the VAE.
-    """
-    s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
-    s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
-
-    latent_distribution = vae_mdp.binary_encode(s_0, a_0, r_0, s_1, l_1)
-    latent_distribution_prime = vae_mdp.binary_encode(s_1, a_1, r_1, s_2, l_2)
-    z = tf.cast(latent_distribution.sample(), tf.float32)
-    z_prime = tf.cast(latent_distribution_prime.sample(), tf.float32)
-
-    transition_distribution = vae_mdp.discrete_latent_transition_probability_distribution(z_prime, a_1)
-    rate = tf.reduce_sum(latent_distribution_prime.kl_divergence(transition_distribution), axis=1)
-
-    reward_distribution = vae_mdp.reward_probability_distribution(z, a_1, z_prime)
-    log_p_rewards = reward_distribution.log_prob(r_1)
-
-    state_distribution = vae_mdp.decode(z_prime)
-    log_p_reconstruction = state_distribution.log_prob(s_2)
-
-    return tf.reduce_mean(log_p_reconstruction + log_p_rewards - rate)
-
-
-def mean_latent_bits_used(vae_mdp: VariationalMarkovDecisionProcess, batch, eps=1e-3):
-    """
-    Compute the mean number of bits used in the latent space of the vae_mdp for the given dataset batch.
-    This allows monitoring if the latent space is effectively used by the VAE or if posterior collapse happens.
-    """
-    mean_bits_used = 0
-    for i in (0, 1):
-        s, a, r, s_prime, l_prime = (x[:, i, :] for x in batch)
-        mean = tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).mean(), axis=0)
-        check = lambda x: 1 if 1 - eps > x > eps else 0
-        mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
-    return mean_bits_used / 2
 
 
 def evaluate_encoder_distribution(vae_mdp: VariationalMarkovDecisionProcess,
