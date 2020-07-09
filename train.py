@@ -6,6 +6,8 @@ from absl import app
 from absl import flags
 from tensorflow.keras import Input, Model
 from tensorflow.keras.layers import Dense
+from tensorflow.python.keras import Sequential
+from tensorflow.python.keras.layers import Lambda
 
 import variational_action_discretizer
 import variational_mdp
@@ -132,6 +134,9 @@ def main(argv):
     del argv
     params = FLAGS.flag_values_dict()
 
+    if params['action_discretizer'] and params['load_vae'] == '':
+        raise RuntimeError('Missing argument: --load_vae')
+
     dataset_path = params['dataset_path']
     # dataset_path = '/home/florent/Documents/hpc-cluster/dataset/reinforcement_learning'
     # dataset_path = 'reinforcement_learning/dataset/reinforcement_learning'
@@ -145,7 +150,7 @@ def main(argv):
         params['encoder_temperature'], params['prior_temperature'],
         params['encoder_temperature_decay_rate'],
         params['prior_temperature_decay_rate']) \
-        if not params['action_dicretizer'] else 'vae_LS{}_LA{}_MC{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}'.format(
+        if not params['action_discretizer'] else 'vae_LS{}_LA{}_MC{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}'.format(
         latent_state_size, params['number_of_discrete_actions'],
         mixture_components, params['regularizer_scale_factor'], params['kl_annealing_scale_factor'],
         params['encoder_temperature'], params['prior_temperature'],
@@ -172,43 +177,26 @@ def main(argv):
     del dummy_dataset
 
     # Encoder body
-    encoder_input = \
-        Input(shape=(np.prod(state_shape) * 2 + np.prod(action_shape) + np.prod(reward_shape)
-                     if not params['action_discretizer'] else np.prod(latent_state_size) + np.prod(action_shape),),
-              name='encoder_input')
-    q = encoder_input
+    q = Sequential(name="encoder_network_body")
     for i, units in enumerate(params['encoder_layers']):
-        q = Dense(units, activation=activation, name="encoder_{}".format(i))(q)
-    q = Model(inputs=encoder_input, outputs=q, name="encoder_network_body")
+        q.add(Dense(units, activation=activation, name="encoder_{}".format(i)))
 
     # Transition network body
-    transition_input = Input(shape=(latent_state_size + np.prod(action_shape)
-                                    if not params['action_discretizer'] else latent_state_size,),
-                             name='transition_input')
-    p_t = transition_input
+    p_t = Sequential(name="transition_network_body")
     for i, units in enumerate(params['transition_layers']):
-        p_t = Dense(units, activation=activation, name='transition_{}'.format(i))(p_t)
-    p_t = Model(inputs=transition_input, outputs=p_t, name="transition_network_body")
+        p_t.add(Dense(units, activation=activation, name='transition_{}'.format(i)))
 
     # Reward network body
-    p_r_input = Input(shape=(latent_state_size * 2 + action_shape[-1]
-                             if not params['action_discretizer'] else latent_state_size * 2,),
-                      name="reward_input")
-    p_r = p_r_input
+    p_r = Sequential(name="reward_network_body")
     for i, units in enumerate(params['reward_layers']):
-        p_r = Dense(units, activation=activation, name='reward_{}'.format(i))(p_r)
-    p_r = Model(inputs=p_r_input, outputs=p_r, name="reward_network_body")
+        p_r.add(Dense(units, activation=activation, name='reward_{}'.format(i)))
 
     # Decoder network body
-    p_decoder_input = Input(shape=(latent_state_size
-                                   if not params['action_discretizer'] else latent_state_size + np.prod(action_shape),),
-                            name='decoder_input')
-    p_decode = p_decoder_input
+    p_decode = Sequential(name="decoder_body")
     for i, units in enumerate(params['decoder_layers']):
-        p_decode = Dense(units, activation=activation, name='decoder_{}'.format(i))(p_decode)
-    p_decode = Model(inputs=p_decoder_input, outputs=p_decode, name="decoder_body")
+        p_decode.add(Dense(units, activation=activation, name='decoder_{}'.format(i)))
 
-    if params['load_vae'] != '':
+    if params['load_vae'] == '':
         vae_mdp_model = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
             encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
@@ -227,8 +215,6 @@ def main(argv):
         vae_mdp_model = variational_mdp.load(params['load_vae'])
 
     if params['action_discretizer']:
-        if params['load_vae'] == '':
-            raise RuntimeError('Missing argument: --load_vae')
         vae_mdp_model = variational_action_discretizer.VariationalActionDiscretizer(
             vae_mdp=vae_mdp_model,
             number_of_discrete_actions=params['number_of_discrete_actions'],
@@ -237,6 +223,8 @@ def main(argv):
             encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
             prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
         )
+        vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor'],
+        vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 
