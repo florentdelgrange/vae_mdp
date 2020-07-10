@@ -60,13 +60,13 @@ class VariationalMarkovDecisionProcess(Model):
         self.mixture_components = mixture_components
         self.full_covariance = multivariate_normal_full_covariance
 
-        self.encoder_temperature = tf.Variable(encoder_temperature, dtype=tf.float32, trainable=False)
-        self.prior_temperature = tf.Variable(prior_temperature, dtype=tf.float32, trainable=False)
-        self.regularizer_scale_factor = tf.Variable(regularizer_scale_factor, dtype=tf.float32, trainable=False)
-        self.kl_scale_factor = tf.Variable(kl_scale_factor, dtype=tf.float32, trainable=False)
-        self.encoder_temperature_decay_rate = tf.constant(encoder_temperature_decay_rate, dtype=tf.float32)
-        self.prior_temperature_decay_rate = tf.constant(prior_temperature_decay_rate, dtype=tf.float32)
-        self.regularizer_decay_rate = tf.constant(regularizer_decay_rate, dtype=tf.float32)
+        self.encoder_temperature = encoder_temperature
+        self.prior_temperature = prior_temperature
+        self.regularizer_scale_factor = regularizer_scale_factor
+        self.kl_scale_factor = kl_scale_factor
+        self.encoder_temperature_decay_rate = encoder_temperature_decay_rate
+        self.prior_temperature_decay_rate = prior_temperature_decay_rate
+        self.regularizer_decay_rate = regularizer_decay_rate
         self.kl_growth_rate = kl_annealing_growth_rate
 
         self.scale_activation = multivariate_normal_raw_scale_diag_activation
@@ -189,16 +189,6 @@ class VariationalMarkovDecisionProcess(Model):
         for value in self.loss_metrics.values():
             value.reset_states()
         #  super().reset_metrics()
-
-    @property
-    def kl_growth_rate(self):
-        return self._kl_growth_rate
-
-    @kl_growth_rate.setter
-    def kl_growth_rate(self, value):
-        self._initial_kl_scale_factor = tf.Variable(self.kl_scale_factor, dtype=tf.float32, trainable=False)
-        self._decay_kl_scale_factor = tf.Variable(1., dtype=tf.float32, trainable=False)
-        self._kl_growth_rate = tf.constant(value, dtype=tf.float32)
 
     def relaxed_encoding(
             self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor,
@@ -423,6 +413,72 @@ class VariationalMarkovDecisionProcess(Model):
             check = lambda x: 1 if 1 - eps > x > eps else 0
             mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
         return mean_bits_used / 2
+
+    @property
+    def encoder_temperature(self):
+        return self._encoder_temperature
+
+    @encoder_temperature.setter
+    def encoder_temperature(self, value):
+        self._encoder_temperature = tf.Variable(value, dtype=tf.float32, trainable=False)
+
+    @property
+    def encoder_temperature_decay_rate(self):
+        return self._encoder_temperature_decay_rate
+
+    @encoder_temperature_decay_rate.setter
+    def encoder_temperature_decay_rate(self, value):
+        self._encoder_temperature_decay_rate = tf.constant(value, dtype=tf.float32)
+
+    @property
+    def prior_temperature(self):
+        return self._prior_temperature
+
+    @prior_temperature.setter
+    def prior_temperature(self, value):
+        self._prior_temperature = tf.Variable(value, dtype=tf.float32, trainable=False)
+
+    @property
+    def prior_temperature_decay_rate(self):
+        return self._prior_temperature_decay_rate
+
+    @prior_temperature_decay_rate.setter
+    def prior_temperature_decay_rate(self, value):
+        self._prior_temperature_decay_rate = tf.constant(value, dtype=tf.float32)
+
+    @property
+    def regularizer_scale_factor(self):
+        return self._regularizer_scale_factor
+
+    @regularizer_scale_factor.setter
+    def regularizer_scale_factor(self, value):
+        self._regularizer_scale_factor = tf.Variable(value, dtype=tf.float32, trainable=False)
+
+    @property
+    def regularizer_decay_rate(self):
+        return self._regularizer_decay_rate
+
+    @regularizer_decay_rate.setter
+    def regularizer_decay_rate(self, value):
+        self._regularizer_decay_rate = tf.constant(value, dtype=tf.float32)
+
+    @property
+    def kl_scale_factor(self):
+        return self._kl_scale_factor
+
+    @kl_scale_factor.setter
+    def kl_scale_factor(self, value):
+        self._kl_scale_factor = tf.Variable(value, dtype=tf.float32, trainable=False)
+
+    @property
+    def kl_growth_rate(self):
+        return self._kl_growth_rate
+
+    @kl_growth_rate.setter
+    def kl_growth_rate(self, value):
+        self._initial_kl_scale_factor = tf.Variable(self.kl_scale_factor, dtype=tf.float32, trainable=False)
+        self._decay_kl_scale_factor = tf.Variable(1., dtype=tf.float32, trainable=False)
+        self._kl_growth_rate = tf.constant(value, dtype=tf.float32)
 
 
 @tf.function
