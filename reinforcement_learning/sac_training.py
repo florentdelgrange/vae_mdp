@@ -23,14 +23,8 @@ from tf_agents.utils import common
 from tf_agents.policies import policy_saver
 import tf_agents.trajectories.time_step as ts
 
+from reinforcement_learning import labeling_functions
 from util.io import dataset_generator
-
-labeling_functions = {
-    'HumanoidBulletEnv-v0':
-        lambda states: states.take(0, axis=-1) + 0.8 <= 0.78,  # falling down
-    # np.count_nonzero(np.abs(observation[:, :, 8: 42][0::2]) > 0.99) > 0  # has stuck joints
-}
-
 
 class NumberOfSafetyViolations:
     def __init__(self, labeling_function):
