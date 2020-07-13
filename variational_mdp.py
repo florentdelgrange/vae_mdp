@@ -1,13 +1,21 @@
 import os
-from typing import Tuple, Optional, List, Callable
+from typing import Tuple, Optional, List, Callable, Dict
 import numpy as np
 
 import tensorflow as tf
 import tensorflow_probability as tfp
+import tf_agents.policies.tf_policy
 from tensorflow.keras import Model
 from tensorflow.keras.models import clone_model
 from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense, Lambda
 from tensorflow.keras.utils import Progbar
+from tf_agents.drivers import dynamic_step_driver
+from tf_agents.environments import tf_py_environment, parallel_py_environment
+from tf_agents.metrics import tf_metrics
+from tf_agents.replay_buffers import tf_uniform_replay_buffer
+from tf_agents.utils import common
+
+from util.io.dataset_generator import gather_rl_observations, get_tensor_shape, DatasetGenerator
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -528,24 +536,147 @@ def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
     return vae_mdp
 
 
-def train(vae_mdp: VariationalMarkovDecisionProcess,
-          dataset_generator: Optional[Callable[[], tf.data.Dataset]] = None,
-          epochs: int = 16,
-          batch_size: int = 128,
-          optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
-          checkpoint: Optional[tf.train.Checkpoint] = None,
-          manager: Optional[tf.train.CheckpointManager] = None,
-          log_interval: int = 80,
-          save_model_interval: int = int(1e4),
-          dataset_size: Optional[int] = None,
-          log_name: str = 'vae',
-          annealing_period: int = 0,
-          start_annealing_step: int = 0,
-          logs: bool = True,
-          display_progressbar: bool = True,
-          eval_ratio: float = 5e-3,
-          max_steps: int = int(1e6),
-          save_directory='.'):
+def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
+                      policy: tf_agents.policies.tf_policy.Base,
+                      environment_suite,
+                      env_name: str,
+                      labeling_function: Callable,
+                      num_iterations: int = int(3e6),
+                      initial_collect_steps: int = int(1e4),
+                      collect_steps_per_iteration: int = 1,
+                      replay_buffer_capacity: int = int(1e6),
+                      parallelization: bool = True,
+                      num_parallel_environments: int = 4,
+                      batch_size: int = 128,
+                      optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
+                      checkpoint: Optional[tf.train.Checkpoint] = None,
+                      manager: Optional[tf.train.CheckpointManager] = None,
+                      log_interval: int = 80,
+                      eval_steps: int = int(1e4),
+                      save_model_interval: int = int(1e4),
+                      dataset_size: Optional[int] = None,
+                      log_name: str = 'vae',
+                      annealing_period: int = 0,
+                      start_annealing_step: int = 0,
+                      logs: bool = True,
+                      display_progressbar: bool = True,
+                      max_steps: int = int(1e6),
+                      save_directory='.'):
+
+    # Load checkpoint
+    if checkpoint is not None and manager is not None:
+        checkpoint.restore(manager.latest_checkpoint)
+        if manager.latest_checkpoint:
+            print("Restored from {}".format(manager.latest_checkpoint))
+        else:
+            print("Initializing from scratch.")
+
+    # initialize logs
+    import datetime
+    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    train_log_dir = os.path.join('logs/gradient_tape', log_name, current_time)
+    if not os.path.exists(train_log_dir) and logs:
+        os.makedirs(train_log_dir)
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir) if logs else None
+
+    # Load step
+    global_step = checkpoint.save_counter if checkpoint else tf.Variable(0)
+    start_step = global_step.numpy()
+    print("Step: {}".format(global_step.numpy()))
+
+    progressbar = Progbar(
+        target=None,
+        stateful_metrics=list(vae_mdp.loss_metrics.keys()) + ['t_1', 't_2', 'regularizer_scale_factor', 'step'],
+        interval=0.1) if display_progressbar else None
+
+    if parallelization:
+        tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
+            [lambda: environment_suite.load(env_name)] * num_parallel_environments))
+        tf_env.reset()
+        py_env = environment_suite.load(env_name)
+        py_env.reset()
+    else:
+        py_env = environment_suite.load(env_name)
+        py_env.reset()
+        tf_env = tf_py_environment.TFPyEnvironment(py_env)
+
+        observation_spec = tf_env.observation_spec()
+        action_spec = tf_env.action_spec()
+
+        replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
+            data_spec=(observation_spec, action_spec),
+            batch_size=tf_env.batch_size,
+            max_length=replay_buffer_capacity)
+
+        dataset = replay_buffer.as_dataset(
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+            sample_batch_size=batch_size,
+            num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
+        eval_dataset = replay_buffer.as_dataset(
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+            sample_batch_size=eval_steps,
+            num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
+        iterator = iter(dataset)
+        eval_iterator = iter(eval_dataset)
+        generator = DatasetGenerator()
+
+        def dataset_generator(data: Dict[str, np.array]):
+            return tf.data.Dataset.from_generator(
+                generator.process_data,
+                (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+                get_tensor_shape(data),
+                args=(data,)
+            )
+
+        num_episodes = tf_metrics.NumberOfEpisodes()
+        env_steps = tf_metrics.EnvironmentSteps()
+        observers = [num_episodes, env_steps] if not parallelization else []
+        observers += [replay_buffer.add_batch]
+
+        driver = dynamic_step_driver.DynamicStepDriver(
+            tf_env, policy, observers=observers, num_steps=collect_steps_per_iteration)
+        initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
+            tf_env, policy, observers=[replay_buffer.add_batch], num_steps=initial_collect_steps)
+
+        driver.run = common.function(driver.run)
+
+        initial_collect_driver.run()
+        for _ in range(num_iterations):
+
+            for _ in range(collect_steps_per_iteration):
+                # Collect a few steps using collect_policy and save to the replay buffer.
+                driver.run()
+
+            data = gather_rl_observations(iterator, labeling_function)
+
+            training_step(dataset_generator(data), batch_size, vae_mdp, optimizer, annealing_period, global_step,
+                          dataset_size, display_progressbar, start_step, 0, progressbar,
+                          lambda: dataset_generator(gather_rl_observations(eval_iterator, labeling_function)),
+                          save_model_interval, 1., save_directory, log_name, train_summary_writer, log_interval,
+                          manager, logs, start_annealing_step, max_steps)
+
+        if global_step.numpy() > max_steps:
+            return
+
+
+def train_from_dataset(vae_mdp: VariationalMarkovDecisionProcess,
+                       dataset_generator: Optional[Callable[[], tf.data.Dataset]] = None,
+                       epochs: int = 16,
+                       batch_size: int = 128,
+                       optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
+                       checkpoint: Optional[tf.train.Checkpoint] = None,
+                       manager: Optional[tf.train.CheckpointManager] = None,
+                       log_interval: int = 80,
+                       save_model_interval: int = int(1e4),
+                       dataset_size: Optional[int] = None,
+                       log_name: str = 'vae',
+                       annealing_period: int = 0,
+                       start_annealing_step: int = 0,
+                       logs: bool = True,
+                       display_progressbar: bool = True,
+                       eval_ratio: float = 5e-3,
+                       max_steps: int = int(1e6),
+                       save_directory='.'):
     assert 0 < eval_ratio < 1
 
     # Load checkpoint
@@ -579,48 +710,10 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
 
         dataset = dataset_generator()
 
-        for x in dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE):
-            gradients = compute_apply_gradients(vae_mdp, x, optimizer)
-            loss = gradients
-
-            if annealing_period > 0 and \
-                    global_step.numpy() % annealing_period == 0 and global_step.numpy() > start_annealing_step:
-                vae_mdp.anneal()
-
-            # update progressbar
-            metrics_key_values = [('step', global_step.numpy()), ('loss', loss.numpy())] + \
-                                 [(key, value.result()) for key, value in vae_mdp.loss_metrics.items()] + \
-                                 [('mean_bits_used', vae_mdp.mean_latent_bits_used(x))]
-            if annealing_period != 0:
-                metrics_key_values.append(('t_1', vae_mdp.encoder_temperature.numpy()))
-                metrics_key_values.append(('t_2', vae_mdp.prior_temperature.numpy()))
-                metrics_key_values.append(('regularizer_scale_factor', vae_mdp.regularizer_scale_factor))
-                metrics_key_values.append(('kl_annealing_scale_factor', vae_mdp.kl_scale_factor))
-            if dataset_size is not None and display_progressbar and \
-                    (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
-                progressbar.add(batch_size, values=metrics_key_values)
-
-            # update step
-            global_step.assign_add(1)
-
-            # eval, save and log
-            if global_step.numpy() % save_model_interval == 0:
-                eval_and_save(vae_mdp=vae_mdp, dataset=dataset_generator(),
-                              batch_size=batch_size, eval_steps=int(dataset_size * eval_ratio) // batch_size,
-                              global_step=int(global_step.numpy()), save_directory=save_directory, log_name=log_name,
-                              train_summary_writer=train_summary_writer)
-            if global_step.numpy() % log_interval == 0:
-                if manager is not None:
-                    manager.save()
-                if logs:
-                    with train_summary_writer.as_default():
-                        for key, value in metrics_key_values:
-                            tf.summary.scalar(key, value, step=global_step.numpy())
-                # reset metrics
-                vae_mdp.reset_metrics()
-
-            if global_step.numpy() > max_steps:
-                break
+        training_step(dataset, batch_size, vae_mdp, optimizer, annealing_period, global_step, dataset_size,
+                      display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
+                      eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
+                      start_annealing_step, max_steps)
 
         # reset metrics
         vae_mdp.reset_metrics()
@@ -633,6 +726,57 @@ def train(vae_mdp: VariationalMarkovDecisionProcess,
             return
 
 
+def training_step(dataset, batch_size, vae_mdp, optimizer, annealing_period, global_step, dataset_size,
+                  display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
+                  eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
+                  start_annealing_step, max_steps):
+    for x in dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE):
+        gradients = compute_apply_gradients(vae_mdp, x, optimizer)
+        loss = gradients
+
+        if annealing_period > 0 and \
+                global_step.numpy() % annealing_period == 0 and global_step.numpy() > start_annealing_step:
+            vae_mdp.anneal()
+
+        # update progressbar
+        metrics_key_values = [('step', global_step.numpy()), ('loss', loss.numpy())] + \
+                             [(key, value.result()) for key, value in vae_mdp.loss_metrics.items()] + \
+                             [('mean_bits_used', vae_mdp.mean_latent_bits_used(x))]
+        if annealing_period != 0:
+            metrics_key_values.append(('t_1', vae_mdp.encoder_temperature.numpy()))
+            metrics_key_values.append(('t_2', vae_mdp.prior_temperature.numpy()))
+            metrics_key_values.append(('regularizer_scale_factor', vae_mdp.regularizer_scale_factor))
+            metrics_key_values.append(('kl_annealing_scale_factor', vae_mdp.kl_scale_factor))
+        if dataset_size is not None and display_progressbar and \
+                (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
+            progressbar.add(batch_size, values=metrics_key_values)
+        elif dataset_size is None and display_progressbar:
+            progressbar.add(batch_size, values=metrics_key_values)
+
+        # update step
+        global_step.assign_add(1)
+
+        # eval, save and log
+        eval_steps = np.infty if dataset_size is None else int(dataset_size * eval_ratio) // batch_size
+        if global_step.numpy() % save_model_interval == 0:
+            eval_and_save(vae_mdp=vae_mdp, dataset=dataset_generator(),
+                          batch_size=batch_size, eval_steps=eval_steps,
+                          global_step=int(global_step.numpy()), save_directory=save_directory, log_name=log_name,
+                          train_summary_writer=train_summary_writer)
+        if global_step.numpy() % log_interval == 0:
+            if manager is not None:
+                manager.save()
+            if logs:
+                with train_summary_writer.as_default():
+                    for key, value in metrics_key_values:
+                        tf.summary.scalar(key, value, step=global_step.numpy())
+            # reset metrics
+            vae_mdp.reset_metrics()
+
+        if global_step.numpy() > max_steps:
+            break
+
+
 def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                   dataset: tf.data.Dataset,
                   batch_size: int,
@@ -641,24 +785,26 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                   save_directory: str,
                   log_name: str,
                   train_summary_writer: Optional[tf.summary.SummaryWriter] = None):
-    print('\nEvaluation over {} samples'.format(eval_steps * batch_size))
     eval_elbo = tf.metrics.Mean()
     eval_set = dataset.batch(batch_size)
+
     for step, x in enumerate(eval_set):
         eval_elbo(vae_mdp.eval(x))
         if step > eval_steps:
-            if train_summary_writer is not None:
-                with train_summary_writer.as_default():
-                    tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
-            print('eval ELBO: ', eval_elbo.result().numpy())
-            model_name = '{}_step{}_eval_elbo{:.3f}'.format(log_name, global_step, eval_elbo.result())
-            if check_numerics:
-                tf.debugging.disable_check_numerics()
-            tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
-            if check_numerics:
-                tf.debugging.enable_check_numerics()
-            del dataset
-            return eval_elbo
+            break
+
+    if train_summary_writer is not None:
+        with train_summary_writer.as_default():
+            tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
+    print('eval ELBO: ', eval_elbo.result().numpy())
+    model_name = '{}_step{}_eval_elbo{:.3f}'.format(log_name, global_step, eval_elbo.result())
+    if check_numerics:
+        tf.debugging.disable_check_numerics()
+    tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
+    if check_numerics:
+        tf.debugging.enable_check_numerics()
+    del dataset
+    return eval_elbo
 
 
 def evaluate_encoder_distribution(vae_mdp: VariationalMarkovDecisionProcess,

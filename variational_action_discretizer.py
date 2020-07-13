@@ -108,7 +108,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         reward_network_mean = \
             Lambda(lambda outputs: tf.stack(outputs, axis=1))(list(mean for mean, covariance in reward_network_outputs))
         reward_network_raw_covariance = \
-            Lambda(lambda outputs: tf.stack(outputs, axis=1))(list(covariance for mean, covariance in reward_network_outputs))
+            Lambda(lambda outputs: tf.stack(outputs, axis=1))(
+                list(covariance for mean, covariance in reward_network_outputs))
         self.discrete_actions_reward_network = Model(inputs=[latent_state, next_latent_state],
                                                      outputs=[reward_network_mean, reward_network_raw_covariance],
                                                      name="discrete_actions_reward_network")
@@ -146,7 +147,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         for layers in state_layers:
             for layer in layers:
                 layer.trainable = False
-                assert layer.trainable == False
+                assert not layer.trainable
 
         self.loss_metrics = {
             'ELBO': tf.keras.metrics.Mean(name='ELBO'),
