@@ -3,7 +3,7 @@ import os
 import glob
 import datetime
 import random
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 import tensorflow as tf
@@ -14,7 +14,7 @@ import time
 def gather_rl_observations(
         iterator,
         labeling_function,
-        dataset_path='dataset/reinforcement_learning',
+        dataset_path: Optional['str'] = None,
         dataset_name='rl_exploration',
         scalar_rewards=True):
     """
@@ -42,17 +42,24 @@ def gather_rl_observations(
     filtering &= next_state_type[:, 0] != ts.StepType.FIRST
     filtering &= next_state_type[:, 1] != ts.StepType.FIRST
 
-    if not os.path.exists(dataset_path):
-        os.makedirs(dataset_path)
-    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    with h5py.File(os.path.join(dataset_path, dataset_name + current_time + '.hdf5'), 'w') as h5f:
-        h5f['state'] = states[filtering]
-        h5f['action'] = actions[filtering]
-        h5f['reward'] = rewards[filtering]
-        h5f['next_state'] = next_states[filtering]
-        h5f['next_state_label'] = next_labels[filtering]
-        h5f['state_type'] = state_type[filtering]
-        h5f['next_state_type'] = state_type[filtering]
+    data = {'state': states[filtering], 'action': actions[filtering], 'reward': rewards[filtering],
+            'next_state': next_states[filtering], 'next_state_label': next_labels[filtering],
+            'state_type': state_type[filtering], 'next_state_type': next_state_type[filtering]}
+
+    if dataset_path is not None:
+        if not os.path.exists(dataset_path):
+            os.makedirs(dataset_path)
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        with h5py.File(os.path.join(dataset_path, dataset_name + current_time + '.hdf5'), 'w') as h5f:
+            h5f['state'] = data['state']
+            h5f['action'] = data['action']
+            h5f['reward'] = data['reward']
+            h5f['next_state'] = data['next_state']
+            h5f['next_state_label'] = data['next_state_label']
+            h5f['state_type'] = data['state_type']
+            h5f['next_state_type'] = data['next_state_type']
+
+    return data
 
 
 class DatasetGenerator:
@@ -61,44 +68,46 @@ class DatasetGenerator:
         self.initial_dummy_state = initial_dummy_state
         self.initial_dummy_action = initial_dummy_action
 
+    def process_data(self, data):
+        for (state, action, reward, next_state, label, state_type, next_state_type) in \
+                zip(data['state'], data['action'], data['reward'], data['next_state'],
+                    data['next_state_label'], data['state_type'], data['next_state_type']):
+
+            if state.shape[:-1] == reward.shape:  # singleton shape
+                reward = reward.reshape(list(reward.shape) + [1])
+            if state.shape[:-1] == label.shape:
+                label = label.reshape(list(label.shape) + [1])
+
+            if state_type[0] == ts.StepType.FIRST:  # initial state handling
+                initial_state = self.initial_dummy_state if self.initial_dummy_state is not None \
+                    else np.zeros(shape=state.shape[1:])
+                initial_action = self.initial_dummy_action if self.initial_dummy_action is not None \
+                    else np.zeros(shape=action.shape[1:])
+                yield (np.stack((initial_state, state[0])),
+                       np.stack((initial_action, action[0])),
+                       np.stack((np.zeros(shape=reward.shape[1:]), reward[0])),
+                       state,
+                       np.stack((label[0], label[0])))
+
+            yield state, action, reward, next_state, label
+
     def __call__(self, file):
         with h5py.File(file, 'r') as hf:
-            for (state, action, reward, next_state, label, state_type, next_state_type) in \
-                    zip(hf['state'], hf['action'], hf['reward'], hf['next_state'],
-                        hf['next_state_label'], hf['state_type'], hf['next_state_type']):
-
-                if state.shape[:-1] == reward.shape:  # singleton shape
-                    reward = reward.reshape(list(reward.shape) + [1])
-                if state.shape[:-1] == label.shape:
-                    label = label.reshape(list(label.shape) + [1])
-
-                if state_type[0] == ts.StepType.FIRST:  # initial state handling
-                    initial_state = self.initial_dummy_state if self.initial_dummy_state is not None \
-                        else np.zeros(shape=state.shape[1:])
-                    initial_action = self.initial_dummy_action if self.initial_dummy_action is not None \
-                        else np.zeros(shape=action.shape[1:])
-                    yield (np.stack((initial_state, state[0])),
-                           np.stack((initial_action, action[0])),
-                           np.stack((np.zeros(shape=reward.shape[1:]), reward[0])),
-                           state,
-                           np.stack((label[0], label[0])))
-
-                yield state, action, reward, next_state, label
+            self.process_data(hf)
 
 
-def get_tensor_shape(h5file):
-    with h5py.File(h5file, 'r') as hf:
-        reward_shape = list(hf['reward'].shape[1:]) + \
-                       ([1] if (tf.TensorShape(hf['state'].shape[:-1]) == hf['reward'].shape) else [])
-        label_shape = list(hf['next_state_label'].shape[1:]) + \
-                      ([1] if (tf.TensorShape(hf['state'].shape[:-1]) == hf['next_state_label'].shape) else [])
-        return (tf.TensorShape(hf['state'].shape[1:]),
-                tf.TensorShape(hf['action'].shape[1:]),
-                tf.TensorShape(reward_shape),
-                tf.TensorShape(hf['next_state'].shape[1:]),
-                tf.TensorShape(label_shape))
-        #  tf.TensorShape(hf['state_type'].shape[1:]),
-        #  tf.TensorShape(hf['next_state_type'].shape[1:]))
+def get_tensor_shape(data):
+    reward_shape = list(data['reward'].shape[1:]) + \
+                   ([1] if (tf.TensorShape(data['state'].shape[:-1]) == data['reward'].shape) else [])
+    label_shape = list(data['next_state_label'].shape[1:]) + \
+                  ([1] if (tf.TensorShape(data['state'].shape[:-1]) == data['next_state_label'].shape) else [])
+    return (tf.TensorShape(data['state'].shape[1:]),
+            tf.TensorShape(data['action'].shape[1:]),
+            tf.TensorShape(reward_shape),
+            tf.TensorShape(data['next_state'].shape[1:]),
+            tf.TensorShape(label_shape))
+    #  tf.TensorShape(hf['state_type'].shape[1:]),
+    #  tf.TensorShape(hf['next_state_type'].shape[1:]))
 
 
 def create_dataset(cycle_length=4,
@@ -112,17 +121,18 @@ def create_dataset(cycle_length=4,
 
     dataset = tf.data.Dataset.from_tensor_slices(file_list)
 
-    dataset = dataset.interleave(
-        lambda filename: tf.data.Dataset.from_generator(
-            DatasetGenerator(),
-            (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),  # , tf.int8, tf.int8),
-            get_tensor_shape(file_list[0]),  # all files are assumed to have same Tensor Shape
-            args=(filename,)
-        ),
-        cycle_length=cycle_length,
-        block_length=block_length,
-        num_parallel_calls=num_parallel_calls
-    )
+    with h5py.File(file_list[0], 'r') as hf:
+        dataset = dataset.interleave(
+            lambda filename: tf.data.Dataset.from_generator(
+                DatasetGenerator(),
+                (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),  # , tf.int8, tf.int8),
+                get_tensor_shape(hf),  # all files are assumed to have same Tensor Shape
+                args=(filename,)
+            ),
+            cycle_length=cycle_length,
+            block_length=block_length,
+            num_parallel_calls=num_parallel_calls
+        )
     return dataset
 
 
