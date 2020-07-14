@@ -19,7 +19,7 @@ def gather_rl_observations(
         scalar_rewards=True):
     """
     Writes the observations gathered through the training of an RL policy into an hdf5 dataset.
-    Important: the next() call of the iterator function must yields a bash containing 3-steps of tf_agents Trajectories.
+    Important: the next() call of the iterator function must yield a bash containing 3-steps of tf_agents Trajectories.
     The labeling function is defined over Trajectories observations.
     """
     data = iterator.next()[0]  # a tf_agents dataset typically returns a tuple (trajectories, information)
@@ -64,11 +64,14 @@ def gather_rl_observations(
 
 class DatasetGenerator:
 
-    def __init__(self, initial_dummy_state=None, initial_dummy_action=None):
+    def __init__(self, initial_dummy_state=None, initial_dummy_action=None, data: Optional = None):
         self.initial_dummy_state = initial_dummy_state
         self.initial_dummy_action = initial_dummy_action
+        self._data = data
 
-    def process_data(self, data):
+    def process_data(self, data: Optional = None):
+        if data is None:
+            data = self._data
         for (state, action, reward, next_state, label, state_type, next_state_type) in \
                 zip(data['state'], data['action'], data['reward'], data['next_state'],
                     data['next_state_label'], data['state_type'], data['next_state_type']):
@@ -93,7 +96,7 @@ class DatasetGenerator:
 
     def __call__(self, file):
         with h5py.File(file, 'r') as hf:
-            self.process_data(hf)
+            yield from self.process_data(data=hf)
 
 
 def get_tensor_shape(data):
@@ -106,8 +109,6 @@ def get_tensor_shape(data):
             tf.TensorShape(reward_shape),
             tf.TensorShape(data['next_state'].shape[1:]),
             tf.TensorShape(label_shape))
-    #  tf.TensorShape(hf['state_type'].shape[1:]),
-    #  tf.TensorShape(hf['next_state_type'].shape[1:]))
 
 
 def create_dataset(cycle_length=4,
@@ -121,18 +122,21 @@ def create_dataset(cycle_length=4,
 
     dataset = tf.data.Dataset.from_tensor_slices(file_list)
 
-    with h5py.File(file_list[0], 'r') as hf:
-        dataset = dataset.interleave(
-            lambda filename: tf.data.Dataset.from_generator(
-                DatasetGenerator(),
-                (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),  # , tf.int8, tf.int8),
-                get_tensor_shape(hf),  # all files are assumed to have same Tensor Shape
-                args=(filename,)
-            ),
-            cycle_length=cycle_length,
-            block_length=block_length,
-            num_parallel_calls=num_parallel_calls
-        )
+    def tensor_shape(file):
+        with h5py.File(file, 'r') as hf:
+            return get_tensor_shape(hf)
+
+    dataset = dataset.interleave(
+        lambda filename: tf.data.Dataset.from_generator(
+            DatasetGenerator(),
+            (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),  # , tf.int8, tf.int8),
+            tensor_shape(file_list[0]),  # all files are assumed to have same Tensor Shape
+            args=(filename,)
+        ),
+        cycle_length=cycle_length,
+        block_length=block_length,
+        num_parallel_calls=num_parallel_calls
+    )
     return dataset
 
 

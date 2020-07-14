@@ -1,7 +1,9 @@
 import os
+from typing import Dict
 
 import numpy as np
 import tensorflow as tf
+import tf_agents.environments
 from absl import app
 from absl import flags
 from tensorflow.keras import Input, Model
@@ -9,6 +11,7 @@ from tensorflow.keras.layers import Dense
 from tensorflow.python.keras import Sequential
 from tensorflow.python.keras.layers import Lambda
 
+import reinforcement_learning
 import variational_action_discretizer
 import variational_mdp
 from util.io import dataset_generator
@@ -16,7 +19,7 @@ from util.io import dataset_generator
 flags.DEFINE_string(
     "dataset_path",
     help="Path of the directory containing the dataset files in hdf5 format.",
-    default="dataset/reinforcement_learning")
+    default='')
 flags.DEFINE_integer("batch_size", default=128, help="Batch size.")
 flags.DEFINE_integer(
     "mixture_components",
@@ -127,6 +130,21 @@ flags.DEFINE_multi_integer(
     default=[256, 256],
     help='Number of units to use for each layer of the reward network.'
 )
+flags.DEFINE_string(
+    "policy_path",
+    default='',
+    help="Path of a policy in tf.saved_model format."
+)
+flags.DEFINE_string(
+    "environment",
+    default='',
+    help="Name of the agent's environment."
+)
+flags.DEFINE_string(
+    "env_suite",
+    default='suite_gym',
+    help='Name of the tf_agents environment suite.'
+)
 FLAGS = flags.FLAGS
 
 
@@ -134,12 +152,18 @@ def main(argv):
     del argv
     params = FLAGS.flag_values_dict()
 
-    if params['action_discretizer'] and params['load_vae'] == '':
-        raise RuntimeError('Missing argument: --load_vae')
+    def check_missing_argument(name: str):
+        if params[name] == '':
+            raise RuntimeError('Missing argument: --{}'.format(name))
+
+    if params['action_discretizer']:
+        for param in ('load_vae', 'policy_path', 'environment'):
+            check_missing_argument(param)
+    else:
+        for param in ('dataset_path',):
+            check_missing_argument(param)
 
     dataset_path = params['dataset_path']
-    # dataset_path = '/home/florent/Documents/hpc-cluster/dataset/reinforcement_learning'
-    # dataset_path = 'reinforcement_learning/dataset/reinforcement_learning'
 
     batch_size = params['batch_size']
     mixture_components = params['mixture_components']
@@ -167,9 +191,8 @@ def main(argv):
                                                 block_length=block_length)
 
     dummy_dataset = generate_dataset()
-    print('Compute dataset size...')
-    dataset_size = dataset_generator.get_num_samples(dataset_path, batch_size=batch_size, drop_remainder=True)
-    print('{} samples.'.format(dataset_size))
+    dataset_size = -1 if params['action_discretizer'] else \
+        dataset_generator.get_num_samples(dataset_path, batch_size=batch_size, drop_remainder=True)
 
     state_shape, action_shape, reward_shape, _, label_shape = \
         [tuple(spec.shape.as_list()[1:]) for spec in dummy_dataset.element_spec]
@@ -223,7 +246,7 @@ def main(argv):
             encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
             prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
         )
-        vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor'],
+        vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
         vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
@@ -233,13 +256,37 @@ def main(argv):
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
     manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
 
-    variational_mdp.train(vae_mdp_model, dataset_generator=generate_dataset,
-                          batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint, manager=manager,
-                          dataset_size=dataset_size, annealing_period=1,
-                          start_annealing_step=params['start_annealing_step'],
-                          log_name=vae_name, logs=True, max_steps=params['max_steps'],
-                          display_progressbar=params['display_progressbar'],
-                          save_directory=params['save_dir'])
+    if params['action_discretizer']:
+        policy = tf.compat.v2.saved_model.load(params['policy_path'])
+
+        try:
+            import importlib
+            environment_suite = importlib.import_module('tf_agents.environments.' + params['env_suite'])
+        except BaseException as err:
+            serr = str(err)
+            print("Error to load the module '" + params['env_suite'] + "': " + serr)
+
+        environment_name = params['environment']
+        variational_mdp.train_from_policy(vae_mdp_model, policy=policy, environment_suite=environment_suite,
+                                          env_name=environment_name,
+                                          labeling_function=reinforcement_learning.labeling_functions[environment_name],
+                                          batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
+                                          manager=manager, log_name=vae_name,
+                                          start_annealing_step=params['start_annealing_step'],
+                                          logs=True, annealing_period=1, max_steps=params['max_steps'],
+                                          display_progressbar=params['display_progressbar'],
+                                          save_directory=params['save_dir'], parallelization=False)
+    else:
+        variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,
+                                           batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
+                                           manager=manager,
+                                           dataset_size=dataset_size, annealing_period=1,
+                                           start_annealing_step=params['start_annealing_step'],
+                                           log_name=vae_name, logs=True, max_steps=params['max_steps'],
+                                           display_progressbar=params['display_progressbar'],
+                                           save_directory=params['save_dir'])
+
+    return 0
 
 
 if __name__ == '__main__':

@@ -4,15 +4,18 @@ import numpy as np
 
 import tensorflow as tf
 import tensorflow_probability as tfp
-import tf_agents.policies.tf_policy
 from tensorflow.keras import Model
 from tensorflow.keras.models import clone_model
 from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense, Lambda
 from tensorflow.keras.utils import Progbar
+
+import tf_agents.policies.tf_policy
+import tf_agents.agents.tf_agent
 from tf_agents.drivers import dynamic_step_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment
 from tf_agents.metrics import tf_metrics
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
+from tf_agents.trajectories import policy_step, trajectory
 from tf_agents.utils import common
 
 from util.io.dataset_generator import gather_rl_observations, get_tensor_shape, DatasetGenerator
@@ -562,7 +565,6 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       display_progressbar: bool = True,
                       max_steps: int = int(1e6),
                       save_directory='.'):
-
     # Load checkpoint
     if checkpoint is not None and manager is not None:
         checkpoint.restore(manager.latest_checkpoint)
@@ -593,8 +595,6 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
         tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
             [lambda: environment_suite.load(env_name)] * num_parallel_environments))
         tf_env.reset()
-        py_env = environment_suite.load(env_name)
-        py_env.reset()
     else:
         py_env = environment_suite.load(env_name)
         py_env.reset()
@@ -603,10 +603,21 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
         observation_spec = tf_env.observation_spec()
         action_spec = tf_env.action_spec()
 
+        # specs
+        policy_step_spec = policy_step.PolicyStep(
+            action=action_spec,
+            state=(),
+            info=())
+        trajectory_spec = trajectory.from_transition(tf_env.time_step_spec(),
+                                                     policy_step_spec,
+                                                     tf_env.time_step_spec())
+
         replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
-            data_spec=(observation_spec, action_spec),
+            data_spec=trajectory_spec,
             batch_size=tf_env.batch_size,
             max_length=replay_buffer_capacity)
+
+        print('replay_buffer', replay_buffer)
 
         dataset = replay_buffer.as_dataset(
             num_parallel_calls=tf.data.experimental.AUTOTUNE,
@@ -618,14 +629,13 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
             num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
         iterator = iter(dataset)
         eval_iterator = iter(eval_dataset)
-        generator = DatasetGenerator()
 
         def dataset_generator(data: Dict[str, np.array]):
+            generator = DatasetGenerator(data=data)
             return tf.data.Dataset.from_generator(
                 generator.process_data,
                 (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
                 get_tensor_shape(data),
-                args=(data,)
             )
 
         num_episodes = tf_metrics.NumberOfEpisodes()
@@ -640,7 +650,9 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
 
         driver.run = common.function(driver.run)
 
+        print("Initial collect steps...")
         initial_collect_driver.run()
+        print("Start training.")
         for _ in range(num_iterations):
 
             for _ in range(collect_steps_per_iteration):
