@@ -24,8 +24,10 @@ tfd = tfp.distributions
 tfb = tfp.bijectors
 
 debug = False
-check_numerics = False
+debug_gradients = False
+check_numerics = True
 
+debug_gradients &= debug
 if check_numerics:
     tf.debugging.enable_check_numerics()
 
@@ -507,7 +509,7 @@ def compute_apply_gradients(vae_mdp: VariationalMarkovDecisionProcess, x, optimi
         loss = compute_loss(vae_mdp, x)
     gradients = tape.gradient(loss, vae_mdp.trainable_variables)
 
-    if debug:
+    if debug_gradients:
         for gradient, variable in zip(gradients, vae_mdp.trainable_variables):
             tf.print(gradient, "Gradient for {}".format(variable.name))
 
@@ -616,8 +618,6 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
             data_spec=trajectory_spec,
             batch_size=tf_env.batch_size,
             max_length=replay_buffer_capacity)
-
-        print('replay_buffer', replay_buffer)
 
         dataset = replay_buffer.as_dataset(
             num_parallel_calls=tf.data.experimental.AUTOTUNE,
