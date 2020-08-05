@@ -1,4 +1,3 @@
-import os
 from typing import Tuple, Optional, List, Callable
 import numpy as np
 
@@ -10,6 +9,7 @@ from tensorflow.keras.layers import Input, Concatenate, Reshape, Dense, Lambda
 
 import variational_mdp
 from variational_mdp import VariationalMarkovDecisionProcess
+from variational_mdp import epsilon
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -169,8 +169,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
     def discrete_action_encoding(self, latent_state: tf.Tensor, action: tf.Tensor) -> tfd.Distribution:
         relaxed_distribution = self.relaxed_action_encoding(latent_state, action, 1e-5)
-        probs = relaxed_distribution.probs_parameter()
-        return tfd.OneHotCategorical(probs=probs)
+        log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
+        return tfd.OneHotCategorical(logits=log_probs)
 
     def relaxed_action_prior(self, temperature: float):
         return tfd.ExpRelaxedOneHotCategorical(
@@ -178,8 +178,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
     def discrete_action_prior(self):
         relaxed_distribution = self.relaxed_action_prior(temperature=1e-5)
-        probs = relaxed_distribution.probs_parameter()
-        return tfd.OneHotCategorical(probs=probs, allow_nan_stats=False)
+        log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
+        return tfd.OneHotCategorical(logits=log_probs)
 
     def discrete_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, latent_action: tf.Tensor, log_latent_action: bool = False
@@ -201,9 +201,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             mixture_distribution=action_categorical,
             components_distribution=tfd.MultivariateNormalDiag(
                 loc=reward_mean,
-                scale_diag=self.scale_activation(reward_raw_covariance),
-                allow_nan_stats=False),
-            allow_nan_stats=False
+                scale_diag=self.scale_activation(reward_raw_covariance)),
         )
 
     def decode_action(
@@ -217,8 +215,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             components_distribution=tfd.MultivariateNormalDiag(
                 loc=action_mean,
                 scale_diag=self.scale_activation(action_raw_covariance),
-                allow_nan_stats=False
-            ), allow_nan_stats=False
+            ),
         )
 
     def call(self, inputs, training=None, mask=None):
@@ -293,19 +290,19 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         # rewards reconstruction
         log_p_rewards_action = self._state_vae.reward_probability_distribution(z, a_1, z_prime).log_prob(r_1)
-        log_p_rewards_latent_action = \
-            self.reward_probability_distribution(z, latent_action, z_prime).reward_distribution.log_prob(r_1)
+        log_p_rewards_latent_action = self.reward_probability_distribution(
+            z, tf.math.log(latent_action + epsilon), z_prime, log_latent_action=True).log_prob(r_1)
         log_p_rewards = log_p_rewards_latent_action - log_p_rewards_action
 
         # transition probability reconstruction
         log_p_transition_action = \
             self._state_vae.discrete_latent_transition_probability_distribution(z, a_1).log_prob(z_prime)
-        log_p_transition_latent_action = \
-            self.discrete_latent_transition_probability_distribution(z, latent_action).log_prob(z_prime)
+        log_p_transition_latent_action = self.discrete_latent_transition_probability_distribution(
+            z, tf.math.log(latent_action + epsilon), log_latent_action=True).log_prob(z_prime)
         log_p_transition = tf.reduce_sum(log_p_transition_latent_action - log_p_transition_action, axis=1)
 
         # action reconstruction
-        action_distribution = self.decode_action(z, latent_action)
+        action_distribution = self.decode_action(z, tf.math.log(latent_action + epsilon), log_latent_action=True)
         log_p_action = action_distribution.log_prob(a_1)
 
         rate = q.kl_divergence(p)

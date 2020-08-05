@@ -31,9 +31,7 @@ debug_gradients &= debug
 if check_numerics:
     tf.debugging.enable_check_numerics()
 
-epsilon = 1e-6
-max_val = 1e9
-min_val = -1e9
+epsilon = 1e-25
 
 
 class VariationalMarkovDecisionProcess(Model):
@@ -549,7 +547,7 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       num_iterations: int = int(3e6),
                       initial_collect_steps: int = int(1e4),
                       collect_steps_per_iteration: int = 1,
-                      replay_buffer_capacity: int = int(1e6),
+                      replay_buffer_capacity: int = int(1e5),
                       parallelization: bool = True,
                       num_parallel_environments: int = 4,
                       batch_size: int = 128,
@@ -660,12 +658,12 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                 driver.run()
 
             data = gather_rl_observations(iterator, labeling_function)
-
             training_step(dataset_generator(data), batch_size, vae_mdp, optimizer, annealing_period, global_step,
                           dataset_size, display_progressbar, start_step, 0, progressbar,
                           lambda: dataset_generator(gather_rl_observations(eval_iterator, labeling_function)),
                           save_model_interval, 1., save_directory, log_name, train_summary_writer, log_interval,
                           manager, logs, start_annealing_step, max_steps)
+            del data
 
         if global_step.numpy() > max_steps:
             return
