@@ -218,56 +218,33 @@ class SACLearner:
 
     def save_permissive_variance_policy(self, variance_multiplier: float = 1.5):
 
-        #  def map_proj(spec):
-        #      return self.normal_projection_net(spec, std_transform_multiplier=tf.math.sqrt(1.5))
+        def map_proj(spec):
+            return self.normal_projection_net(spec, std_transform_multiplier=variance_multiplier)
 
-        #  projection_networks = tf.nest.map_structure(map_proj, self.action_spec)
+        projection_networks = tf.nest.map_structure(map_proj, self.action_spec)
 
-        #  actual_projection_networks = self.actor_net._projection_networks
-        #  self.actor_net._projection_networks = projection_networks
+        actual_projection_networks = self.actor_net._projection_networks
+        self.actor_net._projection_networks = projection_networks
 
-        actor_net = actor_distribution_network.ActorDistributionNetwork(
-            self.observation_spec,
-            self.action_spec,
-            fc_layer_params=self.actor_fc_layer_params,
-            continuous_projection_net=lambda spec: self.normal_projection_net(
-                spec, std_transform_multiplier=variance_multiplier))
-
-        tf_agent = sac_agent.SacAgent(
-            self.tf_env.time_step_spec(),
-            self.action_spec,
-            actor_network=actor_net,
-            critic_network=self.critic_net,
-            actor_optimizer=tf.compat.v1.train.AdamOptimizer(learning_rate=self.actor_learning_rate),
-            critic_optimizer=tf.compat.v1.train.AdamOptimizer(learning_rate=self.critic_learning_rate),
-            alpha_optimizer=tf.compat.v1.train.AdamOptimizer(learning_rate=self.alpha_learning_rate),
-            target_update_tau=self.target_update_tau,
-            target_update_period=self.target_update_period,
-            td_errors_loss_fn=tf.compat.v1.losses.mean_squared_error,
-            gamma=self.gamma,
-            reward_scale_factor=self.reward_scale_factor,
-            gradient_clipping=self.gradient_clipping,
-            train_step_counter=self.global_step)
-        tf_agent.initialize()
-
-        train_checkpointer = common.Checkpointer(
+        checkpointer = common.Checkpointer(
             ckpt_dir=self.checkpoint_dir,
             max_to_keep=1,
-            agent=tf_agent,
+            agent=self.tf_agent,
             policy=self.collect_policy,
             replay_buffer=self.replay_buffer,
             global_step=self.global_step
         )
         stochastic_policy_dir = os.path.join(
-            self.save_directory_location, 'save', 'stochastic_policy', 'permissive_variance_policy')
-        stochastic_policy_saver = policy_saver.PolicySaver(tf_agent.policy)
+            self.save_directory_location, 'saves', 'stochastic_policy',
+            'permissive_variance_policy-{}'.format(variance_multiplier))
+        stochastic_policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
 
-        train_checkpointer.initialize_or_restore()
+        checkpointer.initialize_or_restore()
         self.global_step = tf.compat.v1.train.get_global_step()
         print("Checkpoint loaded! global_step={}".format(self.global_step.numpy()))
         stochastic_policy_saver.save(stochastic_policy_dir)
 
-        # self.actor_net._projection_networks = actual_projection_networks
+        self.actor_net._projection_networks = actual_projection_networks
 
     def train_and_eval(self):
         # Optimize by wrapping some of the code in a graph using TF function.
