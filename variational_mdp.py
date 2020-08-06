@@ -1,5 +1,5 @@
 import os
-from typing import Tuple, Optional, List, Callable, Dict
+from typing import Tuple, Optional, List, Callable, Dict, Union
 import numpy as np
 
 import tensorflow as tf
@@ -546,8 +546,8 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       labeling_function: Callable,
                       num_iterations: int = int(3e6),
                       initial_collect_steps: int = int(1e4),
-                      collect_steps_per_iteration: int = 1,
-                      replay_buffer_capacity: int = int(1e5),
+                      collect_steps_per_iteration: Optional[int] = 0,
+                      replay_buffer_capacity: int = int(1e6),
                       parallelization: bool = True,
                       num_parallel_environments: int = 4,
                       batch_size: int = 128,
@@ -565,6 +565,9 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       display_progressbar: bool = True,
                       max_steps: int = int(1e6),
                       save_directory='.'):
+    if collect_steps_per_iteration is None:
+        collect_steps_per_iteration = batch_size
+
     # Load checkpoint
     if checkpoint is not None and manager is not None:
         checkpoint.restore(manager.latest_checkpoint)
@@ -588,7 +591,8 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
 
     progressbar = Progbar(
         target=None,
-        stateful_metrics=list(vae_mdp.loss_metrics.keys()) + ['t_1', 't_2', 'regularizer_scale_factor', 'step'],
+        stateful_metrics=list(vae_mdp.loss_metrics.keys()) + ['t_1', 't_2', 'regularizer_scale_factor', 'step',
+                                                              "num_episodes", "env_steps", "replay_buffer_frames"],
         interval=0.1) if display_progressbar else None
 
     if parallelization:
@@ -600,73 +604,77 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
         py_env.reset()
         tf_env = tf_py_environment.TFPyEnvironment(py_env)
 
-        observation_spec = tf_env.observation_spec()
-        action_spec = tf_env.action_spec()
+    action_spec = tf_env.action_spec()
 
-        # specs
-        policy_step_spec = policy_step.PolicyStep(
-            action=action_spec,
-            state=(),
-            info=())
-        trajectory_spec = trajectory.from_transition(tf_env.time_step_spec(),
-                                                     policy_step_spec,
-                                                     tf_env.time_step_spec())
+    # specs
+    policy_step_spec = policy_step.PolicyStep(
+        action=action_spec,
+        state=(),
+        info=())
+    trajectory_spec = trajectory.from_transition(tf_env.time_step_spec(),
+                                                 policy_step_spec,
+                                                 tf_env.time_step_spec())
 
-        replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
-            data_spec=trajectory_spec,
-            batch_size=tf_env.batch_size,
-            max_length=replay_buffer_capacity)
+    replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
+        data_spec=trajectory_spec,
+        batch_size=tf_env.batch_size,
+        max_length=replay_buffer_capacity)
 
-        dataset = replay_buffer.as_dataset(
-            num_parallel_calls=tf.data.experimental.AUTOTUNE,
-            sample_batch_size=batch_size,
-            num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
-        eval_dataset = replay_buffer.as_dataset(
-            num_parallel_calls=tf.data.experimental.AUTOTUNE,
-            sample_batch_size=eval_steps,
-            num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
-        iterator = iter(dataset)
-        eval_iterator = iter(eval_dataset)
+    dataset = replay_buffer.as_dataset(
+        num_parallel_calls=tf.data.experimental.AUTOTUNE,
+        sample_batch_size=batch_size,
+        num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
+    eval_dataset = replay_buffer.as_dataset(
+        num_parallel_calls=tf.data.experimental.AUTOTUNE,
+        sample_batch_size=eval_steps,
+        num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
+    iterator = iter(dataset)
+    eval_iterator = iter(eval_dataset)
 
-        def dataset_generator(data: Dict[str, np.array]):
-            generator = DatasetGenerator(data=data)
-            return tf.data.Dataset.from_generator(
-                generator.process_data,
-                (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
-                get_tensor_shape(data),
-            )
+    def dataset_generator(data: Dict[str, np.array]):
+        generator = DatasetGenerator(data=data)
+        return tf.data.Dataset.from_generator(
+            generator.process_data,
+            (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+            get_tensor_shape(data),
+        )
 
-        num_episodes = tf_metrics.NumberOfEpisodes()
-        env_steps = tf_metrics.EnvironmentSteps()
-        observers = [num_episodes, env_steps] if not parallelization else []
-        observers += [replay_buffer.add_batch]
+    num_episodes = tf_metrics.NumberOfEpisodes()
+    env_steps = tf_metrics.EnvironmentSteps()
+    observers = [num_episodes, env_steps] if not parallelization else []
+    observers += [replay_buffer.add_batch]
 
-        driver = dynamic_step_driver.DynamicStepDriver(
-            tf_env, policy, observers=observers, num_steps=collect_steps_per_iteration)
-        initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
-            tf_env, policy, observers=[replay_buffer.add_batch], num_steps=initial_collect_steps)
+    driver = dynamic_step_driver.DynamicStepDriver(
+        tf_env, policy, observers=observers, num_steps=collect_steps_per_iteration)
+    initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
+        tf_env, policy, observers=observers, num_steps=initial_collect_steps)
 
-        driver.run = common.function(driver.run)
+    driver.run = common.function(driver.run)
 
-        print("Initial collect steps...")
-        initial_collect_driver.run()
-        print("Start training.")
-        for _ in range(num_iterations):
+    print("Initial collect steps...")
+    initial_collect_driver.run()
+    print("Start training.")
+    for _ in range(num_iterations):
+        # Collect a few steps using collect_policy and save to the replay buffer.
+        driver.run()
 
-            for _ in range(collect_steps_per_iteration):
-                # Collect a few steps using collect_policy and save to the replay buffer.
-                driver.run()
+        data = gather_rl_observations(iterator, labeling_function)
+        training_step(dataset=dataset_generator(data), batch_size=batch_size, vae_mdp=vae_mdp, optimizer=optimizer,
+                      annealing_period=annealing_period, global_step=global_step, dataset_size=dataset_size,
+                      display_progressbar=display_progressbar, start_step=start_step, epoch=0,
+                      progressbar=progressbar, dataset_generator=lambda: dataset_generator(
+                gather_rl_observations(eval_iterator, labeling_function)),
+                      save_model_interval=save_model_interval, eval_ratio=1., save_directory=save_directory,
+                      log_name=log_name, train_summary_writer=train_summary_writer, log_interval=log_interval,
+                      manager=manager, logs=logs, start_annealing_step=start_annealing_step, max_steps=max_steps,
+                      additional_metrics={"num_episodes": num_episodes.result(),
+                                          "env_steps": env_steps.result(),
+                                          "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization \
+                          else {"replay_buffer_frames": replay_buffer.num_frames()})
+        del data
 
-            data = gather_rl_observations(iterator, labeling_function)
-            training_step(dataset_generator(data), batch_size, vae_mdp, optimizer, annealing_period, global_step,
-                          dataset_size, display_progressbar, start_step, 0, progressbar,
-                          lambda: dataset_generator(gather_rl_observations(eval_iterator, labeling_function)),
-                          save_model_interval, 1., save_directory, log_name, train_summary_writer, log_interval,
-                          manager, logs, start_annealing_step, max_steps)
-            del data
-
-        if global_step.numpy() > max_steps:
-            return
+    if global_step.numpy() > max_steps:
+        return
 
 
 def train_from_dataset(vae_mdp: VariationalMarkovDecisionProcess,
@@ -739,7 +747,10 @@ def train_from_dataset(vae_mdp: VariationalMarkovDecisionProcess,
 def training_step(dataset, batch_size, vae_mdp, optimizer, annealing_period, global_step, dataset_size,
                   display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
                   eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
-                  start_annealing_step, max_steps):
+                  start_annealing_step, max_steps,
+                  additional_metrics: Optional[Dict[str, tf.Tensor]] = None):
+    if additional_metrics is None:
+        additional_metrics = {}
     for x in dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE):
         gradients = compute_apply_gradients(vae_mdp, x, optimizer)
         loss = gradients
@@ -751,6 +762,7 @@ def training_step(dataset, batch_size, vae_mdp, optimizer, annealing_period, glo
         # update progressbar
         metrics_key_values = [('step', global_step.numpy()), ('loss', loss.numpy())] + \
                              [(key, value.result()) for key, value in vae_mdp.loss_metrics.items()] + \
+                             [(key, value) for key, value in additional_metrics.items()] + \
                              [('mean_bits_used', vae_mdp.mean_latent_bits_used(x))]
         if annealing_period != 0:
             metrics_key_values.append(('t_1', vae_mdp.encoder_temperature.numpy()))
@@ -796,7 +808,7 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                   log_name: str,
                   train_summary_writer: Optional[tf.summary.SummaryWriter] = None):
     eval_elbo = tf.metrics.Mean()
-    eval_set = dataset.batch(batch_size)
+    eval_set = dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
 
     for step, x in enumerate(eval_set):
         eval_elbo(vae_mdp.eval(x))

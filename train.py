@@ -275,7 +275,7 @@ def main(argv):
                                           start_annealing_step=params['start_annealing_step'],
                                           logs=True, annealing_period=1, max_steps=params['max_steps'],
                                           display_progressbar=params['display_progressbar'],
-                                          save_directory=params['save_dir'], parallelization=False)
+                                          save_directory=params['save_dir'], parallelization=True)
     else:
         variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,
                                            batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
