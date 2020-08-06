@@ -1,5 +1,5 @@
 import os
-from typing import Tuple, Callable
+from typing import Tuple, Callable, Optional
 import threading
 import datetime
 
@@ -52,7 +52,7 @@ class SACLearner:
                  env_name: str = 'HumanoidBulletEnv-v0',
                  num_iterations: int = int(3e6),
                  initial_collect_steps: int = int(1e4),
-                 collect_steps_per_iteration: int = 1,
+                 collect_steps_per_iteration: Optional[int] = None,
                  replay_buffer_capacity: int = int(1e6),
                  critic_learning_rate: float = 3e-4,
                  actor_learning_rate: float = 3e-4,
@@ -79,7 +79,10 @@ class SACLearner:
         self.num_iterations = num_iterations
 
         self.initial_collect_steps = initial_collect_steps
-        self.collect_steps_per_iteration = collect_steps_per_iteration
+        if collect_steps_per_iteration is None:
+            self.collect_steps_per_iteration = batch_size
+        else:
+            self.collect_steps_per_iteration = collect_steps_per_iteration
         self.replay_buffer_capacity = replay_buffer_capacity
 
         self.critic_learning_rate = critic_learning_rate
@@ -265,13 +268,12 @@ class SACLearner:
 
         for _ in range(self.num_iterations):
 
-            for _ in range(self.collect_steps_per_iteration):
-                # Collect a few steps using collect_policy and save to the replay buffer.
-                self.driver.run()
+            # Collect a few steps using collect_policy and save to the replay buffer.
+            self.driver.run()
 
             # Use data from the buffer and update the agent's network.
             # experience = replay_buffer.gather_all()
-            experience, unused_info = next(self.iterator)
+            experience, _ = next(self.iterator)
             train_loss = self.tf_agent.train(experience)
 
             step = self.tf_agent.train_step_counter.numpy()
