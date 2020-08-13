@@ -25,7 +25,7 @@ tfb = tfp.bijectors
 
 debug = False
 debug_gradients = False
-check_numerics = True
+check_numerics = False
 
 debug_gradients &= debug
 if check_numerics:
@@ -423,7 +423,7 @@ class VariationalMarkovDecisionProcess(Model):
             mean = tf.reduce_mean(self.binary_encode(s, a, r, s_prime, l_prime).mean(), axis=0)
             check = lambda x: 1 if 1 - eps > x > eps else 0
             mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
-        return mean_bits_used / 2
+        return {'mean_state_bits_used': mean_bits_used / 2}
 
     @property
     def encoder_temperature(self):
@@ -546,7 +546,7 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       labeling_function: Callable,
                       num_iterations: int = int(3e6),
                       initial_collect_steps: int = int(1e4),
-                      collect_steps_per_iteration: Optional[int] = 0,
+                      collect_steps_per_iteration: Optional[int] = None,
                       replay_buffer_capacity: int = int(1e6),
                       parallelization: bool = True,
                       num_parallel_environments: int = 4,
@@ -567,6 +567,9 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       save_directory='.'):
     if collect_steps_per_iteration is None:
         collect_steps_per_iteration = batch_size
+    if parallelization:
+        replay_buffer_capacity = replay_buffer_capacity // num_parallel_environments
+        collect_steps_per_iteration = collect_steps_per_iteration // num_parallel_environments
 
     # Load checkpoint
     if checkpoint is not None and manager is not None:
@@ -639,6 +642,19 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
             get_tensor_shape(data),
         )
 
+    class EvalDatasetGenerator:
+        def __init__(self, eval_iterator, labeling_function):
+            self._eval_iterator = eval_iterator
+            self._labeling_function = labeling_function
+            self._data = None
+
+        def __call__(self, *args, **kwargs):
+            self._data = gather_rl_observations(self._eval_iterator, self._labeling_function)
+            return dataset_generator(self._data)
+
+        def __del__(self):
+            del self._data
+
     num_episodes = tf_metrics.NumberOfEpisodes()
     env_steps = tf_metrics.EnvironmentSteps()
     observers = [num_episodes, env_steps] if not parallelization else []
@@ -659,19 +675,26 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
         driver.run()
 
         data = gather_rl_observations(iterator, labeling_function)
-        training_step(dataset=dataset_generator(data), batch_size=batch_size, vae_mdp=vae_mdp, optimizer=optimizer,
+        generated_dataset = dataset_generator(data)
+        eval_dataset_generator = EvalDatasetGenerator(eval_iterator=eval_iterator, labeling_function=labeling_function)
+
+        exploration_metrics = {
+            "num_episodes": num_episodes.result(),
+            "env_steps": env_steps.result(),
+            "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
+            "replay_buffer_frames": replay_buffer.num_frames()}
+
+        training_step(dataset=generated_dataset, batch_size=batch_size, vae_mdp=vae_mdp, optimizer=optimizer,
                       annealing_period=annealing_period, global_step=global_step, dataset_size=dataset_size,
                       display_progressbar=display_progressbar, start_step=start_step, epoch=0,
-                      progressbar=progressbar, dataset_generator=lambda: dataset_generator(
-                gather_rl_observations(eval_iterator, labeling_function)),
+                      progressbar=progressbar, dataset_generator=eval_dataset_generator,
                       save_model_interval=save_model_interval, eval_ratio=1., save_directory=save_directory,
                       log_name=log_name, train_summary_writer=train_summary_writer, log_interval=log_interval,
                       manager=manager, logs=logs, start_annealing_step=start_annealing_step, max_steps=max_steps,
-                      additional_metrics={"num_episodes": num_episodes.result(),
-                                          "env_steps": env_steps.result(),
-                                          "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization \
-                          else {"replay_buffer_frames": replay_buffer.num_frames()})
+                      additional_metrics=exploration_metrics)
+        del generated_dataset
         del data
+        del eval_dataset_generator
 
     if global_step.numpy() > max_steps:
         return
@@ -763,7 +786,7 @@ def training_step(dataset, batch_size, vae_mdp, optimizer, annealing_period, glo
         metrics_key_values = [('step', global_step.numpy()), ('loss', loss.numpy())] + \
                              [(key, value.result()) for key, value in vae_mdp.loss_metrics.items()] + \
                              [(key, value) for key, value in additional_metrics.items()] + \
-                             [('mean_bits_used', vae_mdp.mean_latent_bits_used(x))]
+                             [(key, value) for key, value in vae_mdp.mean_latent_bits_used(x).items()]
         if annealing_period != 0:
             metrics_key_values.append(('t_1', vae_mdp.encoder_temperature.numpy()))
             metrics_key_values.append(('t_2', vae_mdp.prior_temperature.numpy()))
@@ -825,6 +848,7 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
     tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
     if check_numerics:
         tf.debugging.enable_check_numerics()
+    del eval_set
     del dataset
     return eval_elbo
 
