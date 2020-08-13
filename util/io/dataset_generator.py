@@ -62,7 +62,10 @@ def gather_rl_observations(
     return data
 
 
-class DatasetGenerator:
+class DictionaryDatasetGenerator:
+    """
+    Generates a dataset from a dictionary (or hdf5 file) containing the data to be processed.
+    """
 
     def __init__(self, initial_dummy_state=None, initial_dummy_action=None, data: Optional = None):
         self.initial_dummy_state = initial_dummy_state
@@ -99,6 +102,59 @@ class DatasetGenerator:
             yield from self.process_data(data=hf)
 
 
+class RawDatasetGenerator:
+    """
+    Generates a dataset from raw data contained in a replay buffer.
+    """
+
+    def __init__(self, replay_buffer, labeling_function,
+                 initial_dummy_state=None, initial_dummy_action=None, scalar_rewards=True):
+        self.initial_dummy_state = initial_dummy_state
+        self.initial_dummy_action = initial_dummy_action
+        self.labeling_function = labeling_function
+        self.raw_dataset = replay_buffer.as_dataset(
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+            num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
+        self.scalar_rewards = scalar_rewards
+
+    def __call__(self):
+        for raw_data, _ in self.raw_dataset:
+            state_type = raw_data.step_type[:2]
+            next_state_type = raw_data.next_step_type[:2]
+
+            # check if the transition incident state is terminal and if next state is initial
+            # note: such transitions correspond to those where the reset() function has been called
+            keep_transition = state_type[0] != ts.StepType.LAST
+            keep_transition &= state_type[1] != ts.StepType.LAST
+            keep_transition &= next_state_type[0] != ts.StepType.FIRST
+            keep_transition &= next_state_type[1] != ts.StepType.FIRST
+
+            if keep_transition:
+
+                states = raw_data.observation[:2, :]
+                actions = raw_data.action[:2, :]
+                rewards = raw_data.reward[:2] if self.scalar_rewards else raw_data.reward[:2, :]
+                if self.scalar_rewards:
+                    rewards = tf.reshape(rewards, list(rewards.shape) + [1])
+                next_states = raw_data.observation[1:, :]
+                next_labels = self.labeling_function(next_states)
+                if next_labels.shape == states.shape[:-1]:
+                    next_labels = tf.reshape(next_labels, list(next_labels.shape) + [1])
+
+                if state_type[0] == ts.StepType.FIRST:  # initial state handling
+                    initial_state = self.initial_dummy_state if self.initial_dummy_state is not None \
+                        else np.zeros(shape=tf.shape(states)[1:])
+                    initial_action = self.initial_dummy_action if self.initial_dummy_action is not None \
+                        else np.zeros(shape=tf.shape(actions)[1:])
+                    yield (tf.stack((initial_state, states[0])),
+                           tf.stack((initial_action, actions[0])),
+                           tf.stack((np.zeros(shape=tf.shape(rewards)[1:]), rewards[0])),
+                           states,
+                           tf.stack((next_labels[0], next_labels[0])))
+                else:
+                    yield states, actions, rewards, next_states, next_labels
+
+
 def get_tensor_shape(data):
     reward_shape = list(data['reward'].shape[1:]) + \
                    ([1] if (tf.TensorShape(data['state'].shape[:-1]) == data['reward'].shape) else [])
@@ -128,7 +184,7 @@ def create_dataset(cycle_length=4,
 
     dataset = dataset.interleave(
         lambda filename: tf.data.Dataset.from_generator(
-            DatasetGenerator(),
+            DictionaryDatasetGenerator(),
             (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),  # , tf.int8, tf.int8),
             tensor_shape(file_list[0]),  # all files are assumed to have same Tensor Shape
             args=(filename,)

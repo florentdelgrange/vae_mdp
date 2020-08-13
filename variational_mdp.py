@@ -18,7 +18,8 @@ from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.trajectories import policy_step, trajectory
 from tf_agents.utils import common
 
-from util.io.dataset_generator import gather_rl_observations, get_tensor_shape, DatasetGenerator
+from util.io.dataset_generator import gather_rl_observations, get_tensor_shape, DictionaryDatasetGenerator, \
+    RawDatasetGenerator
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -620,24 +621,15 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
         batch_size=tf_env.batch_size,
         max_length=replay_buffer_capacity)
 
-    dataset = replay_buffer.as_dataset(
-        num_parallel_calls=tf.data.experimental.AUTOTUNE,
-        sample_batch_size=batch_size,
-        num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
-    eval_dataset = replay_buffer.as_dataset(
-        num_parallel_calls=tf.data.experimental.AUTOTUNE,
-        sample_batch_size=eval_steps,
-        num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
-    iterator = iter(dataset)
-    eval_iterator = iter(eval_dataset)
-
-    def dataset_generator(data: Dict[str, np.array]):
-        generator = DatasetGenerator(data=data)
+    def dataset_generator():
+        generator = RawDatasetGenerator(replay_buffer, labeling_function)
         return tf.data.Dataset.from_generator(
-            generator.process_data,
+            generator,
             (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
-            get_tensor_shape(data),
+            (vae_mdp.state_shape, vae_mdp.action_shape, vae_mdp.reward_shape, vae_mdp.state_shape, vae_mdp.label_shape),
         )
+
+    dataset = dataset_generator()
 
     num_episodes = tf_metrics.NumberOfEpisodes()
     env_steps = tf_metrics.EnvironmentSteps()
@@ -658,20 +650,18 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
         # Collect a few steps using collect_policy and save to the replay buffer.
         driver.run()
 
-        data = gather_rl_observations(iterator, labeling_function)
-        training_step(dataset=dataset_generator(data), batch_size=batch_size, vae_mdp=vae_mdp, optimizer=optimizer,
+        training_step(dataset=dataset, batch_size=batch_size, vae_mdp=vae_mdp, optimizer=optimizer,
                       annealing_period=annealing_period, global_step=global_step, dataset_size=dataset_size,
                       display_progressbar=display_progressbar, start_step=start_step, epoch=0,
-                      progressbar=progressbar, dataset_generator=lambda: dataset_generator(
-                gather_rl_observations(eval_iterator, labeling_function)),
+                      progressbar=progressbar, dataset_generator=dataset_generator,
                       save_model_interval=save_model_interval, eval_ratio=1., save_directory=save_directory,
                       log_name=log_name, train_summary_writer=train_summary_writer, log_interval=log_interval,
                       manager=manager, logs=logs, start_annealing_step=start_annealing_step, max_steps=max_steps,
-                      additional_metrics={"num_episodes": num_episodes.result(),
-                                          "env_steps": env_steps.result(),
-                                          "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization \
-                          else {"replay_buffer_frames": replay_buffer.num_frames()})
-        del data
+                      additional_metrics={
+                          "num_episodes": num_episodes.result(),
+                          "env_steps": env_steps.result(),
+                          "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
+                          "replay_buffer_frames": replay_buffer.num_frames()})
 
     if global_step.numpy() > max_steps:
         return
