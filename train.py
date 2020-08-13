@@ -145,6 +145,11 @@ flags.DEFINE_string(
     default='suite_gym',
     help='Name of the tf_agents environment suite.'
 )
+flags.DEFINE_integer(
+    "parallel_env",
+    default=1,
+    help='Number of parallel environments to be used during training.'
+)
 FLAGS = flags.FLAGS
 
 
@@ -169,17 +174,21 @@ def main(argv):
     mixture_components = params['mixture_components']
     latent_state_size = params['latent_size']  # depends on the number of bits reserved for labels
 
+    if params['policy_path'][-1] == os.path.sep:
+        params['policy_path'] = params['policy_path'][:-1]
     vae_name = 'vae_LS{}_MC{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}'.format(
         latent_state_size, mixture_components, params['regularizer_scale_factor'], params['kl_annealing_scale_factor'],
         params['encoder_temperature'], params['prior_temperature'],
         params['encoder_temperature_decay_rate'],
         params['prior_temperature_decay_rate']) \
-        if not params['action_discretizer'] else 'vae_LS{}_LA{}_MC{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}'.format(
+        if not params['action_discretizer'] else \
+        'vae_LS{}_LA{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}_policy={}'.format(
         latent_state_size, params['number_of_discrete_actions'],
-        mixture_components, params['regularizer_scale_factor'], params['kl_annealing_scale_factor'],
+        params['regularizer_scale_factor'], params['kl_annealing_scale_factor'],
         params['encoder_temperature'], params['prior_temperature'],
         params['encoder_temperature_decay_rate'],
-        params['prior_temperature_decay_rate'])
+        params['prior_temperature_decay_rate'],
+        os.path.split(params['policy_path'])[-1])
 
     cycle_length = batch_size // 2
     block_length = batch_size // cycle_length
@@ -275,7 +284,8 @@ def main(argv):
                                           start_annealing_step=params['start_annealing_step'],
                                           logs=True, annealing_period=1, max_steps=params['max_steps'],
                                           display_progressbar=params['display_progressbar'],
-                                          save_directory=params['save_dir'], parallelization=True)
+                                          save_directory=params['save_dir'], parallelization=params['parallel_env'] > 1,
+                                          num_parallel_environments=params['parallel_env'])
     else:
         variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,
                                            batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
