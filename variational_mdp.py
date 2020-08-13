@@ -26,7 +26,7 @@ tfb = tfp.bijectors
 
 debug = False
 debug_gradients = False
-check_numerics = True
+check_numerics = False
 
 debug_gradients &= debug
 if check_numerics:
@@ -424,7 +424,7 @@ class VariationalMarkovDecisionProcess(Model):
             mean = tf.reduce_mean(self.binary_encode(s, a, r, s_prime, l_prime).mean(), axis=0)
             check = lambda x: 1 if 1 - eps > x > eps else 0
             mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
-        return mean_bits_used / 2
+        return {'mean_state_bits_used': mean_bits_used / 2}
 
     @property
     def encoder_temperature(self):
@@ -547,7 +547,7 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       labeling_function: Callable,
                       num_iterations: int = int(3e6),
                       initial_collect_steps: int = int(1e4),
-                      collect_steps_per_iteration: Optional[int] = 0,
+                      collect_steps_per_iteration: Optional[int] = None,
                       replay_buffer_capacity: int = int(1e6),
                       parallelization: bool = True,
                       num_parallel_environments: int = 4,
@@ -568,6 +568,9 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       save_directory='.'):
     if collect_steps_per_iteration is None:
         collect_steps_per_iteration = batch_size
+    if parallelization:
+        replay_buffer_capacity = replay_buffer_capacity // num_parallel_environments
+        collect_steps_per_iteration = collect_steps_per_iteration // num_parallel_environments
 
     # Load checkpoint
     if checkpoint is not None and manager is not None:
@@ -753,7 +756,7 @@ def training_step(dataset, batch_size, vae_mdp, optimizer, annealing_period, glo
         metrics_key_values = [('step', global_step.numpy()), ('loss', loss.numpy())] + \
                              [(key, value.result()) for key, value in vae_mdp.loss_metrics.items()] + \
                              [(key, value) for key, value in additional_metrics.items()] + \
-                             [('mean_bits_used', vae_mdp.mean_latent_bits_used(x))]
+                             [(key, value) for key, value in vae_mdp.mean_latent_bits_used(x).items()]
         if annealing_period != 0:
             metrics_key_values.append(('t_1', vae_mdp.encoder_temperature.numpy()))
             metrics_key_values.append(('t_2', vae_mdp.prior_temperature.numpy()))
@@ -815,6 +818,7 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
     tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
     if check_numerics:
         tf.debugging.enable_check_numerics()
+    del eval_set
     del dataset
     return eval_elbo
 

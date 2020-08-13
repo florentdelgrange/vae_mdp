@@ -323,4 +323,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         check = lambda x: 1 if 1 - eps > x > eps else 0
         mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
 
-        return mean_bits_used
+        mbu = {'mean_action_bits_used': mean_bits_used}
+        mbu.update(self._state_vae.mean_latent_bits_used(inputs, eps))
+        return mbu
