@@ -25,11 +25,13 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                  transition_network: Model,
                  reward_network: Model,
                  pre_processing_network: Model = Sequential(
-                     [Dense(units=256, activation=tf.nn.leaky_relu, name='pre_process_network')]),
+                     [Dense(units=256, activation=tf.nn.leaky_relu),
+                      Dense(units=256, activation=tf.nn.leaky_relu)], name='pre_process_network'),
                  encoder_temperature: Optional[float] = None,
                  prior_temperature: Optional[float] = None,
                  encoder_temperature_decay_rate: float = 0.,
-                 prior_temperature_decay_rate: float = 0.):
+                 prior_temperature_decay_rate: float = 0.,
+                 pre_loaded_model: bool = False):
 
         super().__init__(vae_mdp.state_shape, vae_mdp.action_shape, vae_mdp.reward_shape, vae_mdp.label_shape,
                          vae_mdp.encoder_network, vae_mdp.transition_network,
@@ -57,88 +59,98 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.encoder_temperature_decay_rate = tf.constant(encoder_temperature_decay_rate, dtype=tf.float32)
         self.prior_temperature_decay_rate = tf.constant(prior_temperature_decay_rate, dtype=tf.float32)
 
-        # action encoder network
-        latent_state = Input(shape=(self.latent_state_size,))
-        action = Input(shape=self.action_shape)
-        next_latent_state = Input(shape=(self.latent_state_size,))
-        action_encoder = Concatenate(name="action_encoder_input")([latent_state, action])
-        action_encoder = action_encoder_network(action_encoder)
-        action_encoder = Dense(units=number_of_discrete_actions, activation=None,
-                               name='encoder_exp_one_hot_logits')(action_encoder)
-        self.action_encoder = Model(inputs=[latent_state, action], outputs=action_encoder,
-                                    name="action_encoder")
+        if not pre_loaded_model:
+            # action encoder network
+            latent_state = Input(shape=(self.latent_state_size,))
+            action = Input(shape=self.action_shape)
+            next_latent_state = Input(shape=(self.latent_state_size,))
+            action_encoder = Concatenate(name="action_encoder_input")([latent_state, action])
+            action_encoder = action_encoder_network(action_encoder)
+            action_encoder = Dense(units=number_of_discrete_actions, activation=None,
+                                   name='action_encoder_exp_one_hot_logits')(action_encoder)
+            self.action_encoder = Model(inputs=[latent_state, action], outputs=action_encoder,
+                                        name="action_encoder")
 
-        # prior over actions
-        self.action_prior_logits = tf.compat.v1.get_variable(
-            shape=(number_of_discrete_actions,), name='prior_action_logits')
+            # prior over actions
+            self.action_prior_logits = tf.compat.v1.get_variable(
+                shape=(number_of_discrete_actions,), name='action_prior_exp_one_hot_logits')
 
-        def clone_model(model: tf.keras.Model, copy_name: str = ''):
-            model = model_from_json(model.to_json(), custom_objects={'leaky_relu': tf.nn.leaky_relu})
-            for layer in model.layers:
-                layer._name = copy_name + '_' + layer.name
-            model._name = copy_name + model.name
-            return model
+            def clone_model(model: tf.keras.Model, copy_name: str = ''):
+                model = model_from_json(model.to_json(), custom_objects={'leaky_relu': tf.nn.leaky_relu})
+                for layer in model.layers:
+                    layer._name = copy_name + '_' + layer.name
+                model._name = copy_name + model.name
+                return model
 
-        # discrete actions transition network
-        transition_outputs = []
-        transition_network_pre_processing = clone_model(pre_processing_network, 'transition')(latent_state)
-        for action in range(number_of_discrete_actions):  # branching-action network
-            _transition_network = clone_model(transition_network, str(action))
-            _transition_network = _transition_network(transition_network_pre_processing)
-            _transition_network = Dense(units=self.latent_state_size, activation=None)(_transition_network)
-            transition_outputs.append(_transition_network)
-        self.discrete_actions_transition_network = Model(inputs=latent_state, outputs=transition_outputs,
-                                                         name="discrete_actions_transition_network")
+            # discrete actions transition network
+            transition_outputs = []
+            transition_network_pre_processing = clone_model(pre_processing_network, 'transition')(latent_state)
+            for action in range(number_of_discrete_actions):  # branching-action network
+                _transition_network = clone_model(transition_network, str(action))
+                _transition_network = _transition_network(transition_network_pre_processing)
+                _transition_network = Dense(
+                    units=self.latent_state_size, activation=None,
+                    name='action{}_transition_next_state_logits'.format(action))(_transition_network)
+                transition_outputs.append(_transition_network)
+            self.action_transition_network = Model(inputs=latent_state, outputs=transition_outputs,
+                                                   name="action_transition_network")
 
-        # discrete actions reward network
-        reward_network_input = Concatenate()([latent_state, next_latent_state])
-        reward_network_pre_processing = clone_model(pre_processing_network, 'reward')(reward_network_input)
-        reward_network_outputs = []
-        for action in range(number_of_discrete_actions):  # branching-action network
-            _reward_network = clone_model(reward_network, str(action))
-            _reward_network = reward_network(reward_network_pre_processing)
-            reward_mean = Dense(units=np.prod(self.reward_shape),
-                                activation=None,
-                                name='action{}_reward_mean_0'.format(action))(_reward_network)
-            reward_mean = Reshape(self.reward_shape, name='action{}_reward_mean'.format(action))(reward_mean)
-            reward_raw_covar = Dense(units=np.prod(self.reward_shape),
-                                     activation=None,
-                                     name='action{}_reward_raw_diag_covariance_0'.format(action))(_reward_network)
-            reward_raw_covar = Reshape(self.reward_shape,
-                                       name='action{}_reward_raw_diag_covariance'.format(action))(reward_raw_covar)
-            reward_network_outputs.append([reward_mean, reward_raw_covar])
-        reward_network_mean = \
-            Lambda(lambda outputs: tf.stack(outputs, axis=1))(list(mean for mean, covariance in reward_network_outputs))
-        reward_network_raw_covariance = \
-            Lambda(lambda outputs: tf.stack(outputs, axis=1))(
-                list(covariance for mean, covariance in reward_network_outputs))
-        self.discrete_actions_reward_network = Model(inputs=[latent_state, next_latent_state],
-                                                     outputs=[reward_network_mean, reward_network_raw_covariance],
-                                                     name="discrete_actions_reward_network")
+            # discrete actions reward network
+            reward_network_input = Concatenate()([latent_state, next_latent_state])
+            reward_network_pre_processing = clone_model(pre_processing_network, 'reward')(reward_network_input)
+            reward_network_outputs = []
+            for action in range(number_of_discrete_actions):  # branching-action network
+                _reward_network = clone_model(reward_network, str(action))
+                _reward_network = reward_network(reward_network_pre_processing)
+                reward_mean = Dense(units=np.prod(self.reward_shape),
+                                    activation=None,
+                                    name='action{}_reward_mean_0'.format(action))(_reward_network)
+                reward_mean = Reshape(self.reward_shape, name='action{}_reward_mean'.format(action))(reward_mean)
+                reward_raw_covar = Dense(units=np.prod(self.reward_shape),
+                                         activation=None,
+                                         name='action{}_reward_raw_diag_covariance_0'.format(action))(_reward_network)
+                reward_raw_covar = Reshape(self.reward_shape,
+                                           name='action{}_reward_raw_diag_covariance'.format(action))(reward_raw_covar)
+                reward_network_outputs.append([reward_mean, reward_raw_covar])
+            reward_network_mean = \
+                Lambda(lambda outputs: tf.stack(outputs, axis=1))(
+                    list(mean for mean, covariance in reward_network_outputs))
+            reward_network_raw_covariance = \
+                Lambda(lambda outputs: tf.stack(outputs, axis=1))(
+                    list(covariance for mean, covariance in reward_network_outputs))
+            self.action_reward_network = Model(inputs=[latent_state, next_latent_state],
+                                               outputs=[reward_network_mean, reward_network_raw_covariance],
+                                               name="discrete_actions_reward_network")
 
-        # discrete actions decoder
-        action_decoder_pre_processing = clone_model(pre_processing_network, 'action')(latent_state)
-        action_decoder_outputs = []
-        for action in range(number_of_discrete_actions):  # branching-action network
-            action_decoder = clone_model(action_decoder_network, str(action))
-            action_decoder = action_decoder(action_decoder_pre_processing)
-            action_decoder_mean = Dense(units=np.prod(self.action_shape), activation=None)(action_decoder)
+            # discrete actions decoder
+            action_decoder_pre_processing = clone_model(pre_processing_network, 'action')(latent_state)
+            action_decoder_outputs = []
+            for action in range(number_of_discrete_actions):  # branching-action network
+                action_decoder = clone_model(action_decoder_network, str(action))
+                action_decoder = action_decoder(action_decoder_pre_processing)
+                action_decoder_mean = Dense(units=np.prod(self.action_shape), activation=None)(action_decoder)
+                action_decoder_mean = \
+                    Reshape(target_shape=self.action_shape,
+                            name='action{}_decoder_mean'.format(action))(action_decoder_mean)
+                action_decoder_raw_covariance = Dense(units=np.prod(self.action_shape), activation=None)(action_decoder)
+                action_decoder_raw_covariance = \
+                    Reshape(target_shape=self.action_shape,
+                            name='action{}_decoder_raw_diag_covariance'.format(action))(action_decoder_raw_covariance)
+                action_decoder_outputs.append((action_decoder_mean, action_decoder_raw_covariance))
             action_decoder_mean = \
-                Reshape(target_shape=self.action_shape,
-                        name='action{}_decoder_mean'.format(action))(action_decoder_mean)
-            action_decoder_raw_covariance = Dense(units=np.prod(self.action_shape), activation=None)(action_decoder)
+                Lambda(lambda outputs: tf.stack(outputs, axis=1))(
+                    list(mean for mean, covariance in action_decoder_outputs))
             action_decoder_raw_covariance = \
-                Reshape(target_shape=self.action_shape,
-                        name='action{}_decoder_raw_diag_covariance'.format(action))(action_decoder_raw_covariance)
-            action_decoder_outputs.append((action_decoder_mean, action_decoder_raw_covariance))
-        action_decoder_mean = \
-            Lambda(lambda outputs: tf.stack(outputs, axis=1))(list(mean for mean, covariance in action_decoder_outputs))
-        action_decoder_raw_covariance = \
-            Lambda(lambda outputs: tf.stack(outputs, axis=1))(
-                list(covariance for mean, covariance in action_decoder_outputs))
-        self.action_decoder_network = Model(inputs=latent_state,
-                                            outputs=[action_decoder_mean, action_decoder_raw_covariance],
-                                            name="action_decoder_network")
+                Lambda(lambda outputs: tf.stack(outputs, axis=1))(
+                    list(covariance for mean, covariance in action_decoder_outputs))
+            self.action_decoder = Model(inputs=latent_state,
+                                        outputs=[action_decoder_mean, action_decoder_raw_covariance],
+                                        name="action_decoder_network")
+        else:
+            self.action_encoder = action_encoder_network
+            self.action_transition_network = transition_network
+            self.action_reward_network = reward_network
+            self.action_decoder = action_decoder_network
 
         state_layers = (self.encoder_network.layers,
                         self.transition_network.layers,
@@ -184,7 +196,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
     def discrete_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, latent_action: tf.Tensor, log_latent_action: bool = False
     ) -> tfd.Distribution:
-        transition_output = self.discrete_actions_transition_network(latent_state)
+        transition_output = self.action_transition_network(latent_state)
         latent_action = tf.stack([latent_action for _ in range(self.latent_state_size)], axis=1)
         action_categorical = \
             tfd.Categorical(logits=latent_action) if log_latent_action else tfd.Categorical(probs=latent_action)
@@ -196,7 +208,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
     ) -> tfd.Distribution:
         action_categorical = \
             tfd.Categorical(logits=latent_action) if log_latent_action else tfd.Categorical(probs=latent_action)
-        [reward_mean, reward_raw_covariance] = self.discrete_actions_reward_network([latent_state, next_latent_state])
+        [reward_mean, reward_raw_covariance] = self.action_reward_network([latent_state, next_latent_state])
         return tfd.MixtureSameFamily(
             mixture_distribution=action_categorical,
             components_distribution=tfd.MultivariateNormalDiag(
@@ -209,7 +221,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
     ) -> tfd.Distribution:
         action_categorical = \
             tfd.Categorical(logits=latent_action) if log_latent_action else tfd.Categorical(probs=latent_action)
-        [action_mean, action_raw_covariance] = self.action_decoder_network(latent_state)
+        [action_mean, action_raw_covariance] = self.action_decoder(latent_state)
         return tfd.MixtureSameFamily(
             mixture_distribution=action_categorical,
             components_distribution=tfd.MultivariateNormalDiag(
@@ -315,13 +327,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         Compute the mean number of bits used in the latent space of the vae_mdp for the given dataset batch.
         This allows monitoring if the latent space is effectively used by the VAE or if posterior collapse happens.
         """
-        mean_bits_used = 0
         s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
         s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
         z = tf.cast(self.binary_encode(s_0, a_0, r_0, s_1, l_1).sample(), tf.float32)
         mean = tf.reduce_mean(self.discrete_action_encoding(z, a_1).probs_parameter(), axis=0)
         check = lambda x: 1 if 1 - eps > x > eps else 0
-        mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
+        mean_bits_used = tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
 
         mbu = {'mean_action_bits_used': mean_bits_used}
         mbu.update(self._state_vae.mean_latent_bits_used(inputs, eps))
