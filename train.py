@@ -78,7 +78,7 @@ flags.DEFINE_float(
 flags.DEFINE_integer(
     "start_annealing_step",
     default=int(1e4),
-    help="Step from which temperatures and scale factors are annealed."
+    help="Step from which temperatures and scale factors start to be annealed."
 )
 flags.DEFINE_integer(
     "max_steps",
@@ -245,8 +245,6 @@ def main(argv):
             kl_scale_factor=params['kl_annealing_scale_factor'],
             kl_annealing_growth_rate=params['kl_annealing_growth_rate'],
             multivariate_normal_full_covariance=params['full_covariance'])
-        # regularizer_scale_factor = 100., regularizer_decay_rate = 1.5e-4, )
-        # kl_annealing_growth_rate=2e-5, kl_annealing_scale_factor=2e-5)
     else:
         vae_mdp_model = variational_mdp.load(params['load_vae'])
 
@@ -261,6 +259,8 @@ def main(argv):
         )
         vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
         vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
+        vae_mdp_model.regularizer_scale_factor = params['regularizer_scale_factor']
+        vae_mdp_model.regularizer_decay_rate = params['regularizer_decay_rate']
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 

@@ -266,7 +266,14 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         rate = log_q_latent_action - log_p_latent_action
         distortion = -1. * (log_p_action + log_p_rewards + log_p_transition)
 
-        # TODO: cross entropy regularizer
+        def compute_cross_entropy_regularization():
+            discrete_action_posterior = self.discrete_action_encoding(z, a_1)
+            prior_uniform_distribution = tfd.OneHotCategorical(
+                logits=tf.math.log(
+                    [1./self.number_of_discrete_actions for _ in range(self.number_of_discrete_actions)]))
+            return prior_uniform_distribution.kl_divergence(discrete_action_posterior)
+
+        cross_entropy_regularizer = compute_cross_entropy_regularization()
 
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
         self.loss_metrics['action_mse'](a_1, action_distribution.sample())
@@ -274,7 +281,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-        # self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
+        self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
 
         if variational_mdp.debug:
             tf.print(z, "sampled z")
@@ -288,7 +295,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             tf.print(log_p_transition, "log P(z' | z, â)")
             tf.print(log_p_action, "log P(a | z, â)")
 
-        return [distortion, rate, 0.]
+        return [distortion, rate, cross_entropy_regularizer]
 
     def eval(self, inputs):
         s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
