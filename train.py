@@ -174,21 +174,25 @@ def main(argv):
     mixture_components = params['mixture_components']
     latent_state_size = params['latent_size']  # depends on the number of bits reserved for labels
 
+    if params['load_vae'][-1] == os.path.sep:
+        params['load_vae'] = params['load_vae'][:-1]
     if params['policy_path'][-1] == os.path.sep:
         params['policy_path'] = params['policy_path'][:-1]
+
     vae_name = 'vae_LS{}_MC{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}'.format(
         latent_state_size, mixture_components, params['regularizer_scale_factor'], params['kl_annealing_scale_factor'],
         params['encoder_temperature'], params['prior_temperature'],
         params['encoder_temperature_decay_rate'],
-        params['prior_temperature_decay_rate']) \
-        if not params['action_discretizer'] else \
-        'vae_LS{}_LA{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}_policy={}'.format(
-        latent_state_size, params['number_of_discrete_actions'],
-        params['regularizer_scale_factor'], params['kl_annealing_scale_factor'],
-        params['encoder_temperature'], params['prior_temperature'],
-        params['encoder_temperature_decay_rate'],
-        params['prior_temperature_decay_rate'],
-        os.path.split(params['policy_path'])[-1])
+        params['prior_temperature_decay_rate']) if not params['action_discretizer'] else \
+        '{}_LA{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}_policy={}'.format(
+            os.path.split(params['load_vae'])[-1],
+            params['number_of_discrete_actions'],
+            params['kl_annealing_scale_factor'],
+            params['encoder_temperature'],
+            params['prior_temperature'],
+            params['encoder_temperature_decay_rate'],
+            params['prior_temperature_decay_rate'],
+            os.path.split(params['policy_path'])[-1])
 
     cycle_length = batch_size // 2
     block_length = batch_size // cycle_length
@@ -198,15 +202,7 @@ def main(argv):
         return dataset_generator.create_dataset(hdf5_files_path=dataset_path,
                                                 cycle_length=cycle_length,
                                                 block_length=block_length)
-
-    dummy_dataset = generate_dataset()
-    dataset_size = -1 if params['action_discretizer'] else \
-        dataset_generator.get_num_samples(dataset_path, batch_size=batch_size, drop_remainder=True)
-
-    state_shape, action_shape, reward_shape, _, label_shape = \
-        [tuple(spec.shape.as_list()[1:]) for spec in dummy_dataset.element_spec]
-
-    del dummy_dataset
+    dataset_size = -1
 
     # Encoder body
     q = Sequential(name="encoder_network_body")
@@ -229,6 +225,14 @@ def main(argv):
         p_decode.add(Dense(units, activation=activation, name='decoder_{}'.format(i)))
 
     if params['load_vae'] == '':
+        dummy_dataset = generate_dataset()
+        dataset_size = dataset_generator.get_num_samples(dataset_path, batch_size=batch_size, drop_remainder=True)
+
+        state_shape, action_shape, reward_shape, _, label_shape = \
+            [tuple(spec.shape.as_list()[1:]) for spec in dummy_dataset.element_spec]
+
+        del dummy_dataset
+
         vae_mdp_model = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
             encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
@@ -253,7 +257,7 @@ def main(argv):
             action_encoder_network=q, transition_network=p_t, reward_network=p_r, action_decoder_network=p_decode,
             encoder_temperature=params['encoder_temperature'], prior_temperature=params['prior_temperature'],
             encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
-            prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
+            prior_temperature_decay_rate=params['prior_temperature_decay_rate']
         )
         vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
         vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
@@ -289,8 +293,7 @@ def main(argv):
     else:
         variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,
                                            batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
-                                           manager=manager,
-                                           dataset_size=dataset_size, annealing_period=1,
+                                           manager=manager, dataset_size=dataset_size, annealing_period=1,
                                            start_annealing_step=params['start_annealing_step'],
                                            log_name=vae_name, logs=True, max_steps=params['max_steps'],
                                            display_progressbar=params['display_progressbar'],
