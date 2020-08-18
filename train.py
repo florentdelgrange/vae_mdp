@@ -180,13 +180,18 @@ def main(argv):
         params['policy_path'] = params['policy_path'][:-1]
 
     vae_name = 'vae_LS{}_MC{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}'.format(
-        latent_state_size, mixture_components, params['regularizer_scale_factor'], params['kl_annealing_scale_factor'],
-        params['encoder_temperature'], params['prior_temperature'],
+        latent_state_size,
+        mixture_components,
+        params['regularizer_scale_factor'],
+        params['kl_annealing_scale_factor'],
+        params['encoder_temperature'],
+        params['prior_temperature'],
         params['encoder_temperature_decay_rate'],
         params['prior_temperature_decay_rate']) if not params['action_discretizer'] else \
-        '{}_LA{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}_policy={}'.format(
+        '{}_LA{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}_policy={}'.format(
             os.path.split(params['load_vae'])[-1],
             params['number_of_discrete_actions'],
+            params['regularizer_scale_factor'],
             params['kl_annealing_scale_factor'],
             params['encoder_temperature'],
             params['prior_temperature'],
