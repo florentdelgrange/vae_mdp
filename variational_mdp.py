@@ -25,6 +25,7 @@ tfd = tfp.distributions
 tfb = tfp.bijectors
 
 debug = False
+debug_verbosity = -1
 debug_gradients = False
 check_numerics = False
 
@@ -319,7 +320,7 @@ class VariationalMarkovDecisionProcess(Model):
                 self._initial_kl_scale_factor + (1. - self._initial_kl_scale_factor) *
                 (1. - self._decay_kl_scale_factor))
 
-    def call(self, inputs, training=None, mask=None):
+    def call(self, inputs, training=None, mask=None, metrics=True):
         # inputs are assumed to have shape
         # [(?, 2, state_shape), (?, 2, action_shape), (?, 2, reward_shape), (?, 2, state_shape), (?, 2, label_shape)]
         s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
@@ -363,13 +364,14 @@ class VariationalMarkovDecisionProcess(Model):
         #         compute_cross_entropy_regularization,
         #         lambda: tf.zeros(shape=tf.shape(rate)))
 
-        self.loss_metrics['ELBO'](-1 * (distortion + rate))
-        self.loss_metrics['state_mse'](s_2, state_distribution.sample())
-        self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
-        self.loss_metrics['distortion'](distortion)
-        self.loss_metrics['rate'](rate)
-        self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-        self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
+        if metrics:
+            self.loss_metrics['ELBO'](-1 * (distortion + rate))
+            self.loss_metrics['state_mse'](s_2, state_distribution.sample())
+            self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
+            self.loss_metrics['distortion'](distortion)
+            self.loss_metrics['rate'](rate)
+            self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
+            self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
 
         if debug:
             tf.print(z, "sampled z")
@@ -503,7 +505,7 @@ def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x):
 
 
 @tf.function
-def compute_apply_gradients(vae_mdp: VariationalMarkovDecisionProcess, x, optimizer):
+def compute_apply_gradients(vae_mdp: VariationalMarkovDecisionProcess, x, optimizer, train_summary_writer=None):
     with tf.GradientTape() as tape:
         loss = compute_loss(vae_mdp, x)
     gradients = tape.gradient(loss, vae_mdp.trainable_variables)
@@ -668,10 +670,11 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
                       log_interval=log_interval, manager=manager, logs=logs, start_annealing_step=start_annealing_step,
                       max_steps=max_steps, additional_metrics={
-                          "num_episodes": num_episodes.result(),
-                          "env_steps": env_steps.result(),
-                          "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
-                          "replay_buffer_frames": replay_buffer.num_frames()})
+                "num_episodes": num_episodes.result(),
+                "env_steps": env_steps.result(),
+                "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
+                "replay_buffer_frames": replay_buffer.num_frames()},
+                      train_log_dir=train_log_dir)
 
     if global_step.numpy() > max_steps:
         return
@@ -736,7 +739,8 @@ def train_from_dataset(vae_mdp: VariationalMarkovDecisionProcess,
                           progressbar=progressbar, dataset_generator=dataset_generator,
                           save_model_interval=save_model_interval, eval_ratio=eval_ratio, save_directory=save_directory,
                           log_name=log_name, train_summary_writer=train_summary_writer, log_interval=log_interval,
-                          manager=manager, logs=logs, start_annealing_step=start_annealing_step, max_steps=max_steps)
+                          manager=manager, logs=logs, start_annealing_step=start_annealing_step, max_steps=max_steps,
+                          train_log_dir=train_log_dir)
 
         # reset metrics
         vae_mdp.reset_metrics()
@@ -752,7 +756,7 @@ def train_from_dataset(vae_mdp: VariationalMarkovDecisionProcess,
 def training_step(dataset_batch, batch_size, vae_mdp, optimizer, annealing_period, global_step, dataset_size,
                   display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
                   eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
-                  start_annealing_step, max_steps,
+                  train_log_dir, start_annealing_step, max_steps,
                   additional_metrics: Optional[Dict[str, tf.Tensor]] = None):
     if additional_metrics is None:
         additional_metrics = {}
@@ -774,11 +778,12 @@ def training_step(dataset_batch, batch_size, vae_mdp, optimizer, annealing_perio
         metrics_key_values.append(('t_2', vae_mdp.prior_temperature.numpy()))
         metrics_key_values.append(('regularizer_scale_factor', vae_mdp.regularizer_scale_factor))
         metrics_key_values.append(('kl_annealing_scale_factor', vae_mdp.kl_scale_factor))
-    if dataset_size is not None and progressbar.target is not None and display_progressbar and \
-            (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
-        progressbar.add(batch_size, values=metrics_key_values)
-    elif (dataset_size is None or progressbar.target is None) and display_progressbar:
-        progressbar.add(batch_size, values=metrics_key_values)
+    if progressbar is not None:
+        if dataset_size is not None and progressbar.target is not None and display_progressbar and \
+                (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
+            progressbar.add(batch_size, values=metrics_key_values)
+        elif (dataset_size is None or progressbar.target is None) and display_progressbar:
+            progressbar.add(batch_size, values=metrics_key_values)
 
     # update step
     global_step.assign_add(1)

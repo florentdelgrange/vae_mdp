@@ -100,6 +100,22 @@ flags.DEFINE_bool(
     default=False,
     help="Discretize the action space via a VAE already trained. Require the flag --load_vae to be set."
 )
+flags.DEFINE_bool(
+    "one_output_per_action",
+    default=False,
+    help="Set whether discrete action networks use one output per action or use the latent action as input."
+)
+flags.DEFINE_bool(
+    "full_vae_optimization",
+    default=False,
+    help='Set whether the ELBO is optimized over the whole VAE or if the optimization is only focused on the'
+         'action discretizer part of the VAE.'
+)
+flags.DEFINE_bool(
+    'relaxed_state_encoding',
+    default=False,
+    help='Use a relaxed encoding of states to optimize the action discretizer part of the VAE.'
+)
 flags.DEFINE_integer(
     "number_of_discrete_actions",
     default=16,
@@ -199,6 +215,11 @@ def main(argv):
             params['prior_temperature_decay_rate'],
             os.path.split(params['policy_path'])[-1])
 
+    additional_parameters = {'one_output_per_action', 'full_vae_optimization', 'relaxed_state_encoding'}
+    nb_additional_params = sum(map(lambda x: params[x], additional_parameters))
+    if nb_additional_params > 0:
+        vae_name += ('_params={}' + '-{}').format(*filter(lambda x: params[x], additional_parameters))
+
     cycle_length = batch_size // 2
     block_length = batch_size // cycle_length
     activation = getattr(tf.nn, params["activation"])
@@ -260,7 +281,10 @@ def main(argv):
             action_encoder_network=q, transition_network=p_t, reward_network=p_r, action_decoder_network=p_decode,
             encoder_temperature=params['encoder_temperature'], prior_temperature=params['prior_temperature'],
             encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
-            prior_temperature_decay_rate=params['prior_temperature_decay_rate']
+            prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
+            one_output_per_action=params['one_output_per_action'],
+            relaxed_state_encoding=params['relaxed_state_encoding'],
+            full_optimization=params['full_vae_optimization']
         )
         vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
         vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
