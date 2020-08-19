@@ -258,10 +258,16 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self.action_reward_network = reward_network
             self.action_decoder = action_decoder_network
 
-        state_layers = (self.encoder_network.layers,
-                        self.transition_network.layers,
-                        self.reward_network.layers,
-                        self.reconstruction_network.layers)
+        try:
+            state_layers = (self.encoder_network.layers,
+                            self.transition_network.layers,
+                            self.reward_network.layers,
+                            self.reconstruction_network.layers)
+        except AttributeError:  # tensorflow backward compatibility
+            state_layers = (self.encoder_network.keras_api.layers,
+                            self.transition_network.keras_api.layers,
+                            self.reward_network.keras_api.layers,
+                            self.reconstruction_network.keras_api.layers)
 
         if not self.full_optimization:
             # freeze all latent states related layers

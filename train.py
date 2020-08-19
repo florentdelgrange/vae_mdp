@@ -218,7 +218,8 @@ def main(argv):
     additional_parameters = {'one_output_per_action', 'full_vae_optimization', 'relaxed_state_encoding'}
     nb_additional_params = sum(map(lambda x: params[x], additional_parameters))
     if nb_additional_params > 0:
-        vae_name += ('_params={}' + '-{}').format(*filter(lambda x: params[x], additional_parameters))
+        vae_name += ('_params={}' + '-{}' * (nb_additional_params - 1)).format(
+            *filter(lambda x: params[x], additional_parameters))
 
     cycle_length = batch_size // 2
     block_length = batch_size // cycle_length
@@ -317,7 +318,8 @@ def main(argv):
                                           start_annealing_step=params['start_annealing_step'],
                                           logs=True, annealing_period=1, max_steps=params['max_steps'],
                                           display_progressbar=params['display_progressbar'],
-                                          save_directory=params['save_dir'], parallelization=params['parallel_env'] > 1,
+                                          save_directory=params['save_dir'],
+                                          parallelization=params['parallel_env'] > 1,
                                           num_parallel_environments=params['parallel_env'])
     else:
         variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,

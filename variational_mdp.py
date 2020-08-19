@@ -359,10 +359,6 @@ class VariationalMarkovDecisionProcess(Model):
 
         # cross-entropy regularization
         cross_entropy_regularizer = compute_cross_entropy_regularization()
-        # tf.cond(tf.math.greater(self.regularizer_scale_factor,
-        #                         tf.constant(epsilon, dtype=tf.float32)),
-        #         compute_cross_entropy_regularization,
-        #         lambda: tf.zeros(shape=tf.shape(rate)))
 
         if metrics:
             self.loss_metrics['ELBO'](-1 * (distortion + rate))
@@ -522,24 +518,42 @@ def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
     """
     Note: only with TensorFlow>=2.2.0
     """
-    model = tf.keras.models.load_model(tf_model_path)
-    label_shape = model.transition_network.output.get_shape()[1] - model.encoder_network.output.get_shape()[1]
-    vae_mdp = VariationalMarkovDecisionProcess(
-        tuple(model.encoder_network.input[0].shape.as_list()[1:]),
-        tuple(model.encoder_network.input[1].shape.as_list()[1:]),
-        tuple(model.encoder_network.input[2].shape.as_list()[1:]),
-        (label_shape,),
-        model.encoder_network,
-        model.transition_network,
-        model.reward_network,
-        model.reconstruction_network,
-        model.transition_network.inputs[0].shape[-1],
-        encoder_temperature=model.encoder_temperature,
-        prior_temperature=model.prior_temperature,
-        regularizer_scale_factor=model.regularizer_scale_factor,
-        kl_scale_factor=model.kl_scale_factor,
-        pre_loaded_model=True)
-    return vae_mdp
+    if tf.__version__ == '2.2.0':
+        model = tf.keras.models.load_model(tf_model_path)
+        label_shape = model.transition_network.output.get_shape()[1] - model.encoder_network.output.get_shape()[1]
+        return VariationalMarkovDecisionProcess(
+            tuple(model.encoder_network.input[0].shape.as_list()[1:]),
+            tuple(model.encoder_network.input[1].shape.as_list()[1:]),
+            tuple(model.encoder_network.input[2].shape.as_list()[1:]),
+            (label_shape,),
+            model.encoder_network,
+            model.transition_network,
+            model.reward_network,
+            model.reconstruction_network,
+            model.transition_network.inputs[0].shape[-1],
+            encoder_temperature=model.encoder_temperature,
+            prior_temperature=model.prior_temperature,
+            regularizer_scale_factor=model.regularizer_scale_factor,
+            kl_scale_factor=model.kl_scale_factor,
+            pre_loaded_model=True)
+    else:
+        model = tf.saved_model.load(tf_model_path)
+        assert model.transition_network.variables[-1].name == 'transition_logistic_locations/bias:0'
+        return VariationalMarkovDecisionProcess(
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
+            model.encoder_network,
+            model.transition_network,
+            model.reward_network,
+            model.reconstruction_network,
+            model.transition_network.variables[-1].shape[0],
+            encoder_temperature=model.encoder_temperature,
+            prior_temperature=model.prior_temperature,
+            regularizer_scale_factor=model.regularizer_scale_factor,
+            kl_scale_factor=model.kl_scale_factor,
+            pre_loaded_model=True)
 
 
 def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
