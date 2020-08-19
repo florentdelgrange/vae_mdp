@@ -463,10 +463,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         cross_entropy_regularizer = compute_cross_entropy_regularization()
 
-        state_distortion, state_rate, state_cer = self._state_vae(inputs, metrics=False)
-        distortion += state_distortion
-        rate += state_rate
-        cross_entropy_regularizer += state_cer
+        if self.full_optimization:
+            state_distortion, state_rate, state_cer = self._state_vae(inputs, metrics=False)
+            distortion += state_distortion
+            rate += state_rate
+            cross_entropy_regularizer += state_cer
 
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
         self.loss_metrics['action_mse'](a_1, action_distribution.sample())
