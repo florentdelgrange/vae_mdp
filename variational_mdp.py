@@ -570,7 +570,7 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       manager: Optional[tf.train.CheckpointManager] = None,
                       log_interval: int = 80,
                       eval_steps: int = int(1e3),
-                      save_model_interval: int = int(1e4),
+                      save_model_interval: int = int(1e2),
                       log_name: str = 'vae',
                       annealing_period: int = 0,
                       start_annealing_step: int = 0,
@@ -830,29 +830,34 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                   log_name: str,
                   train_summary_writer: Optional[tf.summary.SummaryWriter] = None):
     eval_elbo = tf.metrics.Mean()
-    eval_set = dataset.batch(batch_size, drop_remainder=True)  # .prefetch(tf.data.experimental.AUTOTUNE)
-    eval_progressbar = Progbar(target=eval_steps * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
+    if eval_steps > 0:
+        eval_set = dataset.batch(batch_size, drop_remainder=True)  # .prefetch(tf.data.experimental.AUTOTUNE)
+        eval_progressbar = Progbar(target=eval_steps * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
 
-    tf.print("\nEvalutation over {} steps".format(eval_steps))
+        tf.print("\nEvalutation over {} steps".format(eval_steps))
 
-    for step, x in enumerate(eval_set):
-        eval_elbo(vae_mdp.eval(x))
-        eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
-        if step > eval_steps:
-            break
+        for step, x in enumerate(eval_set):
+            eval_elbo(vae_mdp.eval(x))
+            eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
+            if step > eval_steps:
+                break
 
-    if train_summary_writer is not None:
-        with train_summary_writer.as_default():
-            tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
-    print('eval ELBO: ', eval_elbo.result().numpy())
-    model_name = '{}_step{}_eval_elbo{:.3f}'.format(log_name, global_step, eval_elbo.result())
+        del eval_set
+        del dataset
+
+        if train_summary_writer is not None:
+            with train_summary_writer.as_default():
+                tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
+        print('eval ELBO: ', eval_elbo.result().numpy())
+        model_name = '{}_step{}_eval_elbo{:.3f}'.format(log_name, global_step, eval_elbo.result())
+    else:
+        model_name = '{}_step{}'.format(log_name, global_step)
     if check_numerics:
         tf.debugging.disable_check_numerics()
     tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
     if check_numerics:
         tf.debugging.enable_check_numerics()
-    del eval_set
-    del dataset
+
     return eval_elbo
 
 

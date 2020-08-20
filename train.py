@@ -105,6 +105,11 @@ flags.DEFINE_bool(
     default=False,
     help="Set whether discrete action networks use one output per action or use the latent action as input."
 )
+flags.DEFINE_boolean(
+    "do_not_eval",
+    default=False,
+    help="Set this flag to not perform an evaluation of the ELBO (using discrete latent variables) during training."
+)
 flags.DEFINE_bool(
     "full_vae_optimization",
     default=False,
@@ -320,7 +325,8 @@ def main(argv):
                                           display_progressbar=params['display_progressbar'],
                                           save_directory=params['save_dir'],
                                           parallelization=params['parallel_env'] > 1,
-                                          num_parallel_environments=params['parallel_env'])
+                                          num_parallel_environments=params['parallel_env'],
+                                          eval_steps=int(1e3) if not params['do_not_eval'] else 0)
     else:
         variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,
                                            batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
@@ -328,7 +334,8 @@ def main(argv):
                                            start_annealing_step=params['start_annealing_step'],
                                            log_name=vae_name, logs=True, max_steps=params['max_steps'],
                                            display_progressbar=params['display_progressbar'],
-                                           save_directory=params['save_dir'])
+                                           save_directory=params['save_dir'],
+                                           eval_ratio=int(1e3) if not params['do_not_eval'] else 0)
 
     return 0
 
