@@ -18,8 +18,7 @@ from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.trajectories import policy_step, trajectory
 from tf_agents.utils import common
 
-from util.io.dataset_generator import gather_rl_observations, get_tensor_shape, DictionaryDatasetGenerator, \
-    RawDatasetGenerator
+from util.io.dataset_generator import RawDatasetGenerator
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -515,10 +514,8 @@ def compute_apply_gradients(vae_mdp: VariationalMarkovDecisionProcess, x, optimi
 
 
 def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
-    """
-    Note: only with TensorFlow>=2.2.0
-    """
-    if tf.__version__ == '2.2.0':
+    if float(tf.__version__.split('.')[0] + '.' + "".join(tf.__version__.split('.')[1:])) >= 2.2:
+        # only with TensorFlow>=2.2.0
         model = tf.keras.models.load_model(tf_model_path)
         label_shape = model.transition_network.output.get_shape()[1] - model.encoder_network.output.get_shape()[1]
         return VariationalMarkovDecisionProcess(
@@ -572,7 +569,7 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       checkpoint: Optional[tf.train.Checkpoint] = None,
                       manager: Optional[tf.train.CheckpointManager] = None,
                       log_interval: int = 80,
-                      eval_steps: int = int(1e4),
+                      eval_steps: int = int(1e3),
                       save_model_interval: int = int(1e4),
                       log_name: str = 'vae',
                       annealing_period: int = 0,
@@ -680,7 +677,8 @@ def train_from_policy(vae_mdp: VariationalMarkovDecisionProcess,
                       annealing_period=annealing_period, global_step=global_step,
                       dataset_size=replay_buffer.num_frames().numpy(), display_progressbar=display_progressbar,
                       start_step=start_step, epoch=0, progressbar=progressbar, dataset_generator=dataset_generator,
-                      save_model_interval=save_model_interval, eval_ratio=eval_steps / replay_buffer.num_frames(),
+                      save_model_interval=save_model_interval,
+                      eval_ratio=eval_steps * batch_size / replay_buffer.num_frames(),
                       save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
                       log_interval=log_interval, manager=manager, logs=logs, start_annealing_step=start_annealing_step,
                       max_steps=max_steps, additional_metrics={
@@ -803,9 +801,8 @@ def training_step(dataset_batch, batch_size, vae_mdp, optimizer, annealing_perio
     global_step.assign_add(1)
 
     # eval, save and log
-    eval_steps = np.infty if dataset_size is None else int(dataset_size * eval_ratio) // batch_size
+    eval_steps = int(1e3) if dataset_size is None else int(dataset_size * eval_ratio) // batch_size
     if global_step.numpy() % save_model_interval == 0:
-        tf.print("\n Evalutation")
         eval_and_save(vae_mdp=vae_mdp, dataset=dataset_generator(),
                       batch_size=batch_size, eval_steps=eval_steps,
                       global_step=int(global_step.numpy()), save_directory=save_directory, log_name=log_name,
@@ -833,7 +830,9 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                   log_name: str,
                   train_summary_writer: Optional[tf.summary.SummaryWriter] = None):
     eval_elbo = tf.metrics.Mean()
-    eval_set = dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
+    eval_set = dataset.batch(batch_size, drop_remainder=True)  # .prefetch(tf.data.experimental.AUTOTUNE)
+
+    tf.print("\nEvalutation over {} steps".format(eval_steps))
 
     for step, x in enumerate(eval_set):
         eval_elbo(vae_mdp.eval(x))
