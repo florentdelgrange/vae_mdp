@@ -831,11 +831,13 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                   train_summary_writer: Optional[tf.summary.SummaryWriter] = None):
     eval_elbo = tf.metrics.Mean()
     eval_set = dataset.batch(batch_size, drop_remainder=True)  # .prefetch(tf.data.experimental.AUTOTUNE)
+    eval_progressbar = Progbar(target=eval_steps * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
 
     tf.print("\nEvalutation over {} steps".format(eval_steps))
 
     for step, x in enumerate(eval_set):
         eval_elbo(vae_mdp.eval(x))
+        eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
         if step > eval_steps:
             break
 
