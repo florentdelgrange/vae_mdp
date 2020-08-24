@@ -40,7 +40,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         super().__init__(vae_mdp.state_shape, vae_mdp.action_shape, vae_mdp.reward_shape, vae_mdp.label_shape,
                          vae_mdp.encoder_network, vae_mdp.transition_network, vae_mdp.reward_network,
-                         vae_mdp.reconstruction_network, vae_mdp.latent_state_size, vae_mdp.reward_scale_factor,
+                         vae_mdp.reconstruction_network, vae_mdp.latent_state_size,
                          vae_mdp.encoder_temperature.numpy(), vae_mdp.prior_temperature.numpy(),
                          vae_mdp.encoder_temperature_decay_rate.numpy(), vae_mdp.prior_temperature_decay_rate.numpy(),
                          vae_mdp.regularizer_scale_factor.numpy(), vae_mdp.regularizer_decay_rate.numpy(),
@@ -442,8 +442,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         # rewards reconstruction
         reward_distribution = self.reward_probability_distribution(z, latent_action, z_prime, log_latent_action=True)
         log_p_rewards_action = self._state_vae.reward_probability_distribution(
-            z, a_1, z_prime).log_prob(self.reward_scale_factor * r_1)
-        log_p_rewards_latent_action = reward_distribution.log_prob(self.reward_scale_factor * r_1)
+            z, a_1, z_prime).log_prob(r_1)
+        log_p_rewards_latent_action = reward_distribution.log_prob(r_1)
         log_p_rewards = log_p_rewards_latent_action - log_p_rewards_action
 
         # action reconstruction
@@ -471,12 +471,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
         self.loss_metrics['action_mse'](a_1, action_distribution.sample())
-        self.loss_metrics['reward_mse'](self.reward_scale_factor * r_1, reward_distribution.sample())
+        self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
         if self.full_optimization:
             self.loss_metrics['state_mse'](s_2, self._state_vae.decode(z_prime).sample())
             self.loss_metrics['state_reward_mse'](
-                self.reward_scale_factor * r_1,
-                self._state_vae.reward_probability_distribution(z, a_1, z_prime).sample())
+                r_1, self._state_vae.reward_probability_distribution(z, a_1, z_prime).sample())
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
@@ -515,10 +514,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         # rewards reconstruction
         log_p_rewards_action = self._state_vae.reward_probability_distribution(
-            z, a_1, z_prime).log_prob(self.reward_scale_factor * r_1)
+            z, a_1, z_prime).log_prob(r_1)
         log_p_rewards_latent_action = self.reward_probability_distribution(
-            z, tf.math.log(latent_action + epsilon), z_prime, log_latent_action=True).log_prob(
-            self.reward_scale_factor * r_1)
+            z, tf.math.log(latent_action + epsilon), z_prime, log_latent_action=True).log_prob(r_1)
         log_p_rewards = log_p_rewards_latent_action - log_p_rewards_action
 
         # action reconstruction

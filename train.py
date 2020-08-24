@@ -1,15 +1,13 @@
 import os
-from typing import Dict
+from typing import List, Tuple
 
-import numpy as np
+import yaml
+
 import tensorflow as tf
-import tf_agents.environments
 from absl import app
 from absl import flags
-from tensorflow.keras import Input, Model
 from tensorflow.keras.layers import Dense
 from tensorflow.python.keras import Sequential
-from tensorflow.python.keras.layers import Lambda
 
 import reinforcement_learning
 import variational_action_discretizer
@@ -36,11 +34,6 @@ flags.DEFINE_string(
     default="leaky_relu",
     help="Activation function for all hidden layers.")
 flags.DEFINE_integer("latent_size", default=17, help='Number of bits used for the discrete latent state space.')
-flags.DEFINE_float(
-    "reward_scale_factor",
-    default=1.,
-    help="Reward scale factor."
-)
 flags.DEFINE_float(
     "encoder_temperature",
     default=0.99,
@@ -188,7 +181,7 @@ def main(argv):
             raise RuntimeError('Missing argument: --{}'.format(name))
 
     if params['dataset_path'] == '':
-        for param in ('load_vae', 'policy_path', 'environment'):
+        for param in ('policy_path', 'environment'):
             check_missing_argument(param)
     if params['action_discretizer']:
         check_missing_argument('load_vae')
@@ -200,9 +193,9 @@ def main(argv):
     mixture_components = params['mixture_components']
     latent_state_size = params['latent_size']  # depends on the number of bits reserved for labels
 
-    if params['load_vae'][-1] == os.path.sep:
+    if params['load_vae'] != '' and params['load_vae'][-1] == os.path.sep:
         params['load_vae'] = params['load_vae'][:-1]
-    if params['policy_path'][-1] == os.path.sep:
+    if params['policy_path'] != '' and params['policy_path'][-1] == os.path.sep:
         params['policy_path'] = params['policy_path'][:-1]
 
     if not params['action_discretizer']:
@@ -265,21 +258,48 @@ def main(argv):
     for i, units in enumerate(params['decoder_layers']):
         p_decode.add(Dense(units, activation=activation, name='decoder_{}'.format(i)))
 
+    if params['env_suite'] != '':
+        try:
+            import importlib
+            environment_suite = importlib.import_module('tf_agents.environments.' + params['env_suite'])
+        except BaseException as err:
+            serr = str(err)
+            print("Error to load the module '" + params['env_suite'] + "': " + serr)
+    else:
+        environment_suite = None
+
     if params['load_vae'] == '':
-        dummy_dataset = generate_dataset()
-        dataset_size = dataset_generator.get_num_samples(dataset_path, batch_size=batch_size, drop_remainder=True)
 
-        state_shape, action_shape, reward_shape, _, label_shape = \
-            [tuple(spec.shape.as_list()[1:]) for spec in dummy_dataset.element_spec]
+        if params['dataset_path'] != '':
+            dummy_dataset = generate_dataset()
+            dataset_size = dataset_generator.get_num_samples(dataset_path, batch_size=batch_size, drop_remainder=True)
 
-        del dummy_dataset
+            state_shape, action_shape, reward_shape, _, label_shape = [
+                tuple(spec.shape.as_list()[1:]) for spec in dummy_dataset.element_spec
+            ]
+
+            del dummy_dataset
+
+        else:
+            environment = environment_suite.load(environment_name)
+
+            state_shape, action_shape, reward_shape, label_shape = (
+                shape if shape != () else (1, ) for shape in (
+                    environment.observation_spec().shape,
+                    environment.action_spec().shape,
+                    environment.time_step_spec().reward.shape,
+                    tuple(reinforcement_learning.labeling_functions[environment_name](
+                        environment.reset().observation).shape))
+            )
+
+            environment.close()
+            del environment
 
         vae_mdp_model = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
             encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
             latent_state_size=latent_state_size,
             mixture_components=mixture_components,
-            reward_scale_factor=params['reward_scale_factor'],
             encoder_temperature=params['encoder_temperature'], prior_temperature=params['prior_temperature'],
             encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
             prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
@@ -317,13 +337,6 @@ def main(argv):
 
     if dataset_path == '':
         policy = tf.compat.v2.saved_model.load(params['policy_path'])
-
-        try:
-            import importlib
-            environment_suite = importlib.import_module('tf_agents.environments.' + params['env_suite'])
-        except BaseException as err:
-            serr = str(err)
-            print("Error to load the module '" + params['env_suite'] + "': " + serr)
 
         variational_mdp.train_from_policy(vae_mdp_model, policy=policy, environment_suite=environment_suite,
                                           env_name=environment_name,
