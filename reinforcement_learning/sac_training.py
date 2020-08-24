@@ -234,15 +234,15 @@ class SACLearner:
             self.tf_env, self.collect_policy, observers=[self.replay_buffer.add_batch], num_steps=initial_collect_steps)
 
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
+        train_log_dir = os.path.join('logs', 'gradient_tape', current_time, env_name, 'sac_agent_training')
         self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
-        self.save_directory_location = os.path.join(save_directory_location, env_name)
+        self.save_directory_location = os.path.join(save_directory_location, 'saves', env_name)
         self.save_exploration_dataset = save_exploration_dataset
 
     def save_permissive_variance_policy(self, variance_multiplier: float = 1.5):
 
         def map_proj(spec):
-            return self.normal_projection_net(spec, std_transform_multiplier=variance_multiplier)
+            return self.normal_projection_net(spec, std_transform_multiplier=tf.math.sqrt(variance_multiplier))
 
         projection_networks = tf.nest.map_structure(map_proj, self.action_spec)
 
@@ -258,7 +258,8 @@ class SACLearner:
             global_step=self.global_step
         )
         stochastic_policy_dir = os.path.join(
-            self.save_directory_location, 'saves', 'stochastic_policy',
+            self.save_directory_location,
+            'policy',
             'permissive_variance_policy-multiplier={}'.format(variance_multiplier))
         stochastic_policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
 
@@ -326,7 +327,7 @@ class SACLearner:
 
         update_progress_bar(self.global_step.numpy())
 
-        for _ in range(self.num_iterations):
+        for _ in range(self.global_step.numpy(), self.num_iterations):
 
             # Collect a few steps using collect_policy and save to the replay buffer.
             self.driver.run()
@@ -347,7 +348,6 @@ class SACLearner:
                     tf.summary.scalar('loss', train_loss.loss, step=step)
                     if not self.parallelization:
                         tf.summary.scalar('training average returns', self.avg_return.result(), step=step)
-                self.safety_violations.reset()
 
             if step % self.eval_interval == 0:
                 eval_thread = threading.Thread(target=self.eval, args=(step, progressbar), daemon=True, name='eval')
@@ -371,19 +371,22 @@ class SACLearner:
                                        step=str(step))
         else:
             self.eval_env.reset()
-            dynamic_episode_driver.DynamicEpisodeDriver(self.eval_env, saved_policy,
-                                                        [avg_eval_return, avg_eval_episode_length,
-                                                         num_safety_violations],
-                                                        num_episodes=self.num_eval_episodes).run()
-        print('Evaluation')
+            dynamic_episode_driver.DynamicEpisodeDriver(
+                self.eval_env,
+                saved_policy,
+                [avg_eval_return, avg_eval_episode_length, num_safety_violations],
+                num_episodes=self.num_eval_episodes
+            ).run()
+
         log_values = [
             ('eval_avg_returns', avg_eval_return.result()),
             ('avg_eval_episode_length', avg_eval_episode_length.result()),
-            ('eval_safety_violations', num_safety_violations.result())
+            ('eval_safety_violations', num_safety_violations.average())
         ]
-        if progressbar:
+        if progressbar is not None:
             progressbar.add(0, log_values)
         else:
+            print('Evaluation')
             for key, value in log_values:
                 print(key, '=', value.numpy())
         with self.train_summary_writer.as_default():
