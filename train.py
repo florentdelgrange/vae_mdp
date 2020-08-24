@@ -1,8 +1,6 @@
 import os
 from typing import List, Tuple
 
-import yaml
-
 import tensorflow as tf
 from absl import app
 from absl import flags
