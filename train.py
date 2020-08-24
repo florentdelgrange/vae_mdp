@@ -37,6 +37,11 @@ flags.DEFINE_string(
     help="Activation function for all hidden layers.")
 flags.DEFINE_integer("latent_size", default=17, help='Number of bits used for the discrete latent state space.')
 flags.DEFINE_float(
+    "reward_scale_factor",
+    default=1.,
+    help="Reward scale factor."
+)
+flags.DEFINE_float(
     "encoder_temperature",
     default=0.99,
     help="Temperature of the binary concrete relaxation distribution over latent states of the encoder.")
@@ -182,14 +187,14 @@ def main(argv):
         if params[name] == '':
             raise RuntimeError('Missing argument: --{}'.format(name))
 
-    if params['action_discretizer']:
+    if params['dataset_path'] == '':
         for param in ('load_vae', 'policy_path', 'environment'):
             check_missing_argument(param)
-    else:
-        for param in ('dataset_path',):
-            check_missing_argument(param)
+    if params['action_discretizer']:
+        check_missing_argument('load_vae')
 
     dataset_path = params['dataset_path']
+    environment_name = params['environment']
 
     batch_size = params['batch_size']
     mixture_components = params['mixture_components']
@@ -200,16 +205,18 @@ def main(argv):
     if params['policy_path'][-1] == os.path.sep:
         params['policy_path'] = params['policy_path'][:-1]
 
-    vae_name = 'vae_LS{}_MC{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}'.format(
-        latent_state_size,
-        mixture_components,
-        params['regularizer_scale_factor'],
-        params['kl_annealing_scale_factor'],
-        params['encoder_temperature'],
-        params['prior_temperature'],
-        params['encoder_temperature_decay_rate'],
-        params['prior_temperature_decay_rate']) if not params['action_discretizer'] else \
-        '{}_LA{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}_policy={}'.format(
+    if not params['action_discretizer']:
+        vae_name = 'vae_LS{}_MC{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}'.format(
+            latent_state_size,
+            mixture_components,
+            params['regularizer_scale_factor'],
+            params['kl_annealing_scale_factor'],
+            params['encoder_temperature'],
+            params['prior_temperature'],
+            params['encoder_temperature_decay_rate'],
+            params['prior_temperature_decay_rate'])
+    else:
+        vae_name = '{}_LA{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}_policy={}'.format(
             os.path.split(params['load_vae'])[-1],
             params['number_of_discrete_actions'],
             params['regularizer_scale_factor'],
@@ -231,9 +238,11 @@ def main(argv):
     activation = getattr(tf.nn, params["activation"])
 
     def generate_dataset():
-        return dataset_generator.create_dataset(hdf5_files_path=dataset_path,
-                                                cycle_length=cycle_length,
-                                                block_length=block_length)
+        return dataset_generator.create_dataset(
+            hdf5_files_path=dataset_path,
+            cycle_length=cycle_length,
+            block_length=block_length)
+
     dataset_size = -1
 
     # Encoder body
@@ -268,7 +277,9 @@ def main(argv):
         vae_mdp_model = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
             encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
-            latent_state_size=latent_state_size, mixture_components=mixture_components,
+            latent_state_size=latent_state_size,
+            mixture_components=mixture_components,
+            reward_scale_factor=params['reward_scale_factor'],
             encoder_temperature=params['encoder_temperature'], prior_temperature=params['prior_temperature'],
             encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
             prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
@@ -300,11 +311,11 @@ def main(argv):
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 
     step = tf.compat.v1.train.get_or_create_global_step()
-    checkpoint_directory = os.path.join(params['save_dir'], "saves/{}/training_checkpoints".format(vae_name))
+    checkpoint_directory = os.path.join(params['save_dir'], 'saves', environment_name, vae_name, 'training_checkpoints')
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
     manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
 
-    if params['action_discretizer']:
+    if dataset_path == '':
         policy = tf.compat.v2.saved_model.load(params['policy_path'])
 
         try:
@@ -314,7 +325,6 @@ def main(argv):
             serr = str(err)
             print("Error to load the module '" + params['env_suite'] + "': " + serr)
 
-        environment_name = params['environment']
         variational_mdp.train_from_policy(vae_mdp_model, policy=policy, environment_suite=environment_suite,
                                           env_name=environment_name,
                                           labeling_function=reinforcement_learning.labeling_functions[environment_name],
