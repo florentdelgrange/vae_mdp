@@ -648,7 +648,7 @@ def train_from_policy(
     ).map(
         map_func=lambda trajectory, _: map_rl_trajectory_to_vae_input(trajectory, labeling_function),
         num_parallel_calls=num_parallel_environments,
-        deterministic=False
+        #  deterministic=False  # TF version >= 2.2.0
     )
     dataset = dataset_generator().batch(batch_size=batch_size, drop_remainder=True)
     dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
