@@ -24,8 +24,6 @@ from tf_agents.utils import common
 from tf_agents.policies import policy_saver
 import tf_agents.trajectories.time_step as ts
 
-import numpy as np
-
 from reinforcement_learning import labeling_functions
 from util.io import dataset_generator
 
@@ -234,7 +232,7 @@ class SACLearner:
             self.tf_env, self.collect_policy, observers=[self.replay_buffer.add_batch], num_steps=initial_collect_steps)
 
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        train_log_dir = os.path.join('logs', 'gradient_tape', current_time, env_name, 'sac_agent_training')
+        train_log_dir = os.path.join('logs', 'gradient_tape', env_name, 'sac_agent_training', current_time)
         self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
         self.save_directory_location = os.path.join(save_directory_location, 'saves', env_name)
         self.save_exploration_dataset = save_exploration_dataset
