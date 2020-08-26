@@ -62,6 +62,54 @@ def gather_rl_observations(
     return data
 
 
+@tf.function
+def map_rl_trajectory_to_vae_input(
+        trajectory, labeling_function,
+        scalar_rewards=True, initial_state=None, initial_action=None, deadlock_action=None):
+
+    state_type = trajectory.step_type[:2]
+    next_state_type = trajectory.next_step_type[:2]
+    states = trajectory.observation[:2, :]
+    actions = trajectory.action[:2, :]
+    rewards = trajectory.reward[:2] if scalar_rewards else trajectory.reward[:2, :]
+    if scalar_rewards:
+        rewards = tf.reshape(rewards, list(rewards.shape) + [1])
+    next_states = trajectory.observation[1:, :]
+    next_labels = tf.cast(labeling_function(next_states), tf.float32)
+    if next_labels.shape == states.shape[:-1]:
+        next_labels = tf.reshape(next_labels, list(next_labels.shape) + [1])
+
+    if initial_state is None:
+        initial_state = tf.zeros(shape=tf.shape(states)[1:], dtype=tf.float32)
+    if initial_action is None:
+        initial_action = tf.zeros(shape=tf.shape(actions)[1:], dtype=tf.float32)
+    if deadlock_action is None:
+        deadlock_action = tf.zeros(shape=tf.shape(actions)[1:], dtype=tf.float32)
+
+    # check if the transition incident state is terminal and if next state is initial
+    # note: such transitions correspond to those where the reset() function has been called
+
+    states, actions, rewards, next_labels = tf.cond(
+        tf.equal(state_type[0], ts.StepType.LAST),  # and state_type[1] == next_state_type[0] == ts.StepType.FIRST,
+        lambda: (
+            tf.stack([initial_state, states[1]]),
+            tf.stack([initial_action, actions[1]]),
+            tf.stack([tf.zeros(shape=tf.shape(rewards)[1:], dtype=tf.float32), rewards[1]]),
+            tf.stack([next_labels[1], next_labels[1]])
+        ), lambda: (states, actions, rewards, next_labels))
+
+    next_states, actions, rewards, next_labels = tf.cond(
+        tf.equal(next_state_type[1], ts.StepType.FIRST),  # and state_type[1] == next_state_type[0] == ts.StepType.LAST
+        lambda: (
+            tf.stack([next_states[0], next_states[0]]),
+            tf.stack([actions[0], deadlock_action]),
+            tf.stack([rewards[0], tf.zeros(shape=tf.shape(rewards)[1:], dtype=tf.float32)]),
+            tf.stack([next_labels[0], next_labels[0]])
+        ), lambda: (next_states, actions, rewards, next_labels))
+
+    return states, actions, rewards, next_states, next_labels
+
+
 class DictionaryDatasetGenerator:
     """
     Generates a dataset from a dictionary (or hdf5 file) containing the data to be processed.
@@ -107,52 +155,30 @@ class RawDatasetGenerator:
     Generates a dataset from raw data contained in a replay buffer.
     """
 
-    def __init__(self, replay_buffer, labeling_function,
-                 initial_dummy_state=None, initial_dummy_action=None, scalar_rewards=True):
+    def __init__(
+            self, replay_buffer, labeling_function,
+            initial_dummy_state=None, initial_dummy_action=None, deadlock_action=None,
+            scalar_rewards=True, num_parallel_calls=tf.data.experimental.AUTOTUNE
+    ):
         self.initial_dummy_state = initial_dummy_state
         self.initial_dummy_action = initial_dummy_action
+        self.deadlock_action = deadlock_action
         self.labeling_function = labeling_function
         self.raw_dataset = replay_buffer.as_dataset(
-            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+            num_parallel_calls=num_parallel_calls,
             num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
         self.scalar_rewards = scalar_rewards
 
     def __call__(self):
         for raw_data, _ in self.raw_dataset:
-            state_type = raw_data.step_type[:2]
-            next_state_type = raw_data.next_step_type[:2]
-
-            # check if the transition incident state is terminal and if next state is initial
-            # note: such transitions correspond to those where the reset() function has been called
-            keep_transition = state_type[0] != ts.StepType.LAST
-            keep_transition &= state_type[1] != ts.StepType.LAST
-            keep_transition &= next_state_type[0] != ts.StepType.FIRST
-            keep_transition &= next_state_type[1] != ts.StepType.FIRST
-
-            if keep_transition:
-
-                states = raw_data.observation[:2, :]
-                actions = raw_data.action[:2, :]
-                rewards = raw_data.reward[:2] if self.scalar_rewards else raw_data.reward[:2, :]
-                if self.scalar_rewards:
-                    rewards = tf.reshape(rewards, list(rewards.shape) + [1])
-                next_states = raw_data.observation[1:, :]
-                next_labels = self.labeling_function(next_states)
-                if next_labels.shape == states.shape[:-1]:
-                    next_labels = tf.reshape(next_labels, list(next_labels.shape) + [1])
-
-                if state_type[0] == ts.StepType.FIRST:  # initial state handling
-                    initial_state = self.initial_dummy_state if self.initial_dummy_state is not None \
-                        else np.zeros(shape=tf.shape(states)[1:])
-                    initial_action = self.initial_dummy_action if self.initial_dummy_action is not None \
-                        else np.zeros(shape=tf.shape(actions)[1:])
-                    yield (tf.stack((initial_state, states[0])),
-                           tf.stack((initial_action, actions[0])),
-                           tf.stack((np.zeros(shape=tf.shape(rewards)[1:]), rewards[0])),
-                           states,
-                           tf.stack((next_labels[0], next_labels[0])))
-                else:
-                    yield states, actions, rewards, next_states, next_labels
+            yield from map_rl_trajectory_to_vae_input(
+                trajectory=raw_data,
+                labeling_function=self.labeling_function,
+                scalar_rewards=self.scalar_rewards,
+                initial_state=self.initial_dummy_state,
+                initial_action=self.initial_dummy_action,
+                deadlock_action=self.deadlock_action
+            )
 
 
 def get_tensor_shape(data):

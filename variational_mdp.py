@@ -18,7 +18,7 @@ from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.trajectories import policy_step, trajectory
 from tf_agents.utils import common
 
-from util.io.dataset_generator import RawDatasetGenerator
+from util.io.dataset_generator import map_rl_trajectory_to_vae_input
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -106,47 +106,53 @@ class VariationalMarkovDecisionProcess(Model):
             concatenate_inputs = Concatenate(axis=0)([input_state, input_next_state])
             stack_inputs = Reshape((2,) + state_shape)(concatenate_inputs)
             # Apply the same pre-processing to both state inputs
-            apply_pre_processing = \
-                TimeDistributed(state_pre_processing_network, input_shape=(2,) + state_shape)(stack_inputs)
+            apply_pre_processing = TimeDistributed(
+                state_pre_processing_network, input_shape=(2,) + state_shape)(stack_inputs)
             state, next_state = apply_pre_processing[:, 0], apply_pre_processing[:, 1]
 
         if not pre_loaded_model:
             # Encoder network
             encoder_input = Concatenate(name="encoder_input")([state, action, reward, next_state])
             encoder = encoder_network(encoder_input)
-            log_alpha_layer = \
-                Dense(units=latent_state_size - np.prod(label_shape), activation=None, name='log_alpha')(encoder)
-            self.encoder_network = \
-                Model(inputs=[input_state, action, reward, input_next_state],
-                      outputs=log_alpha_layer, name='encoder')
+            log_alpha_layer = Dense(
+                units=latent_state_size - np.prod(label_shape), activation=None, name='log_alpha')(encoder)
+            self.encoder_network = Model(
+                inputs=[input_state, action, reward, input_next_state],
+                outputs=log_alpha_layer,
+                name='encoder')
 
             # Transition network
             # inputs are binary concrete random variables, outputs are locations of logistic distributions
             latent_state = Input(shape=(latent_state_size,), name="latent_state")
-            action_layer_1 = action if not action_pre_processing_network \
-                else clone_model(action_pre_processing_network)(action)
-            transition_network_input = \
-                Concatenate(name="transition_network_input")([latent_state, action_layer_1])
+            if action_pre_processing_network:
+                action_layer_1 = clone_model(action_pre_processing_network)(action)
+            else:
+                action_layer_1 = action
+
+            transition_network_input = Concatenate(name="transition_network_input")([latent_state, action_layer_1])
             transition = transition_network(transition_network_input)
-            transition_output_layer = \
-                Dense(units=latent_state_size, activation=None, name='transition_logistic_locations')(transition)
-            self.transition_network = Model(inputs=[latent_state, action], outputs=transition_output_layer,
-                                            name="transition_network")
+            transition_output_layer = Dense(
+                units=latent_state_size, activation=None, name='transition_logistic_locations')(transition)
+            self.transition_network = Model(
+                inputs=[latent_state, action], outputs=transition_output_layer, name="transition_network")
 
             # Reward network
             next_latent_state = Input(shape=(latent_state_size,), name="next_latent_state")
             action_layer_2 = action if not action_pre_processing_network else action_pre_processing_network(action)
-            reward_network_input = \
-                Concatenate(name="reward_network_input")([latent_state, action_layer_2, next_latent_state])
+            reward_network_input = Concatenate(name="reward_network_input")(
+                [latent_state, action_layer_2, next_latent_state])
             reward_1 = reward_network(reward_network_input)
             reward_mean = Dense(units=np.prod(reward_shape), activation=None, name='reward_mean_0')(reward_1)
             reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
-            reward_raw_covar = Dense(units=np.prod(reward_shape),
-                                     activation=None,
-                                     name='reward_raw_diag_covariance_0')(reward_1)
+            reward_raw_covar = Dense(
+                units=np.prod(reward_shape),
+                activation=None,
+                name='reward_raw_diag_covariance_0'
+            )(reward_1)
             reward_raw_covar = Reshape(reward_shape, name='reward_raw_diag_covariance')(reward_raw_covar)
-            self.reward_network = Model(inputs=[latent_state, action, next_latent_state],
-                                        outputs=[reward_mean, reward_raw_covar], name='reward_network')
+            self.reward_network = Model(
+                inputs=[latent_state, action, next_latent_state],
+                outputs=[reward_mean, reward_raw_covar], name='reward_network')
 
             # Reconstruction network
             # inputs are latent binary states, outputs are given in parameter
@@ -154,10 +160,9 @@ class VariationalMarkovDecisionProcess(Model):
             if state_post_processing_network is not None:
                 decoder = state_post_processing_network(decoder)
             # 1 mean per dimension, nb Normal Gaussian
-            decoder_output_mean = \
-                Dense(units=mixture_components * np.prod(state_shape), activation=None, name='GMM_means_0')(decoder)
-            decoder_output_mean = \
-                Reshape((mixture_components,) + state_shape, name="GMM_means")(decoder_output_mean)
+            decoder_output_mean = Dense(
+                units=mixture_components * np.prod(state_shape), activation=None, name='GMM_means_0')(decoder)
+            decoder_output_mean = Reshape((mixture_components,) + state_shape, name="GMM_means")(decoder_output_mean)
             if self.full_covariance and len(state_shape) == 1:
                 d = np.prod(state_shape) * (np.prod(state_shape) + 1) / 2
                 decoder_raw_output = Dense(
@@ -174,13 +179,14 @@ class VariationalMarkovDecisionProcess(Model):
                     activation=None,
                     name='GMM_raw_diag_covariance_0'
                 )(decoder)
-                decoder_raw_output = \
-                    Reshape((mixture_components,) + state_shape, name="GMM_raw_diag_covar")(decoder_raw_output)
+                decoder_raw_output = Reshape(
+                    (mixture_components,) + state_shape, name="GMM_raw_diag_covar")(decoder_raw_output)
             # number of Normal Gaussian forming the mixture model
             decoder_prior = Dense(units=mixture_components, activation='softmax', name="GMM_priors")(decoder)
-            self.reconstruction_network = Model(inputs=next_latent_state,
-                                                outputs=[decoder_output_mean, decoder_raw_output, decoder_prior],
-                                                name='reconstruction_network')
+            self.reconstruction_network = Model(
+                inputs=next_latent_state,
+                outputs=[decoder_output_mean, decoder_raw_output, decoder_prior],
+                name='reconstruction_network')
         else:
             self.encoder_network = encoder_network
             self.transition_network = transition_network
@@ -575,7 +581,6 @@ def train_from_policy(
         display_progressbar: bool = True,
         max_steps: int = int(1e6),
         save_directory='.'):
-
     if collect_steps_per_iteration is None:
         collect_steps_per_iteration = batch_size
     if parallelization:
@@ -637,21 +642,16 @@ def train_from_policy(
         batch_size=tf_env.batch_size,
         max_length=replay_buffer_capacity)
 
-    def dataset_generator():
-        generator = RawDatasetGenerator(replay_buffer, labeling_function)
-        return tf.data.Dataset.from_generator(
-            generator,
-            (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
-            ((2,) + vae_mdp.state_shape,
-             (2,) + vae_mdp.action_shape,
-             (2,) + vae_mdp.reward_shape,
-             (2,) + vae_mdp.state_shape,
-             (2,) + vae_mdp.label_shape),
-        )
-
-    dataset = \
-        dataset_generator().batch(batch_size=batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
-    dataset_iterator = iter(dataset)
+    dataset_generator = lambda: replay_buffer.as_dataset(
+        num_parallel_calls=num_parallel_environments,
+        num_steps=3
+    ).map(
+        map_func=lambda trajectory, _: map_rl_trajectory_to_vae_input(trajectory, labeling_function),
+        num_parallel_calls=num_parallel_environments,
+        deterministic=False
+    )
+    dataset = dataset_generator().batch(batch_size=batch_size, drop_remainder=True)
+    dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
 
     num_episodes = tf_metrics.NumberOfEpisodes()
     env_steps = tf_metrics.EnvironmentSteps()
@@ -669,7 +669,7 @@ def train_from_policy(
     initial_collect_driver.run()
     print("Start training.")
 
-    for _ in range(num_iterations):
+    for _ in range(global_step.numpy(), num_iterations):
         # Collect a few steps and save them to the replay buffer.
         driver.run()
 
@@ -687,9 +687,6 @@ def train_from_policy(
                 "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
                 "replay_buffer_frames": replay_buffer.num_frames()},
                       train_log_dir=train_log_dir)
-
-    if global_step.numpy() > max_steps:
-        return
 
 
 def train_from_dataset(
@@ -832,7 +829,7 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                   train_summary_writer: Optional[tf.summary.SummaryWriter] = None):
     eval_elbo = tf.metrics.Mean()
     if eval_steps > 0:
-        eval_set = dataset.batch(batch_size, drop_remainder=True)  # .prefetch(tf.data.experimental.AUTOTUNE)
+        eval_set = dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
         eval_progressbar = Progbar(target=eval_steps * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
 
         tf.print("\nEvalutation over {} steps".format(eval_steps))
