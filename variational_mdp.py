@@ -566,7 +566,7 @@ def train_from_policy(
         collect_steps_per_iteration: Optional[int] = None,
         replay_buffer_capacity: int = int(1e6),
         parallelization: bool = True,
-        num_parallel_environments: int = 4,
+        num_parallel_call: int = 4,
         batch_size: int = 128,
         optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
         checkpoint: Optional[tf.train.Checkpoint] = None,
@@ -579,15 +579,15 @@ def train_from_policy(
         start_annealing_step: int = 0,
         logs: bool = True,
         display_progressbar: bool = True,
-        max_steps: int = int(1e6),
         save_directory='.'):
+
     if collect_steps_per_iteration is None:
         collect_steps_per_iteration = batch_size
     if parallelization:
-        replay_buffer_capacity = replay_buffer_capacity // num_parallel_environments
-        collect_steps_per_iteration = collect_steps_per_iteration // num_parallel_environments
+        replay_buffer_capacity = replay_buffer_capacity // num_parallel_call
+        collect_steps_per_iteration = collect_steps_per_iteration // num_parallel_call
 
-    save_directory = os.path.join(save_directory, env_name)
+    save_directory = os.path.join(save_directory, 'saves', env_name)
 
     # Load checkpoint
     if checkpoint is not None and manager is not None:
@@ -612,14 +612,14 @@ def train_from_policy(
 
     progressbar = Progbar(
         target=None,
-        stateful_metrics=list(vae_mdp.loss_metrics.keys()) + ['loss', 't_1', 't_2', 'regularizer_scale_factor',
-                                                              'step', "num_episodes", "env_steps",
-                                                              "replay_buffer_frames"],
+        stateful_metrics=list(vae_mdp.loss_metrics.keys()) + [
+            'loss', 't_1', 't_2', 'regularizer_scale_factor', 'step', "num_episodes", "env_steps",
+            "replay_buffer_frames"],
         interval=0.1) if display_progressbar else None
 
     if parallelization:
         tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
-            [lambda: environment_suite.load(env_name)] * num_parallel_environments))
+            [lambda: environment_suite.load(env_name)] * num_parallel_call))
         tf_env.reset()
     else:
         py_env = environment_suite.load(env_name)
@@ -643,11 +643,11 @@ def train_from_policy(
         max_length=replay_buffer_capacity)
 
     dataset_generator = lambda: replay_buffer.as_dataset(
-        num_parallel_calls=num_parallel_environments,
+        num_parallel_calls=num_parallel_call,
         num_steps=3
     ).map(
         map_func=lambda trajectory, _: map_rl_trajectory_to_vae_input(trajectory, labeling_function),
-        num_parallel_calls=num_parallel_environments,
+        num_parallel_calls=num_parallel_call,
         #  deterministic=False  # TF version >= 2.2.0
     )
     dataset = dataset_generator().batch(batch_size=batch_size, drop_remainder=True)
@@ -681,7 +681,7 @@ def train_from_policy(
                       eval_ratio=eval_steps * batch_size / replay_buffer.num_frames(),
                       save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
                       log_interval=log_interval, manager=manager, logs=logs, start_annealing_step=start_annealing_step,
-                      max_steps=max_steps, additional_metrics={
+                      max_steps=num_iterations, additional_metrics={
                 "num_episodes": num_episodes.result(),
                 "env_steps": env_steps.result(),
                 "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
@@ -749,7 +749,7 @@ def train_from_dataset(
                           progressbar=progressbar, dataset_generator=dataset_generator,
                           save_model_interval=save_model_interval, eval_ratio=eval_ratio, save_directory=save_directory,
                           log_name=log_name, train_summary_writer=train_summary_writer, log_interval=log_interval,
-                          manager=manager, logs=logs, start_annealing_step=start_annealing_step, max_steps=max_steps,
+                          manager=manager, logs=logs, start_annealing_step=start_annealing_step,
                           train_log_dir=train_log_dir)
 
         # reset metrics
@@ -766,7 +766,7 @@ def train_from_dataset(
 def training_step(dataset_batch, batch_size, vae_mdp, optimizer, annealing_period, global_step, dataset_size,
                   display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
                   eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
-                  train_log_dir, start_annealing_step, max_steps,
+                  train_log_dir, start_annealing_step,
                   additional_metrics: Optional[Dict[str, tf.Tensor]] = None):
     if additional_metrics is None:
         additional_metrics = {}
@@ -815,9 +815,6 @@ def training_step(dataset_batch, batch_size, vae_mdp, optimizer, annealing_perio
         # reset metrics
         vae_mdp.reset_metrics()
 
-    if global_step.numpy() > max_steps:
-        return
-
 
 def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                   dataset: tf.data.Dataset,
@@ -852,7 +849,7 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
         model_name = '{}_step{}'.format(log_name, global_step)
     if check_numerics:
         tf.debugging.disable_check_numerics()
-    tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'saves', model_name))
+    tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'models', model_name))
     if check_numerics:
         tf.debugging.enable_check_numerics()
 

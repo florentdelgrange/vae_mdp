@@ -346,7 +346,7 @@ def main(argv):
                                           display_progressbar=params['display_progressbar'],
                                           save_directory=params['save_dir'],
                                           parallelization=params['parallel_env'] > 1,
-                                          num_parallel_environments=params['parallel_env'],
+                                          num_parallel_call=params['parallel_env'],
                                           eval_steps=int(1e3) if not params['do_not_eval'] else 0)
     else:
         variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,
