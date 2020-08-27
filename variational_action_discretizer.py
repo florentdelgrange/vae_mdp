@@ -543,3 +543,34 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         mbu = {'mean_action_bits_used': mean_bits_used}
         mbu.update(self._state_vae.mean_latent_bits_used(inputs, eps))
         return mbu
+
+
+def load(tf_model_path: str) -> VariationalActionDiscretizer:
+        model = tf.saved_model.load(tf_model_path)
+        state_model = model._state_vae
+        state_vae = VariationalMarkovDecisionProcess(
+            state_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
+            action_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
+            reward_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
+            label_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
+            encoder_network=state_model.encoder_network,
+            transition_network=state_model.transition_network,
+            reward_network=state_model.reward_network,
+            decoder_network=state_model.reconstruction_network,
+            latent_state_size=state_model.transition_network.variables[-1].shape[0],
+            encoder_temperature=state_model._encoder_temperature,
+            prior_temperature=state_model._prior_temperature,
+            pre_loaded_model=True)
+        assert model.transition_network.variables[-1].name == 'transition_logistic_locations/bias:0'
+        return VariationalActionDiscretizer(
+            vae_mdp=state_vae,
+            number_of_discrete_actions=model.action_encoder.variables[-1].shape[0],
+            action_encoder_network=model.action_encoder,
+            action_decoder_network=model.action_decoder,
+            transition_network=model.action_transition_network,
+            reward_network=model.action_reward_network,
+            one_output_per_action=model.action_decoder.variables[0].shape[0] == state_vae.latent_state_size,
+            encoder_temperature=model._encoder_temperature,
+            prior_temperature=model._prior_temperature,
+            pre_loaded_model=True
+        )

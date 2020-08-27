@@ -530,10 +530,10 @@ def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
             model.reward_network,
             model.reconstruction_network,
             model.transition_network.inputs[0].shape[-1],
-            encoder_temperature=model.encoder_temperature,
-            prior_temperature=model.prior_temperature,
-            regularizer_scale_factor=model.regularizer_scale_factor,
-            kl_scale_factor=model.kl_scale_factor,
+            encoder_temperature=model._encoder_temperature,
+            prior_temperature=model._prior_temperature,
+            regularizer_scale_factor=model._regularizer_scale_factor,
+            kl_scale_factor=model._kl_scale_factor,
             pre_loaded_model=True)
     else:
         model = tf.saved_model.load(tf_model_path)
@@ -548,10 +548,10 @@ def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
             model.reward_network,
             model.reconstruction_network,
             model.transition_network.variables[-1].shape[0],
-            encoder_temperature=model.encoder_temperature,
-            prior_temperature=model.prior_temperature,
-            regularizer_scale_factor=model.regularizer_scale_factor,
-            kl_scale_factor=model.kl_scale_factor,
+            encoder_temperature=model._encoder_temperature,
+            prior_temperature=model._prior_temperature,
+            regularizer_scale_factor=model._regularizer_scale_factor,
+            kl_scale_factor=model._kl_scale_factor,
             pre_loaded_model=True)
 
 
@@ -681,7 +681,7 @@ def train_from_policy(
                       eval_ratio=eval_steps * batch_size / replay_buffer.num_frames(),
                       save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
                       log_interval=log_interval, manager=manager, logs=logs, start_annealing_step=start_annealing_step,
-                      max_steps=num_iterations, additional_metrics={
+                      additional_metrics={
                 "num_episodes": num_episodes.result(),
                 "env_steps": env_steps.result(),
                 "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
