@@ -34,11 +34,22 @@ flags.DEFINE_string(
 flags.DEFINE_integer("latent_size", default=17, help='Number of bits used for the discrete latent state space.')
 flags.DEFINE_float(
     "encoder_temperature",
-    default=0.99,
-    help="Temperature of the binary concrete relaxation distribution over latent states of the encoder.")
+    default=-1.,
+    help="Temperature of the relaxation of the discrete encoder distribution."
+)
 flags.DEFINE_float(
     "prior_temperature",
-    default=0.95,
+    default=-1.,
+    help="Temperature of relaxation of the discrete prior distribution over latent variables."
+)
+flags.DEFINE_float(
+    "relaxed_state_encoder_temperature",
+    default=-1.,
+    help="Temperature of the binary concrete relaxation encoder distribution over latent states."
+)
+flags.DEFINE_float(
+    "relaxed_state_prior_temperature",
+    default=-1.,
     help="Temperature of the binary concrete relaxation prior distribution over latent states."
 )
 flags.DEFINE_float(
@@ -184,6 +195,23 @@ def main(argv):
     if params['action_discretizer']:
         check_missing_argument('load_vae')
 
+    relaxed_state_encoder_temperature = params['relaxed_state_encoder_temperature']
+    relaxed_state_prior_temperature = params['relaxed_state_prior_temperature']
+    if params['encoder_temperature'] < 0.:
+        if params['action_discretizer']:
+            params['encoder_temperature'] = 1. / (params['number_of_discrete_actions'] - 1)
+        else:
+            params['encoder_temperature'] = 0.99
+    if params['prior_temperature'] < 0.:
+        if params['action_discretizer']:
+            params['prior_temperature'] = params['encoder_temperature'] / 1.5
+        else:
+            params['prior_temperature'] = 0.95
+    if relaxed_state_encoder_temperature < 0:
+        relaxed_state_encoder_temperature = params['encoder_temperature']
+    if relaxed_state_prior_temperature < 0:
+        relaxed_state_prior_temperature = params['prior_temperature']
+
     dataset_path = params['dataset_path']
     environment_name = params['environment']
 
@@ -202,8 +230,8 @@ def main(argv):
             mixture_components,
             params['regularizer_scale_factor'],
             params['kl_annealing_scale_factor'],
-            params['encoder_temperature'],
-            params['prior_temperature'],
+            relaxed_state_encoder_temperature,
+            relaxed_state_prior_temperature,
             params['encoder_temperature_decay_rate'],
             params['prior_temperature_decay_rate'])
     else:
@@ -298,7 +326,8 @@ def main(argv):
             encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
             latent_state_size=latent_state_size,
             mixture_components=mixture_components,
-            encoder_temperature=params['encoder_temperature'], prior_temperature=params['prior_temperature'],
+            encoder_temperature=relaxed_state_encoder_temperature,
+            prior_temperature=relaxed_state_prior_temperature,
             encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
             prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
             regularizer_scale_factor=params['regularizer_scale_factor'],
@@ -308,13 +337,16 @@ def main(argv):
             multivariate_normal_full_covariance=params['full_covariance'])
     else:
         vae_mdp_model = variational_mdp.load(params['load_vae'])
+        vae_mdp_model.encoder_temperature = relaxed_state_encoder_temperature
+        vae_mdp_model.prior_temperature = relaxed_state_prior_temperature
 
     if params['action_discretizer']:
         vae_mdp_model = variational_action_discretizer.VariationalActionDiscretizer(
             vae_mdp=vae_mdp_model,
             number_of_discrete_actions=params['number_of_discrete_actions'],
             action_encoder_network=q, transition_network=p_t, reward_network=p_r, action_decoder_network=p_decode,
-            encoder_temperature=params['encoder_temperature'], prior_temperature=params['prior_temperature'],
+            encoder_temperature=params['encoder_temperature'],
+            prior_temperature=params['prior_temperature'],
             encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
             prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
             one_output_per_action=params['one_output_per_action'],
@@ -342,7 +374,8 @@ def main(argv):
                                           batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
                                           manager=manager, log_name=vae_name,
                                           start_annealing_step=params['start_annealing_step'],
-                                          logs=True, annealing_period=1, max_steps=params['max_steps'],
+                                          logs=True, annealing_period=1,
+                                          num_iterations=params['max_steps'],
                                           display_progressbar=params['display_progressbar'],
                                           save_directory=params['save_dir'],
                                           parallelization=params['parallel_env'] > 1,

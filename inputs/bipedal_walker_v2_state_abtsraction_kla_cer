@@ -12,7 +12,7 @@ BipedalWalker-v2
 --mixture_components
 5
 --parallel_env
-8
+16
 --batch_size
 128
 --policy_path
