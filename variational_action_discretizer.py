@@ -17,26 +17,29 @@ tfb = tfp.bijectors
 
 class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
-    def __init__(self,
-                 vae_mdp: VariationalMarkovDecisionProcess,
-                 number_of_discrete_actions: int,
-                 action_encoder_network: Model,
-                 action_decoder_network: Model,
-                 transition_network: Model,
-                 reward_network: Model,
-                 branching_action_networks: bool = False,
-                 pre_processing_network: Model = Sequential(
-                     [Dense(units=256, activation=tf.nn.leaky_relu),
-                      Dense(units=256, activation=tf.nn.leaky_relu)],
-                     name='pre_processing_network'),
-                 encoder_temperature: Optional[float] = None,
-                 prior_temperature: Optional[float] = None,
-                 encoder_temperature_decay_rate: float = 0.,
-                 prior_temperature_decay_rate: float = 0.,
-                 pre_loaded_model: bool = False,
-                 one_output_per_action: bool = False,
-                 relaxed_state_encoding: bool = False,
-                 full_optimization: bool = False):
+    def __init__(
+            self,
+            vae_mdp: VariationalMarkovDecisionProcess,
+            number_of_discrete_actions: int,
+            action_encoder_network: Model,
+            action_decoder_network: Model,
+            transition_network: Model,
+            reward_network: Model,
+            branching_action_networks: bool = False,
+            pre_processing_network: Model = Sequential(
+                [Dense(units=256, activation=tf.nn.leaky_relu),
+                 Dense(units=256, activation=tf.nn.leaky_relu)],
+                name='pre_processing_network'),
+            encoder_temperature: Optional[float] = None,
+            prior_temperature: Optional[float] = None,
+            encoder_temperature_decay_rate: float = 0.,
+            prior_temperature_decay_rate: float = 0.,
+            pre_loaded_model: bool = False,
+            one_output_per_action: bool = False,
+            relaxed_state_encoding: bool = False,
+            full_optimization: bool = False,
+            reconstruction_mixture_components: int = 1
+    ):
 
         super().__init__(vae_mdp.state_shape, vae_mdp.action_shape, vae_mdp.reward_shape, vae_mdp.label_shape,
                          vae_mdp.encoder_network, vae_mdp.transition_network, vae_mdp.reward_network,
@@ -57,6 +60,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.one_output_per_action = one_output_per_action
         self.relaxed_state_encoding = relaxed_state_encoding or full_optimization
         self.full_optimization = full_optimization
+        self.mixture_components = reconstruction_mixture_components
 
         self.state_encoder_temperature = self.encoder_temperature
         self.state_prior_temperature = self.prior_temperature
@@ -203,22 +207,34 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             if not one_output_per_action:
                 action_decoder = Concatenate()([latent_state, latent_action])
                 action_decoder = action_decoder_network(action_decoder)
-                action_decoder_mean = Dense(units=np.prod(self.action_shape), activation=None)(action_decoder)
+                action_decoder_mean = Dense(
+                    units=self.mixture_components * np.prod(self.action_shape),
+                    activation=None
+                )(action_decoder)
                 action_decoder_mean = Reshape(
-                    target_shape=self.action_shape,
+                    target_shape=(self.mixture_components,) + self.action_shape,
                     name='action_decoder_mean'
                 )(action_decoder_mean)
                 action_decoder_raw_covariance = Dense(
-                    units=np.prod(self.action_shape),
+                    units=self.mixture_components * np.prod(self.action_shape),
                     activation=None
                 )(action_decoder)
                 action_decoder_raw_covariance = Reshape(
-                    target_shape=self.action_shape,
+                    target_shape=(self.mixture_components,) + self.action_shape,
                     name='action_decoder_raw_diag_covariance'
                 )(action_decoder_raw_covariance)
+                action_decoder_mixture_categorical_logits = Dense(
+                    units=self.mixture_components,
+                    activation=None,
+                    name='action_decoder_mixture_categorical_logits'
+                )(action_decoder)
                 self.action_decoder = Model(
                     inputs=[latent_state, latent_action],
-                    outputs=[action_decoder_mean, action_decoder_raw_covariance],
+                    outputs=[
+                        action_decoder_mean,
+                        action_decoder_raw_covariance,
+                        action_decoder_mixture_categorical_logits
+                    ],
                     name="action_decoder_network")
             else:
                 action_decoder_pre_processing = clone_model(pre_processing_network, 'action')(latent_state)
@@ -229,28 +245,45 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     else:
                         action_decoder = action_decoder_network
                     action_decoder = action_decoder(action_decoder_pre_processing)
-                    action_decoder_mean = Dense(units=np.prod(self.action_shape), activation=None)(action_decoder)
+                    action_decoder_mean = Dense(
+                        units=self.mixture_components * np.prod(self.action_shape),
+                        activation=None
+                    )(action_decoder)
                     action_decoder_mean = Reshape(
-                        target_shape=self.action_shape,
+                        target_shape=(self.mixture_components,) + self.action_shape,
                         name='action{}_decoder_mean'.format(action)
                     )(action_decoder_mean)
                     action_decoder_raw_covariance = Dense(
-                        units=np.prod(self.action_shape),
+                        units=self.mixture_components * np.prod(self.action_shape),
                         activation=None
                     )(action_decoder)
                     action_decoder_raw_covariance = Reshape(
-                        target_shape=self.action_shape,
+                        target_shape=(self.mixture_components,) + self.action_shape,
                         name='action{}_decoder_raw_diag_covariance'.format(action)
                     )(action_decoder_raw_covariance)
-                    action_decoder_outputs.append((action_decoder_mean, action_decoder_raw_covariance))
+                    action_decoder_mixture_categorical_logits = Dense(
+                        units=self.mixture_components,
+                        activation=None,
+                        name='action{}_decoder_mixture_categorical_logits'.format(action)
+                    )(action_decoder)
+                    action_decoder_outputs.append(
+                        (action_decoder_mean, action_decoder_raw_covariance, action_decoder_mixture_categorical_logits)
+                    )
                 action_decoder_mean = Lambda(lambda outputs: tf.stack(outputs, axis=1))(
-                    list(mean for mean, covariance in action_decoder_outputs))
+                    list(mean for mean, covariance, component_logits in action_decoder_outputs))
                 action_decoder_raw_covariance = Lambda(lambda outputs: tf.stack(outputs, axis=1))(
-                    list(covariance for mean, covariance in action_decoder_outputs))
+                    list(covariance for mean, covariance, component_logits in action_decoder_outputs))
+                action_decoder_mixture_categorical_logits = Lambda(lambda outputs: tf.stack(outputs, axis=1))(
+                    list(component_logits for mean, covariance, component_logits in action_decoder_outputs))
                 self.action_decoder = Model(
                     inputs=latent_state,
-                    outputs=[action_decoder_mean, action_decoder_raw_covariance],
+                    outputs=[
+                        action_decoder_mean,
+                        action_decoder_raw_covariance,
+                        action_decoder_mixture_categorical_logits
+                    ],
                     name="action_decoder_network")
+            self.action_decoder.summary()
 
         else:
             self.action_encoder = action_encoder_network
@@ -383,23 +416,47 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             if log_latent_action:
                 latent_action = tf.exp(latent_action)
 
-            [action_mean, action_raw_covariance] = self.action_decoder([latent_state, latent_action])
-            return tfd.MultivariateNormalDiag(loc=action_mean, scale_diag=self.scale_activation(action_raw_covariance))
+            [action_mean, action_raw_covariance, cat_logits] = self.action_decoder([latent_state, latent_action])
+            if self.mixture_components == 1:
+                return tfd.MultivariateNormalDiag(
+                    loc=action_mean[0],
+                    scale_diag=self.scale_activation(action_raw_covariance[0])
+                )
+            else:
+                return tfd.MixtureSameFamily(
+                    mixture_distribution=tfd.Categorical(logits=cat_logits),
+                    components_distribution=tfd.MultivariateNormalDiag(
+                        loc=action_mean,
+                        scale_diag=self.scale_activation(action_raw_covariance)
+                    )
+                )
         else:
             if log_latent_action:
                 action_categorical = tfd.Categorical(logits=latent_action)
             else:
                 action_categorical = tfd.Categorical(probs=latent_action)
 
-            [action_mean, action_raw_covariance] = self.action_decoder(latent_state)
+            [action_mean, action_raw_covariance, cat_logits] = self.action_decoder(latent_state)
 
-            return tfd.MixtureSameFamily(
-                mixture_distribution=action_categorical,
-                components_distribution=tfd.MultivariateNormalDiag(
-                    loc=action_mean,
-                    scale_diag=self.scale_activation(action_raw_covariance),
-                ),
-            )
+            if self.mixture_components == 1:
+                return tfd.MixtureSameFamily(
+                    mixture_distribution=action_categorical,
+                    components_distribution=tfd.MultivariateNormalDiag(
+                        loc=action_mean[0],
+                        scale_diag=self.scale_activation(action_raw_covariance[0]),
+                    )
+                )
+            else:
+                return tfd.MixtureSameFamily(
+                    mixture_distribution=action_categorical,
+                    components_distribution=tfd.MixtureSameFamily(
+                        mixture_distribution=tfd.Categorical(logits=cat_logits),
+                        components_distribution=tfd.MultivariateNormalDiag(
+                            loc=action_mean,
+                            scale_diag=self.scale_activation(action_raw_covariance)
+                        )
+                    )
+                )
 
     def call(self, inputs, training=None, mask=None, **kwargs):
         # inputs are assumed to have shape
@@ -546,31 +603,31 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
 
 def load(tf_model_path: str) -> VariationalActionDiscretizer:
-        model = tf.saved_model.load(tf_model_path)
-        state_model = model._state_vae
-        state_vae = VariationalMarkovDecisionProcess(
-            state_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
-            action_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
-            reward_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
-            label_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
-            encoder_network=state_model.encoder_network,
-            transition_network=state_model.transition_network,
-            reward_network=state_model.reward_network,
-            decoder_network=state_model.reconstruction_network,
-            latent_state_size=state_model.transition_network.variables[-1].shape[0],
-            encoder_temperature=state_model._encoder_temperature,
-            prior_temperature=state_model._prior_temperature,
-            pre_loaded_model=True)
-        assert model.transition_network.variables[-1].name == 'transition_logistic_locations/bias:0'
-        return VariationalActionDiscretizer(
-            vae_mdp=state_vae,
-            number_of_discrete_actions=model.action_encoder.variables[-1].shape[0],
-            action_encoder_network=model.action_encoder,
-            action_decoder_network=model.action_decoder,
-            transition_network=model.action_transition_network,
-            reward_network=model.action_reward_network,
-            one_output_per_action=model.action_decoder.variables[0].shape[0] == state_vae.latent_state_size,
-            encoder_temperature=model._encoder_temperature,
-            prior_temperature=model._prior_temperature,
-            pre_loaded_model=True
-        )
+    model = tf.saved_model.load(tf_model_path)
+    state_model = model._state_vae
+    state_vae = VariationalMarkovDecisionProcess(
+        state_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
+        action_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
+        reward_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
+        label_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
+        encoder_network=state_model.encoder_network,
+        transition_network=state_model.transition_network,
+        reward_network=state_model.reward_network,
+        decoder_network=state_model.reconstruction_network,
+        latent_state_size=state_model.transition_network.variables[-1].shape[0],
+        encoder_temperature=state_model._encoder_temperature,
+        prior_temperature=state_model._prior_temperature,
+        pre_loaded_model=True)
+    return VariationalActionDiscretizer(
+        vae_mdp=state_vae,
+        number_of_discrete_actions=model.action_encoder.variables[-1].shape[0],
+        action_encoder_network=model.action_encoder,
+        action_decoder_network=model.action_decoder,
+        transition_network=model.action_transition_network,
+        reward_network=model.action_reward_network,
+        one_output_per_action=model.action_decoder.variables[0].shape[0] == state_vae.latent_state_size,
+        encoder_temperature=model._encoder_temperature,
+        prior_temperature=model._prior_temperature,
+        reconstruction_mixture_components=2,  # mixture components > 1 is sufficient
+        pre_loaded_model=True
+    )
