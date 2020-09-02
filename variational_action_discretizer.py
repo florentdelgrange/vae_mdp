@@ -552,8 +552,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 ),
                 components=posterior_distributions
             )
-            weighted_distribution_entropy = -1. * tf.reduce_mean(
-                weighted_distribution.log_prob(weighted_distribution.sample())
+            weighted_distribution_entropy = -1. * tf.reduce_sum(
+                weighted_distribution.prob(a_1) * weighted_distribution.log_prob(a_1)
             )
 
             if self.mixture_components == 1:
@@ -566,8 +566,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             else:
                 weighted_entropy = tf.reduce_sum(
                     [
-                        1. / self.number_of_discrete_actions * -1. * tf.reduce_mean(
-                            posterior_distributions[action].log_prob(posterior_distributions[action].sample())
+                        1. / self.number_of_discrete_actions * -1. * tf.reduce_sum(
+                            posterior_distributions[action].prob(a_1) * posterior_distributions[action].log_prob(a_1)
                         ) for action in range(self.number_of_discrete_actions)
                     ]
                 )
