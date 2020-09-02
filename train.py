@@ -178,6 +178,12 @@ flags.DEFINE_integer(
     default=1,
     help='Number of parallel environments to be used during training.'
 )
+flags.DEFINE_float(
+    "decoder_cross_entropy",
+    default=0.,
+    help="Scale factor of the decoder cross entropy term giving the cross entropy between output distributions"
+         "when the --one_output_per_action flag is set."
+)
 FLAGS = flags.FLAGS
 
 
@@ -225,28 +231,41 @@ def main(argv):
         params['policy_path'] = params['policy_path'][:-1]
 
     if not params['action_discretizer']:
-        vae_name = 'vae_LS{}_MC{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}'.format(
+        vae_name = 'vae_LS{}_MC{}_CER{}-decay={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
             latent_state_size,
             mixture_components,
             params['regularizer_scale_factor'],
+            params['regularizer_decay_rate'],
             params['kl_annealing_scale_factor'],
+            params['kl_annealing_growth_rate'],
             relaxed_state_encoder_temperature,
             relaxed_state_prior_temperature,
             params['encoder_temperature_decay_rate'],
             params['prior_temperature_decay_rate'])
     else:
-        vae_name = '{}_LA{}_CER{}_KLA{}_TD{:.2f}-{:.2f}_{}-{}_policy={}'.format(
+        vae_name = os.path.join(
             os.path.split(params['load_vae'])[-1],
-            params['number_of_discrete_actions'],
-            params['regularizer_scale_factor'],
-            params['kl_annealing_scale_factor'],
-            params['encoder_temperature'],
-            params['prior_temperature'],
-            params['encoder_temperature_decay_rate'],
-            params['prior_temperature_decay_rate'],
-            os.path.split(params['policy_path'])[-1])
+            os.path.split(params['policy_path'])[-1],
+            'action_discretizer',
+            'LA{}_MC{}_CER{}-decay={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
+                params['number_of_discrete_actions'],
+                mixture_components,
+                params['regularizer_scale_factor'],
+                params['regularizer_decay_rate'],
+                params['kl_annealing_scale_factor'],
+                params['kl_annealing_growth_rate'],
+                params['encoder_temperature'],
+                params['prior_temperature'],
+                params['encoder_temperature_decay_rate'],
+                params['prior_temperature_decay_rate']
+            )
+        )
+        if params['decoder_cross_entropy'] > 0:
+            vae_name += '_decoder_cross_entropy{:g}'.format(params['decoder_cross_entropy'])
 
-    additional_parameters = {'one_output_per_action', 'full_vae_optimization', 'relaxed_state_encoding'}
+    additional_parameters = {'one_output_per_action',
+                             'full_vae_optimization',
+                             'relaxed_state_encoding',}
     nb_additional_params = sum(map(lambda x: params[x], additional_parameters))
     if nb_additional_params > 0:
         vae_name += ('_params={}' + '-{}' * (nb_additional_params - 1)).format(
@@ -351,7 +370,9 @@ def main(argv):
             prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
             one_output_per_action=params['one_output_per_action'],
             relaxed_state_encoding=params['relaxed_state_encoding'],
-            full_optimization=params['full_vae_optimization']
+            full_optimization=params['full_vae_optimization'],
+            reconstruction_mixture_components=mixture_components,
+            decoder_cross_entropy_scale_factor=params['decoder_cross_entropy']
         )
         vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
         vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
