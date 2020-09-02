@@ -561,7 +561,7 @@ def train_from_policy(
         environment_suite,
         env_name: str,
         labeling_function: Callable,
-        num_iterations: int = int(3e6),
+        num_iterations: int = int(1e6),
         initial_collect_steps: int = int(1e4),
         collect_steps_per_iteration: Optional[int] = None,
         replay_buffer_capacity: int = int(1e6),
@@ -599,8 +599,8 @@ def train_from_policy(
 
     # initialize logs
     import datetime
-    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    train_log_dir = os.path.join('logs', 'gradient_tape', env_name, log_name, current_time)
+    #  current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    train_log_dir = os.path.join('logs', 'gradient_tape', env_name, log_name)   # , current_time)
     if not os.path.exists(train_log_dir) and logs:
         os.makedirs(train_log_dir)
     train_summary_writer = tf.summary.create_file_writer(train_log_dir) if logs else None
@@ -614,7 +614,7 @@ def train_from_policy(
         target=None,
         stateful_metrics=list(vae_mdp.loss_metrics.keys()) + [
             'loss', 't_1', 't_2', 'regularizer_scale_factor', 'step', "num_episodes", "env_steps",
-            "replay_buffer_frames"],
+            "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv"],
         interval=0.1) if display_progressbar else None
 
     if parallelization:
@@ -844,7 +844,7 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
             with train_summary_writer.as_default():
                 tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
         print('eval ELBO: ', eval_elbo.result().numpy())
-        model_name = '{}_step{}_eval_elbo{:.3f}'.format(log_name, global_step, eval_elbo.result())
+        model_name = os.path.join(log_name, 'step{}'.format(global_step), 'eval_elbo{:.3f}'.format(eval_elbo.result()))
     else:
         model_name = '{}_step{}'.format(log_name, global_step)
     if check_numerics:

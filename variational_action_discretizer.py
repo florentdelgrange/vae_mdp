@@ -39,7 +39,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             relaxed_state_encoding: bool = False,
             full_optimization: bool = False,
             reconstruction_mixture_components: int = 1,
-            decoder_cross_entropy_scale_factor: float = 1e-4
+            decoder_jsd: float = 1e-4
     ):
 
         super().__init__(vae_mdp.state_shape, vae_mdp.action_shape, vae_mdp.reward_shape, vae_mdp.label_shape,
@@ -62,7 +62,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.relaxed_state_encoding = relaxed_state_encoding or full_optimization
         self.full_optimization = full_optimization
         self.mixture_components = reconstruction_mixture_components
-        self.decoder_cross_entropy_scale_factor = decoder_cross_entropy_scale_factor
+        self.decoder_cross_entropy_scale_factor = decoder_jsd
 
         self.state_encoder_temperature = self.encoder_temperature
         self.state_prior_temperature = self.prior_temperature
@@ -323,7 +323,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             'rate': tf.keras.metrics.Mean(name='rate'),
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'cross_entropy_regularizer': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
-            'decoder_cross_entropy': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
+            'decoder_jsdiv': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
         }
         if self.full_optimization:
             self.loss_metrics.update({
@@ -525,49 +525,66 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             )
             return prior_uniform_distribution.kl_divergence(discrete_action_posterior)
 
-        def compute_decoder_cross_entropy():
+        def compute_decoder_jensen_shannon_divergence():
             [action_mean, action_raw_covariance, cat_logits] = self.action_decoder(z)
             action_means = tf.unstack(action_mean, axis=1)
             action_raw_covariances = tf.unstack(action_raw_covariance, axis=1)
             logits = tf.unstack(cat_logits, axis=1)
-            regularizer = 0.
+            posterior_distributions = [
+                tfd.MultivariateNormalDiag(loc=action_mean, scale_diag=self.scale_activation(action_raw_covariance))
+                for action_mean, action_raw_covariance in zip(action_means, action_raw_covariances)
+            ] if self.mixture_components == 1 else [
+                tfd.MixtureSameFamily(
+                    mixture_distribution=tfd.Categorical(logits=cat_logits),
+                    components_distribution=tfd.MultivariateNormalDiag(
+                        loc=action_mean,
+                        scale_diag=self.scale_activation(action_raw_covariance)
+                    )
+                ) for cat_logits, action_mean, action_raw_covariance in
+                zip(logits, action_means, action_raw_covariances)
+            ]
+            weighted_distribution = tfd.Mixture(
+                cat=tfd.Categorical(
+                    probs=tf.stack([
+                        tf.constant(
+                            [1. / self.number_of_discrete_actions for _ in range(self.number_of_discrete_actions)]
+                        ) for _ in range(posterior_distributions[0].batch_shape[0])])
+                ),
+                components=posterior_distributions
+            )
+            weighted_distribution_entropy = -1. * tf.reduce_mean(
+                weighted_distribution.log_prob(weighted_distribution.sample())
+            )
+
             if self.mixture_components == 1:
-                posterior_distributions = [
-                    tfd.MultivariateNormalDiag(loc=action_mean, scale_diag=self.scale_activation(action_raw_covariance))
-                    for action_mean, action_raw_covariance in zip(action_means, action_raw_covariances)
-                ]
-                for d1 in posterior_distributions:
-                    for d2 in posterior_distributions:
-                        regularizer += d1.kl_divergence(d2)
+                weighted_entropy = tf.reduce_sum(
+                    [
+                        1. / self.number_of_discrete_actions * posterior_distributions[action].entropy()
+                        for action in range(self.number_of_discrete_actions)
+                    ]
+                )
             else:
-                posterior_distributions = [
-                    tfd.MixtureSameFamily(
-                        mixture_distribution=tfd.Categorical(logits=cat_logits),
-                        components_distribution=tfd.MultivariateNormalDiag(
-                            loc=action_mean,
-                            scale_diag=self.scale_activation(action_raw_covariance)
-                        )
-                    ) for cat_logits, action_mean, action_raw_covariance in
-                    zip(logits, action_means, action_raw_covariances)
-                ]
-                for d1 in posterior_distributions:
-                    sample = d1.sample()
-                    for d2 in posterior_distributions:
-                        regularizer += d1.log_prob(sample) - d2.log_prob(sample)
-            return regularizer
+                weighted_entropy = tf.reduce_sum(
+                    [
+                        1. / self.number_of_discrete_actions * -1. * tf.reduce_mean(
+                            posterior_distributions[action].log_prob(posterior_distributions[action].sample())
+                        ) for action in range(self.number_of_discrete_actions)
+                    ]
+                )
+
+            return weighted_distribution_entropy - weighted_entropy
 
         cross_entropy_regularizer = compute_encoder_uniform_cross_entropy()
         if self.one_output_per_action:
-            decoder_cross_entropy = compute_decoder_cross_entropy()
+            decoder_jsd = compute_decoder_jensen_shannon_divergence()
         else:
-            decoder_cross_entropy = -1.
+            decoder_jsd = -1.
 
         if self.full_optimization:
             state_distortion, state_rate, state_cer = self._state_vae(inputs, metrics=False)
             distortion += state_distortion
             rate += state_rate
             cross_entropy_regularizer += state_cer
-
 
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
         self.loss_metrics['action_mse'](a_1, action_distribution.sample())
@@ -580,7 +597,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
         self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
-        self.loss_metrics['decoder_cross_entropy'](decoder_cross_entropy)
+        self.loss_metrics['decoder_jsdiv'](decoder_jsd)
 
         if variational_mdp.debug:
             tf.print(z, "sampled z", summarize=variational_mdp.debug_verbosity)
@@ -594,7 +611,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             tf.print(log_p_transition, "log P(z' | z, â)", summarize=variational_mdp.debug_verbosity)
             tf.print(log_p_action, "log P(a | z, â)", summarize=variational_mdp.debug_verbosity)
 
-        distortion = distortion - self.decoder_cross_entropy_scale_factor * decoder_cross_entropy
+        distortion = distortion - self.decoder_cross_entropy_scale_factor * decoder_jsd
 
         return [distortion, rate, cross_entropy_regularizer]
 

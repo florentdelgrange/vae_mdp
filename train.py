@@ -179,9 +179,9 @@ flags.DEFINE_integer(
     help='Number of parallel environments to be used during training.'
 )
 flags.DEFINE_float(
-    "decoder_cross_entropy",
+    "decoder_divergence",
     default=0.,
-    help="Scale factor of the decoder cross entropy term giving the cross entropy between output distributions"
+    help="Scale factor of the decoder Jensen Shannon divergence term giving the divergence between output distributions"
          "when the --one_output_per_action flag is set."
 )
 FLAGS = flags.FLAGS
@@ -260,8 +260,8 @@ def main(argv):
                 params['prior_temperature_decay_rate']
             )
         )
-        if params['decoder_cross_entropy'] > 0:
-            vae_name += '_decoder_cross_entropy{:g}'.format(params['decoder_cross_entropy'])
+        if params['decoder_divergence'] > 0:
+            vae_name += '_decoder_divergence{:g}'.format(params['decoder_divergence'])
 
     additional_parameters = {'one_output_per_action',
                              'full_vae_optimization',
@@ -372,7 +372,7 @@ def main(argv):
             relaxed_state_encoding=params['relaxed_state_encoding'],
             full_optimization=params['full_vae_optimization'],
             reconstruction_mixture_components=mixture_components,
-            decoder_cross_entropy_scale_factor=params['decoder_cross_entropy']
+            decoder_jsd=params['decoder_divergence']
         )
         vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
         vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
