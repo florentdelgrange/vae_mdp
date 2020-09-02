@@ -526,50 +526,46 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             return prior_uniform_distribution.kl_divergence(discrete_action_posterior)
 
         def compute_decoder_jensen_shannon_divergence():
-            [action_mean, action_raw_covariance, cat_logits] = self.action_decoder(z)
+            [action_mean, action_raw_covariance, categorical_logits] = self.action_decoder(z)
             action_means = tf.unstack(action_mean, axis=1)
             action_raw_covariances = tf.unstack(action_raw_covariance, axis=1)
-            logits = tf.unstack(cat_logits, axis=1)
+            cat_logits = tf.unstack(categorical_logits, axis=1)
             posterior_distributions = [
-                tfd.MultivariateNormalDiag(loc=action_mean, scale_diag=self.scale_activation(action_raw_covariance))
-                for action_mean, action_raw_covariance in zip(action_means, action_raw_covariances)
+                tfd.MultivariateNormalDiag(loc=mean, scale_diag=self.scale_activation(raw_covariance))
+                for mean, raw_covariance in zip(action_means, action_raw_covariances)
             ] if self.mixture_components == 1 else [
                 tfd.MixtureSameFamily(
-                    mixture_distribution=tfd.Categorical(logits=cat_logits),
+                    mixture_distribution=tfd.Categorical(logits=logits),
                     components_distribution=tfd.MultivariateNormalDiag(
-                        loc=action_mean,
-                        scale_diag=self.scale_activation(action_raw_covariance)
-                    )
-                ) for cat_logits, action_mean, action_raw_covariance in
-                zip(logits, action_means, action_raw_covariances)
+                        loc=mean,
+                        scale_diag=self.scale_activation(raw_covariance)
+                    ),
+                ) for logits, mean, raw_covariance in
+                zip(cat_logits, action_means, action_raw_covariances)
             ]
             weighted_distribution = tfd.Mixture(
                 cat=tfd.Categorical(
-                    probs=tf.stack([
-                        tf.constant(
-                            [1. / self.number_of_discrete_actions for _ in range(self.number_of_discrete_actions)]
-                        ) for _ in range(posterior_distributions[0].batch_shape[0])])
-                ),
+                    logits=tf.ones(shape=(tf.shape(categorical_logits)[0], self.number_of_discrete_actions))),
                 components=posterior_distributions
             )
-            weighted_distribution_entropy = -1. * tf.reduce_sum(
-                weighted_distribution.prob(a_1) * weighted_distribution.log_prob(a_1)
-            )
+            weighted_distribution_entropy = -1. * weighted_distribution.prob(a_1) * weighted_distribution.log_prob(a_1)
 
             if self.mixture_components == 1:
                 weighted_entropy = tf.reduce_sum(
                     [
                         1. / self.number_of_discrete_actions * posterior_distributions[action].entropy()
                         for action in range(self.number_of_discrete_actions)
-                    ]
+                    ],
+                    axis=0
                 )
             else:
                 weighted_entropy = tf.reduce_sum(
                     [
-                        1. / self.number_of_discrete_actions * -1. * tf.reduce_sum(
-                            posterior_distributions[action].prob(a_1) * posterior_distributions[action].log_prob(a_1)
-                        ) for action in range(self.number_of_discrete_actions)
-                    ]
+                        - 1. / self.number_of_discrete_actions *
+                        posterior_distributions[action].prob(a_1) * posterior_distributions[action].log_prob(a_1)
+                        for action in range(self.number_of_discrete_actions)
+                    ],
+                    axis=0
                 )
 
             return weighted_distribution_entropy - weighted_entropy
