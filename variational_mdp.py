@@ -626,9 +626,8 @@ def train_from_policy(
         py_env.reset()
         tf_env = tf_py_environment.TFPyEnvironment(py_env)
 
-    action_spec = tf_env.action_spec()
-
     # specs
+    action_spec = tf_env.action_spec()
     policy_step_spec = policy_step.PolicyStep(
         action=action_spec,
         state=(),

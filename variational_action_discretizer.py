@@ -6,6 +6,12 @@ import tensorflow_probability as tfp
 from tensorflow.keras import Model
 from tensorflow.keras.models import Sequential, model_from_json
 from tensorflow.keras.layers import Input, Concatenate, Reshape, Dense, Lambda
+from tf_agents.networks import network
+from tf_agents.specs import tensor_spec
+from tf_agents.trajectories import policy_step, trajectory
+from tf_agents.policies import tf_policy, actor_policy
+from tf_agents.environments import tf_environment
+from tf_agents.trajectories import time_step as ts
 
 import variational_mdp
 from variational_mdp import VariationalMarkovDecisionProcess
@@ -39,7 +45,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             relaxed_state_encoding: bool = False,
             full_optimization: bool = False,
             reconstruction_mixture_components: int = 1,
-            decoder_jsd: float = 1e-4
+            decoder_jsd: float = 0.
     ):
 
         super().__init__(vae_mdp.state_shape, vae_mdp.action_shape, vae_mdp.reward_shape, vae_mdp.label_shape,
@@ -548,7 +554,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     logits=tf.ones(shape=(tf.shape(categorical_logits)[0], self.number_of_discrete_actions))),
                 components=posterior_distributions
             )
-            weighted_distribution_entropy = -1. * weighted_distribution.prob(a_1) * weighted_distribution.log_prob(a_1)
+            weighted_distribution_entropy = tf.reduce_mean(
+                -1. * weighted_distribution.log_prob(weighted_distribution.sample())
+            )
 
             if self.mixture_components == 1:
                 weighted_entropy = tf.reduce_sum(
@@ -556,16 +564,14 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         1. / self.number_of_discrete_actions * posterior_distributions[action].entropy()
                         for action in range(self.number_of_discrete_actions)
                     ],
-                    axis=0
                 )
             else:
                 weighted_entropy = tf.reduce_sum(
                     [
-                        - 1. / self.number_of_discrete_actions *
-                        posterior_distributions[action].prob(a_1) * posterior_distributions[action].log_prob(a_1)
-                        for action in range(self.number_of_discrete_actions)
+                        - 1. / self.number_of_discrete_actions * tf.reduce_mean(
+                            posterior_distributions[action].log_prob(posterior_distributions[action].sample())
+                        ) for action in range(self.number_of_discrete_actions)
                     ],
-                    axis=0
                 )
 
             return weighted_distribution_entropy - weighted_entropy
@@ -659,6 +665,55 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         mbu = {'mean_action_bits_used': mean_bits_used}
         mbu.update(self._state_vae.mean_latent_bits_used(inputs, eps))
         return mbu
+
+    def generate_random_policy(
+            self, tf_env: tf_environment.TFEnvironment
+    ) -> tf_policy.Base:
+        """
+        Generates a uniform random policy from discrete states of this VAE-MDP to continuous actions of the input
+        environment.
+        """
+
+        # discrete states
+        input_tensor_spec = tensor_spec.TensorSpec(shape=(self.latent_state_size,), dtype=tf.int32)
+        time_step_spec = ts.time_step_spec(input_tensor_spec)
+        # continuous actions
+        action_spec = tf_env.action_spec()
+
+        # uniform random discrete action
+        uniform_action_distribution = tfd.OneHotCategorical(
+            logits=tf.math.log(
+                1. / self.number_of_discrete_actions * tf.ones(shape=(self.number_of_discrete_actions,))
+            ),
+            dtype=tf.float32
+        )
+
+        class RandomDiscreteActorNetwork(network.Network):
+
+            def __init__(self, vae_mdp: VariationalActionDiscretizer):
+                super().__init__(input_tensor_spec, state_spec=(), name='RandomDiscreteActorNetwork')
+                self._vae_mdp = vae_mdp
+
+            def call(self, observations, step_type, network_state):
+                del step_type
+
+                z = tf.cast(observations, dtype=tf.float32)
+                if tf.shape(z).get_shape() == 1:
+                    discrete_action = uniform_action_distribution.sample()
+                else:
+                    discrete_action = uniform_action_distribution.sample(
+                        sample_shape=(tf.shape(z)[0])
+                    )
+                return self._vae_mdp.decode_action(z, discrete_action), network_state
+
+        return actor_policy.ActorPolicy(
+            time_step_spec=time_step_spec,
+            action_spec=action_spec,
+            actor_network=RandomDiscreteActorNetwork(vae_mdp=self)
+        )
+
+    def get_state_vae(self) -> VariationalMarkovDecisionProcess:
+        return self._state_vae
 
 
 def load(tf_model_path: str) -> VariationalActionDiscretizer:
