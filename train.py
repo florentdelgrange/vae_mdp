@@ -1,5 +1,4 @@
 import os
-from typing import List, Tuple
 
 import tensorflow as tf
 from absl import app
@@ -178,12 +177,6 @@ flags.DEFINE_integer(
     default=1,
     help='Number of parallel environments to be used during training.'
 )
-flags.DEFINE_float(
-    "decoder_divergence",
-    default=0.,
-    help="Scale factor of the decoder Jensen Shannon divergence term giving the divergence between output distributions"
-         "when the --one_output_per_action flag is set."
-)
 FLAGS = flags.FLAGS
 
 
@@ -198,8 +191,6 @@ def main(argv):
     if params['dataset_path'] == '':
         for param in ('policy_path', 'environment'):
             check_missing_argument(param)
-    if params['action_discretizer']:
-        check_missing_argument('load_vae')
 
     relaxed_state_encoder_temperature = params['relaxed_state_encoder_temperature']
     relaxed_state_prior_temperature = params['relaxed_state_prior_temperature']
@@ -260,8 +251,6 @@ def main(argv):
                 params['prior_temperature_decay_rate']
             )
         )
-        if params['decoder_divergence'] > 0:
-            vae_name += '_decoder_divergence{:g}'.format(params['decoder_divergence'])
 
     additional_parameters = {'one_output_per_action',
                              'full_vae_optimization',
@@ -283,25 +272,32 @@ def main(argv):
 
     dataset_size = -1
 
-    # Encoder body
-    q = Sequential(name="encoder_network_body")
-    for i, units in enumerate(params['encoder_layers']):
-        q.add(Dense(units, activation=activation, name="encoder_{}".format(i)))
+    def generate_networks(name=''):
 
-    # Transition network body
-    p_t = Sequential(name="transition_network_body")
-    for i, units in enumerate(params['transition_layers']):
-        p_t.add(Dense(units, activation=activation, name='transition_{}'.format(i)))
+        if name != '':
+            name += '_'
 
-    # Reward network body
-    p_r = Sequential(name="reward_network_body")
-    for i, units in enumerate(params['reward_layers']):
-        p_r.add(Dense(units, activation=activation, name='reward_{}'.format(i)))
+        # Encoder body
+        q = Sequential(name="{}encoder_network_body".format(name))
+        for i, units in enumerate(params['encoder_layers']):
+            q.add(Dense(units, activation=activation, name="{}encoder_{}".format(name, i)))
 
-    # Decoder network body
-    p_decode = Sequential(name="decoder_body")
-    for i, units in enumerate(params['decoder_layers']):
-        p_decode.add(Dense(units, activation=activation, name='decoder_{}'.format(i)))
+        # Transition network body
+        p_t = Sequential(name="{}transition_network_body".format(name))
+        for i, units in enumerate(params['transition_layers']):
+            p_t.add(Dense(units, activation=activation, name='{}transition_{}'.format(name, i)))
+
+        # Reward network body
+        p_r = Sequential(name="{}reward_network_body".format(name))
+        for i, units in enumerate(params['reward_layers']):
+            p_r.add(Dense(units, activation=activation, name='{}reward_{}'.format(name, i)))
+
+        # Decoder network body
+        p_decode = Sequential(name="{}decoder_body".format(name))
+        for i, units in enumerate(params['decoder_layers']):
+            p_decode.add(Dense(units, activation=activation, name='{}decoder_{}'.format(name, i)))
+
+        return q, p_t, p_r, p_decode
 
     if params['env_suite'] != '':
         try:
@@ -313,33 +309,33 @@ def main(argv):
     else:
         environment_suite = None
 
+    if params['dataset_path'] != '':
+        dummy_dataset = generate_dataset()
+        dataset_size = dataset_generator.get_num_samples(dataset_path, batch_size=batch_size, drop_remainder=True)
+
+        state_shape, action_shape, reward_shape, _, label_shape = [
+            tuple(spec.shape.as_list()[1:]) for spec in dummy_dataset.element_spec
+        ]
+
+        del dummy_dataset
+
+    else:
+        environment = environment_suite.load(environment_name)
+
+        state_shape, action_shape, reward_shape, label_shape = (
+            shape if shape != () else (1, ) for shape in (
+                environment.observation_spec().shape,
+                environment.action_spec().shape,
+                environment.time_step_spec().reward.shape,
+                tuple(reinforcement_learning.labeling_functions[environment_name](
+                    environment.reset().observation).shape))
+        )
+
+        environment.close()
+        del environment
+
     if params['load_vae'] == '':
-
-        if params['dataset_path'] != '':
-            dummy_dataset = generate_dataset()
-            dataset_size = dataset_generator.get_num_samples(dataset_path, batch_size=batch_size, drop_remainder=True)
-
-            state_shape, action_shape, reward_shape, _, label_shape = [
-                tuple(spec.shape.as_list()[1:]) for spec in dummy_dataset.element_spec
-            ]
-
-            del dummy_dataset
-
-        else:
-            environment = environment_suite.load(environment_name)
-
-            state_shape, action_shape, reward_shape, label_shape = (
-                shape if shape != () else (1, ) for shape in (
-                    environment.observation_spec().shape,
-                    environment.action_spec().shape,
-                    environment.time_step_spec().reward.shape,
-                    tuple(reinforcement_learning.labeling_functions[environment_name](
-                        environment.reset().observation).shape))
-            )
-
-            environment.close()
-            del environment
-
+        q, p_t, p_r, p_decode = generate_networks(name='state')
         vae_mdp_model = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
             encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
@@ -360,6 +356,7 @@ def main(argv):
         vae_mdp_model.prior_temperature = relaxed_state_prior_temperature
 
     if params['action_discretizer']:
+        q, p_t, p_r, p_decode = generate_networks(name='action')
         vae_mdp_model = variational_action_discretizer.VariationalActionDiscretizer(
             vae_mdp=vae_mdp_model,
             number_of_discrete_actions=params['number_of_discrete_actions'],
@@ -372,7 +369,6 @@ def main(argv):
             relaxed_state_encoding=params['relaxed_state_encoding'],
             full_optimization=params['full_vae_optimization'],
             reconstruction_mixture_components=mixture_components,
-            decoder_jsd=params['decoder_divergence']
         )
         vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
         vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
