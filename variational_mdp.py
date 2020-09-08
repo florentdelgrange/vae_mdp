@@ -561,7 +561,7 @@ def train_from_policy(
         environment_suite,
         env_name: str,
         labeling_function: Callable,
-        num_iterations: int = int(1e6),
+        num_iterations: int = int(3e6),
         initial_collect_steps: int = int(1e4),
         collect_steps_per_iteration: Optional[int] = None,
         replay_buffer_capacity: int = int(1e6),
@@ -614,7 +614,8 @@ def train_from_policy(
         target=None,
         stateful_metrics=list(vae_mdp.loss_metrics.keys()) + [
             'loss', 't_1', 't_2', 'regularizer_scale_factor', 'step', "num_episodes", "env_steps",
-            "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv"],
+            "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv", 'state_rate',
+            "state_distortion", 'action_rate', 'action_distortion'],
         interval=0.1) if display_progressbar else None
 
     if parallelization:
