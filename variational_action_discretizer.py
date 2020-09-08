@@ -295,7 +295,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         action_decoder_mixture_categorical_logits
                     ],
                     name="action_decoder_network")
-            self.action_decoder.summary()
 
         else:
             self.action_encoder = action_encoder_network
@@ -334,7 +333,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         if self.full_optimization:
             self.loss_metrics.update({
                 'state_mse': tf.keras.metrics.MeanSquaredError(name='state_mse'),
-                'state_reward_mse': tf.keras.metrics.MeanSquaredError(name='state_reward_mse')
+                'state_reward_mse': tf.keras.metrics.MeanSquaredError(name='state_reward_mse'),
+                'state_distortion': tf.keras.metrics.Mean(name='state_distortion'),
+                'state_rate': tf.keras.metrics.Mean(name='state_rate'),
+                'action_distortion': tf.keras.metrics.Mean(name='action_distortion'),
+                'action_rate': tf.keras.metrics.Mean(name='action_rate')
             })
 
     def relaxed_action_encoding(
@@ -593,6 +596,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self.loss_metrics['state_mse'](s_2, self._state_vae.decode(z_prime).sample())
             self.loss_metrics['state_reward_mse'](
                 r_1, self._state_vae.reward_probability_distribution(z, a_1, z_prime).sample())
+            self.loss_metrics['state_distortion'](state_distortion)
+            self.loss_metrics['state_rate'](state_rate)
+            self.loss_metrics['action_distortion'](distortion - state_distortion)
+            self.loss_metrics['action_rate'](rate - state_rate)
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
@@ -665,16 +672,14 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         return mbu
 
     def generate_random_policy(
-            self, tf_env: tf_environment.TFEnvironment
+            self, tf_env: tf_environment.TFEnvironment, labeling_function: Callable[[tf.Tensor], tf.Tensor]
     ) -> tf_policy.Base:
         """
         Generates a uniform random policy from discrete states of this VAE-MDP to continuous actions of the input
         environment.
         """
 
-        # discrete states
-        input_tensor_spec = tensor_spec.TensorSpec(shape=(self.latent_state_size,), dtype=tf.int32)
-        time_step_spec = ts.time_step_spec(input_tensor_spec)
+        time_step_spec = tf_env.time_step_spec()
         # continuous actions
         action_spec = tf_env.action_spec()
 
@@ -689,20 +694,43 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         class RandomDiscreteActorNetwork(network.Network):
 
             def __init__(self, vae_mdp: VariationalActionDiscretizer):
-                super().__init__(input_tensor_spec, state_spec=(), name='RandomDiscreteActorNetwork')
+                super().__init__(
+                    time_step_spec,
+                    state_spec=(tf_env.time_step_spec().observation, tf_env.action_spec()),
+                    name='RandomDiscreteActorNetwork')
                 self._vae_mdp = vae_mdp
 
             def call(self, observations, step_type, network_state):
-                del step_type
 
-                z = tf.cast(observations, dtype=tf.float32)
+                tf.print(observations, step_type, network_state)
+
+                if step_type == ts.StepType.FIRST:
+                    initial_state = tf.zeros(shape=self._vae_mdp.state_shape, dtype=tf.float32)
+                    initial_action = tf.zeros(shape=self._vae_mdp.action_shape, dtype=tf.float32)
+                    initial_reward = tf.zeros(shape=self._vae_mdp.reward_shape, dtype=tf.float32)
+                    state, action, reward = [
+                        tf.stack([initial_state for _ in range(tf.shape(observations.observation)[0])]),
+                        tf.stack([initial_action for _ in range(tf.shape(observations.observation)[0])]),
+                        tf.stack([initial_reward for _ in range(tf.shape(observations.observation)[0])]),
+                    ]
+                else:
+                    state, action = network_state
+                    reward = tf.reshape(observations.reward, self._vae_mdp.reward_shape)
+
+                next_state = observations.observation
+                next_label = tf.reshape(labeling_function(next_state), self._vae_mdp.label_shape)
+
+                z = self._vae_mdp.binary_encode(state, action, reward, next_state, next_label).sample()
+                z = tf.cast(z, dtype=tf.float32)
                 if tf.shape(z).get_shape() == 1:
                     discrete_action = uniform_action_distribution.sample()
                 else:
                     discrete_action = uniform_action_distribution.sample(
                         sample_shape=(tf.shape(z)[0])
                     )
-                return self._vae_mdp.decode_action(z, discrete_action), network_state
+                action = self._vae_mdp.decode_action(z, discrete_action).sample()
+
+                return action, (next_state, action)
 
         return actor_policy.ActorPolicy(
             time_step_spec=time_step_spec,
