@@ -378,7 +378,7 @@ def main(argv):
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 
     step = tf.compat.v1.train.get_or_create_global_step()
-    checkpoint_directory = os.path.join(params['save_dir'], 'saves', environment_name, vae_name, 'training_checkpoints')
+    checkpoint_directory = os.path.join(params['save_dir'], 'saves', environment_name, 'training_checkpoints', vae_name)
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
     manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
 
