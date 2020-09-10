@@ -6,11 +6,12 @@ import tensorflow_probability as tfp
 from tensorflow.keras import Model
 from tensorflow.keras.models import Sequential, model_from_json
 from tensorflow.keras.layers import Input, Concatenate, Reshape, Dense, Lambda
+from tf_agents import trajectories
 from tf_agents.networks import network
-from tf_agents.specs import tensor_spec
+from tf_agents.specs import tensor_spec, array_spec
 from tf_agents.trajectories import policy_step, trajectory
 from tf_agents.policies import tf_policy, actor_policy
-from tf_agents.environments import tf_environment
+from tf_agents.environments import tf_environment, py_environment
 from tf_agents.trajectories import time_step as ts
 
 import variational_mdp
@@ -533,7 +534,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             rate += state_rate
             cross_entropy_regularizer += state_cer
 
-        # metric
+        # metrics
         def compute_decoder_jensen_shannon_divergence():
             [action_mean, action_raw_covariance, categorical_logits] = self.action_decoder(z)
             action_means = tf.unstack(action_mean, axis=1)
@@ -557,8 +558,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     logits=tf.ones(shape=(tf.shape(categorical_logits)[0], self.number_of_discrete_actions))),
                 components=posterior_distributions
             )
-            weighted_distribution_entropy = -1. * weighted_distribution.prob(a_1) * weighted_distribution.log_prob(
-                a_1)
+            weighted_distribution_entropy = -1. * weighted_distribution.prob(a_1) * weighted_distribution.log_prob(a_1)
 
             if self.mixture_components == 1:
                 weighted_entropy = tf.reduce_sum(
@@ -759,3 +759,90 @@ def load(tf_model_path: str) -> VariationalActionDiscretizer:
         reconstruction_mixture_components=2,  # mixture components > 1 is sufficient
         pre_loaded_model=True
     )
+
+
+class VariationalPyEnvironmentDiscretizer(py_environment.PyEnvironment):
+
+    def __init__(
+            self,
+            variational_mdp: VariationalMarkovDecisionProcess,
+            variational_action_discretizer: VariationalActionDiscretizer,
+            py_env: py_environment.PyEnvironment,
+            labeling_function: Callable[[tf.Tensor], tf.Tensor]
+    ):
+
+        super(VariationalPyEnvironmentDiscretizer, self).__init__()
+
+        self.encode_observation = variational_mdp.binary_encode
+        self.decode_action = variational_action_discretizer.decode_action
+        self.py_env = py_env
+        self.labeling_function = labeling_function
+        self._array_spec = array_spec.BoundedArraySpec(
+            shape=(variational_action_discretizer.number_of_discrete_actions, ),
+            dtype=tf.int32,
+            minimum=0,
+            maximum=1,
+            name='action'
+        )
+        self._observation_spec = array_spec.BoundedArraySpec(
+            shape=(1, variational_mdp.latent_state_size, ),
+            dtype=tf.int32,
+            minimum=0,
+            maximum=1,
+            name='observation'
+        )
+
+
+    def observation_spec(self):
+        return self._observation_spec
+
+    def action_spec(self):
+        return self._array_spec
+
+    def get_info(self):
+        return self.py_env.get_info()
+
+    def get_state(self):
+        return self.py_env.get_state()
+
+    def set_state(self, state):
+        self.py_env.set_state(state)
+
+    def _step(self, action):
+        real_action = self.decode_action(self._current_time_step, action).sample()
+        time_step = self.py_env.step(real_action)
+        self._previous_reward = time_step.reward
+        latent_state = self.encode_observation(
+            self._current_state,
+            real_action,
+            time_step.reward,
+            time_step.observation,
+            self.labeling_function(time_step.observation)
+        ).sample()
+        self._previous_state = time_step.observation
+        self._previous_action = real_action
+        self._previous_reward = time_step.reward
+        self._current_time_step = trajectories.time_step.TimeStep(
+            time_step.step_type, time_step.reward, time_step.discount, latent_state
+        )
+        return self._current_time_step
+
+    def _reset(self):
+        initial_state = tf.zeros(shape=self._vae_mdp.state_shape, dtype=tf.float32)
+        initial_action = tf.zeros(shape=self._vae_mdp.action_shape, dtype=tf.float32)
+        initial_reward = tf.zeros(shape=self._vae_mdp.reward_shape, dtype=tf.float32)
+        time_step = self.py_env.reset()
+        latent_state = self.encode_observation(
+            initial_state,
+            initial_action,
+            initial_reward,
+            time_step.observation,
+            self.labeling_function(time_step.observation)
+        ).sample()
+        self._current_time_step = trajectories.time_step.TimeStep(
+            time_step.step_type, time_step.reward, time_step.discount, latent_state)
+        self._current_state = latent_state
+        return self._current_time_step
+
+    def render(self, **kwargs):
+        self.py_env.render(**kwargs)
