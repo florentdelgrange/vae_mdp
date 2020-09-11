@@ -233,7 +233,10 @@ class VariationalMarkovDecisionProcess(Model):
         Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states.
         """
         log_alpha = self.encoder_network([state, action, reward, state_prime])
-        return tfd.Bernoulli(logits=tf.concat([log_alpha, (label * 2. - 1.) * 1e2], axis=-1))
+        return tfd.Bernoulli(
+            logits=tf.concat([log_alpha, (label * 2. - 1.) * 1e2], axis=-1),
+            name='discrete_state_encoder_distribution'
+        )
 
     def decode(self, latent_state: tf.Tensor) -> tfd.Distribution:
         """
@@ -291,7 +294,7 @@ class VariationalMarkovDecisionProcess(Model):
         state z and action a.
         """
         log_alpha = self.transition_network([latent_state, action])
-        return tfd.Bernoulli(logits=log_alpha)
+        return tfd.Bernoulli(logits=log_alpha, name='discrete_state_transition_distribution')
 
     def reward_probability_distribution(
             self, latent_state, action, next_latent_state
@@ -502,7 +505,7 @@ def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x):
 
 
 @tf.function
-def compute_apply_gradients(vae_mdp: VariationalMarkovDecisionProcess, x, optimizer, train_summary_writer=None):
+def compute_apply_gradients(vae_mdp: VariationalMarkovDecisionProcess, x, optimizer):
     with tf.GradientTape() as tape:
         loss = compute_loss(vae_mdp, x)
     gradients = tape.gradient(loss, vae_mdp.trainable_variables)

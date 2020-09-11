@@ -676,12 +676,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     tf_env: tf_environment.TFEnvironment,
                     labeling_function: Callable[[tf.Tensor], tf.Tensor]
             ):
-
                 action_spec = specs.BoundedTensorSpec(
-                    shape=(variational_action_discretizer.number_of_discrete_actions,),
+                    shape=(),
                     dtype=tf.int32,
                     minimum=0,
-                    maximum=1,
+                    maximum=variational_action_discretizer.number_of_discrete_actions - 1,
                     name='action'
                 )
                 observation_spec = specs.BoundedTensorSpec(
@@ -709,8 +708,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         variational_action_discretizer.reward_shape
                     ]
                 ]
+                self._current_latent_state = None
 
             def _current_time_step(self):
+                if self._current_latent_state is None:
+                    self.reset()
+
                 time_step = self.tf_env.current_time_step()
                 return trajectories.time_step.TimeStep(
                     time_step.step_type, time_step.reward, time_step.discount, self._current_latent_state
@@ -718,15 +721,20 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
             def _step(self, action):
                 real_action = self.decode_action(
-                    tf.cast(self._current_latent_state, tf.float32), tf.cast(action, tf.float32)
+                    tf.cast(self._current_latent_state, tf.float32),
+                    tf.one_hot(indices=action, depth=self.action_spec().maximum + 1, dtype=tf.float32)
                 ).sample()
                 time_step = self.tf_env.step(real_action)
                 reward = time_step.reward
-                if tf.shape(reward) == (self.batch_size, ):
-                    reward = tf.expand_dims(reward, axis=-1)
+                reward = tf.cond(
+                    tf.shape(reward) == (self.batch_size,),
+                    lambda: tf.expand_dims(reward, axis=-1),
+                    lambda: reward)
                 label = tf.cast(self.labeling_function(time_step.observation), tf.float32)
-                if tf.shape(label) == (self.batch_size, ):
-                    label = tf.expand_dims(label, axis=-1)
+                label = tf.cond(
+                    tf.shape(label) == (self.batch_size,),
+                    lambda: tf.expand_dims(label, axis=-1),
+                    lambda: label)
 
                 latent_state = self.encode_observation(
                     self._current_observation,
@@ -742,8 +750,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             def _reset(self):
                 time_step = self.tf_env.reset()
                 label = tf.cast(self.labeling_function(time_step.observation), tf.float32)
-                if tf.shape(label) == (self.batch_size, ):
-                    label = tf.expand_dims(label, axis=-1)
+                label = tf.cond(
+                    tf.shape(label) == (self.batch_size,),
+                    lambda: tf.expand_dims(label, axis=-1),
+                    lambda: label)
                 latent_state = self.encode_observation(
                     self.initial_observation,
                     self.initial_action,
@@ -790,4 +800,3 @@ def load(tf_model_path: str) -> VariationalActionDiscretizer:
         reconstruction_mixture_components=2,  # mixture components > 1 is sufficient
         pre_loaded_model=True
     )
-
