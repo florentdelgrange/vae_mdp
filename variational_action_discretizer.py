@@ -6,7 +6,7 @@ import tensorflow_probability as tfp
 from tensorflow.keras import Model
 from tensorflow.keras.models import Sequential, model_from_json
 from tensorflow.keras.layers import Input, Concatenate, Reshape, Dense, Lambda
-from tf_agents import trajectories
+from tf_agents import trajectories, specs
 from tf_agents.networks import network
 from tf_agents.specs import tensor_spec, array_spec
 from tf_agents.trajectories import policy_step, trajectory
@@ -659,75 +659,106 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         mbu.update(self._state_vae.mean_latent_bits_used(inputs, eps))
         return mbu
 
-    def generate_random_policy(
-            self, tf_env: tf_environment.TFEnvironment, labeling_function: Callable[[tf.Tensor], tf.Tensor]
-    ) -> tf_policy.Base:
-        """
-        Generates a uniform random policy from discrete states of this VAE-MDP to continuous actions of the input
-        environment.
-        """
-
-        time_step_spec = tf_env.time_step_spec()
-        # continuous actions
-        action_spec = tf_env.action_spec()
-
-        # uniform random discrete action
-        uniform_action_distribution = tfd.OneHotCategorical(
-            logits=tf.math.log(
-                1. / self.number_of_discrete_actions * tf.ones(shape=(self.number_of_discrete_actions,))
-            ),
-            dtype=tf.float32
-        )
-
-        class RandomDiscreteActorNetwork(network.Network):
-
-            def __init__(self, vae_mdp: VariationalActionDiscretizer):
-                super().__init__(
-                    time_step_spec,
-                    state_spec=(tf_env.time_step_spec().observation, tf_env.action_spec()),
-                    name='RandomDiscreteActorNetwork')
-                self._vae_mdp = vae_mdp
-
-            def call(self, observations, step_type, network_state):
-
-                tf.print(observations, step_type, network_state)
-
-                if step_type == ts.StepType.FIRST:
-                    initial_state = tf.zeros(shape=self._vae_mdp.state_shape, dtype=tf.float32)
-                    initial_action = tf.zeros(shape=self._vae_mdp.action_shape, dtype=tf.float32)
-                    initial_reward = tf.zeros(shape=self._vae_mdp.reward_shape, dtype=tf.float32)
-                    state, action, reward = [
-                        tf.stack([initial_state for _ in range(tf.shape(observations.observation)[0])]),
-                        tf.stack([initial_action for _ in range(tf.shape(observations.observation)[0])]),
-                        tf.stack([initial_reward for _ in range(tf.shape(observations.observation)[0])]),
-                    ]
-                else:
-                    state, action = network_state
-                    reward = tf.reshape(observations.reward, self._vae_mdp.reward_shape)
-
-                next_state = observations.observation
-                next_label = tf.reshape(labeling_function(next_state), self._vae_mdp.label_shape)
-
-                z = self._vae_mdp.binary_encode(state, action, reward, next_state, next_label).sample()
-                z = tf.cast(z, dtype=tf.float32)
-                if tf.shape(z).get_shape() == 1:
-                    discrete_action = uniform_action_distribution.sample()
-                else:
-                    discrete_action = uniform_action_distribution.sample(
-                        sample_shape=(tf.shape(z)[0])
-                    )
-                action = self._vae_mdp.decode_action(z, discrete_action).sample()
-
-                return action, (next_state, action)
-
-        return actor_policy.ActorPolicy(
-            time_step_spec=time_step_spec,
-            action_spec=action_spec,
-            actor_network=RandomDiscreteActorNetwork(vae_mdp=self)
-        )
-
     def get_state_vae(self) -> VariationalMarkovDecisionProcess:
         return self._state_vae
+
+    def wrap_tf_environment(
+            self,
+            tf_env: tf_environment.TFEnvironment,
+            labeling_function: Callable[[tf.Tensor], tf.Tensor]
+    ) -> tf_environment.TFEnvironment:
+
+        class VariationalTFEnvironmentDiscretizer(tf_environment.TFEnvironment):
+
+            def __init__(
+                    self,
+                    variational_action_discretizer: VariationalActionDiscretizer,
+                    tf_env: tf_environment.TFEnvironment,
+                    labeling_function: Callable[[tf.Tensor], tf.Tensor]
+            ):
+
+                action_spec = specs.BoundedTensorSpec(
+                    shape=(variational_action_discretizer.number_of_discrete_actions,),
+                    dtype=tf.int32,
+                    minimum=0,
+                    maximum=1,
+                    name='action'
+                )
+                observation_spec = specs.BoundedTensorSpec(
+                    shape=(variational_action_discretizer.latent_state_size,),
+                    dtype=tf.int32,
+                    minimum=0,
+                    maximum=1,
+                    name='observation'
+                )
+                time_step_spec = ts.time_step_spec(observation_spec)
+                super(VariationalTFEnvironmentDiscretizer, self).__init__(
+                    time_step_spec=time_step_spec,
+                    action_spec=action_spec,
+                    batch_size=tf_env.batch_size
+                )
+
+                self.encode_observation = variational_action_discretizer.get_state_vae().binary_encode
+                self.decode_action = variational_action_discretizer.decode_action
+                self.tf_env = tf_env
+                self.labeling_function = labeling_function
+                self.initial_observation, self.initial_action, self.initial_reward = [
+                    tf.stack([tf.zeros(shape=shape, dtype=tf.float32) for _ in range(self.batch_size)]) for shape in [
+                        variational_action_discretizer.state_shape,
+                        variational_action_discretizer.action_shape,
+                        variational_action_discretizer.reward_shape
+                    ]
+                ]
+
+            def _current_time_step(self):
+                time_step = self.tf_env.current_time_step()
+                return trajectories.time_step.TimeStep(
+                    time_step.step_type, time_step.reward, time_step.discount, self._current_latent_state
+                )
+
+            def _step(self, action):
+                real_action = self.decode_action(
+                    tf.cast(self._current_latent_state, tf.float32), tf.cast(action, tf.float32)
+                ).sample()
+                time_step = self.tf_env.step(real_action)
+                reward = time_step.reward
+                if tf.shape(reward) == (self.batch_size, ):
+                    reward = tf.expand_dims(reward, axis=-1)
+                label = tf.cast(self.labeling_function(time_step.observation), tf.float32)
+                if tf.shape(label) == (self.batch_size, ):
+                    label = tf.expand_dims(label, axis=-1)
+
+                latent_state = self.encode_observation(
+                    self._current_observation,
+                    real_action,
+                    reward,
+                    time_step.observation,
+                    label
+                ).sample()
+                self._current_observation = time_step.observation
+                self._current_latent_state = latent_state
+                return self._current_time_step()
+
+            def _reset(self):
+                time_step = self.tf_env.reset()
+                label = tf.cast(self.labeling_function(time_step.observation), tf.float32)
+                if tf.shape(label) == (self.batch_size, ):
+                    label = tf.expand_dims(label, axis=-1)
+                latent_state = self.encode_observation(
+                    self.initial_observation,
+                    self.initial_action,
+                    self.initial_reward,
+                    time_step.observation,
+                    label
+                ).sample()
+                self._current_latent_state = latent_state
+                self._current_observation = time_step.observation
+                return self._current_time_step()
+
+            def render(self):
+                return self.tf_env.render()
+
+        return VariationalTFEnvironmentDiscretizer(self, tf_env, labeling_function)
 
 
 def load(tf_model_path: str) -> VariationalActionDiscretizer:
@@ -760,89 +791,3 @@ def load(tf_model_path: str) -> VariationalActionDiscretizer:
         pre_loaded_model=True
     )
 
-
-class VariationalPyEnvironmentDiscretizer(py_environment.PyEnvironment):
-
-    def __init__(
-            self,
-            variational_mdp: VariationalMarkovDecisionProcess,
-            variational_action_discretizer: VariationalActionDiscretizer,
-            py_env: py_environment.PyEnvironment,
-            labeling_function: Callable[[tf.Tensor], tf.Tensor]
-    ):
-
-        super(VariationalPyEnvironmentDiscretizer, self).__init__()
-
-        self.encode_observation = variational_mdp.binary_encode
-        self.decode_action = variational_action_discretizer.decode_action
-        self.py_env = py_env
-        self.labeling_function = labeling_function
-        self._array_spec = array_spec.BoundedArraySpec(
-            shape=(variational_action_discretizer.number_of_discrete_actions, ),
-            dtype=tf.int32,
-            minimum=0,
-            maximum=1,
-            name='action'
-        )
-        self._observation_spec = array_spec.BoundedArraySpec(
-            shape=(1, variational_mdp.latent_state_size, ),
-            dtype=tf.int32,
-            minimum=0,
-            maximum=1,
-            name='observation'
-        )
-
-
-    def observation_spec(self):
-        return self._observation_spec
-
-    def action_spec(self):
-        return self._array_spec
-
-    def get_info(self):
-        return self.py_env.get_info()
-
-    def get_state(self):
-        return self.py_env.get_state()
-
-    def set_state(self, state):
-        self.py_env.set_state(state)
-
-    def _step(self, action):
-        real_action = self.decode_action(self._current_time_step, action).sample()
-        time_step = self.py_env.step(real_action)
-        self._previous_reward = time_step.reward
-        latent_state = self.encode_observation(
-            self._current_state,
-            real_action,
-            time_step.reward,
-            time_step.observation,
-            self.labeling_function(time_step.observation)
-        ).sample()
-        self._previous_state = time_step.observation
-        self._previous_action = real_action
-        self._previous_reward = time_step.reward
-        self._current_time_step = trajectories.time_step.TimeStep(
-            time_step.step_type, time_step.reward, time_step.discount, latent_state
-        )
-        return self._current_time_step
-
-    def _reset(self):
-        initial_state = tf.zeros(shape=self._vae_mdp.state_shape, dtype=tf.float32)
-        initial_action = tf.zeros(shape=self._vae_mdp.action_shape, dtype=tf.float32)
-        initial_reward = tf.zeros(shape=self._vae_mdp.reward_shape, dtype=tf.float32)
-        time_step = self.py_env.reset()
-        latent_state = self.encode_observation(
-            initial_state,
-            initial_action,
-            initial_reward,
-            time_step.observation,
-            self.labeling_function(time_step.observation)
-        ).sample()
-        self._current_time_step = trajectories.time_step.TimeStep(
-            time_step.step_type, time_step.reward, time_step.discount, latent_state)
-        self._current_state = latent_state
-        return self._current_time_step
-
-    def render(self, **kwargs):
-        self.py_env.render(**kwargs)
