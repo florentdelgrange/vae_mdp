@@ -21,6 +21,7 @@ from variational_action_discretizer import VariationalActionDiscretizer
 
 import variational_action_discretizer
 
+
 def learn_empirical_mdp(
         environment_suite,
         labeling_function: Callable,
@@ -85,18 +86,19 @@ def learn_empirical_mdp(
     replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
         data_spec=trajectory_spec,
         batch_size=tf_env.batch_size,
-        max_length=batch_size // num_parallel_calls  # to remove transitions already considered
+        max_length=replay_buffer_capacity
     )
 
     dataset = replay_buffer.as_dataset(
         num_parallel_calls=num_parallel_calls,
         num_steps=2,
-        single_deterministic_pass=True  # gather transitions only once
+        #  single_deterministic_pass=True  # gather transitions only once
     ).map(
         map_func=retrieve_states_and_actions_indices,
         num_parallel_calls=num_parallel_calls,
         #  deterministic=False  # TF version >= 2.2.0
     ).batch(batch_size=batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset_iterator = iter(dataset)
 
     num_episodes = tf_metrics.NumberOfEpisodes()
     env_steps = tf_metrics.EnvironmentSteps()
@@ -105,20 +107,18 @@ def learn_empirical_mdp(
 
     driver = dynamic_step_driver.DynamicStepDriver(
         tf_env, policy, observers=observers, num_steps=collect_steps_per_iteration)
-    initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
-        tf_env, policy, observers=observers, num_steps=initial_collect_steps)
 
     driver.run = common.function(driver.run)
 
     progressbar = Progbar(target=num_iterations, interval=0.1)
 
-    # print("Initial collect steps...")
-    # initial_collect_driver.run()
-    # print("Start training.")
+    print("Initial collect steps...")
+    for _ in range(initial_collect_steps // collect_steps_per_iteration):
+        driver.run()
+    print("Start training.")
 
     for _ in range(num_iterations):
         driver.run()
-        dataset_iterator = iter(dataset)
         states, actions, next_states = next(dataset_iterator)
 
         if use_sparse_tensors:
@@ -143,21 +143,11 @@ def learn_empirical_mdp(
 
 @tf.function
 def retrieve_states_and_actions_indices(trajectory, info) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-
-    tf.print(trajectory.observation, 'observation', summarize=-1)
-
     latent_state = tf.cast(
         tf.reduce_sum(trajectory.observation * 2 ** tf.range(vae_mdp.latent_state_size), axis=-1),
         dtype=tf.int64
     )
-    tf.print(latent_state, 'observation', summarize=-1)
-    state, next_state = latent_state[0], latent_state[1]
-    tf.print(trajectory.action[0], 'action_played', summarize=-1)
-
-    action = tf.cast(trajectory.action[0], tf.int64)
-    tf.print(action, 'action in one hot', summarize=-1)
-
-    return state, action, next_state
+    return latent_state[0], tf.cast(trajectory.action[0], tf.int64), latent_state[1]
 
 
 @tf.function
@@ -216,23 +206,11 @@ if __name__ == '__main__':
         labeling_function=labeling_functions[environment_name],
         environment_name=environment_name,
         vae_mdp=vae_mdp,
-        num_parallel_calls=1,
+        num_parallel_calls=16,
         num_iterations=num_iterations
     )
 
     print('Time to create an MDP via sparse tensors in {} iterations: {} sec'.format(num_iterations,
                                                                                      time.time() - start_time))
 
-    start_time = time.time()
-    dict_sparse_matrix_mdp = learn_empirical_mdp(
-        environment_suite=suite_gym,
-        labeling_function=labeling_functions[environment_name],
-        environment_name=environment_name,
-        vae_mdp=vae_mdp,
-        num_parallel_calls=1,
-        num_iterations=num_iterations,
-        use_sparse_tensors=False
-    )
-
-    print('Time to create an MDP via a scipy dict sparse matrix in {} iterations:'
-          '{} sec'.format(num_iterations, time.time() - start_time))
+    tf.print(sparse_tensor_mdp, summarize=-1)

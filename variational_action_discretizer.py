@@ -701,19 +701,16 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 self.decode_action = variational_action_discretizer.decode_action
                 self.tf_env = tf_env
                 self.labeling_function = labeling_function
-                self.initial_observation, self.initial_action, self.initial_reward = [
-                    tf.stack([tf.zeros(shape=shape, dtype=tf.float32) for _ in range(self.batch_size)]) for shape in [
-                        variational_action_discretizer.state_shape,
-                        variational_action_discretizer.action_shape,
-                        variational_action_discretizer.reward_shape
-                    ]
+                self.observation_shape, self.action_shape, self.reward_shape = [
+                    variational_action_discretizer.state_shape,
+                    variational_action_discretizer.action_shape,
+                    variational_action_discretizer.reward_shape
                 ]
                 self._current_latent_state = None
 
             def _current_time_step(self):
                 if self._current_latent_state is None:
                     self.reset()
-
                 time_step = self.tf_env.current_time_step()
                 return trajectories.time_step.TimeStep(
                     time_step.step_type, time_step.reward, time_step.discount, self._current_latent_state
@@ -754,10 +751,17 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     tf.shape(label) == (self.batch_size,),
                     lambda: tf.expand_dims(label, axis=-1),
                     lambda: label)
+
+                initial_observation, initial_action, initial_reward = [
+                    tf.stack([tf.zeros(shape=shape, dtype=tf.float32) for _ in range(self.batch_size)]) for shape in [
+                        self.observation_shape, self.action_shape, self.reward_shape
+                    ]
+                ]
+
                 latent_state = self.encode_observation(
-                    self.initial_observation,
-                    self.initial_action,
-                    self.initial_reward,
+                    initial_observation,
+                    initial_action,
+                    initial_reward,
                     time_step.observation,
                     label
                 ).sample()
