@@ -849,7 +849,7 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
         print('eval ELBO: ', eval_elbo.result().numpy())
         model_name = os.path.join(log_name, 'step{}'.format(global_step), 'eval_elbo{:.3f}'.format(eval_elbo.result()))
     else:
-        model_name = '{}_step{}'.format(log_name, global_step)
+        model_name = os.path.join(log_name, 'step{}'.format(global_step), 'eval_elbo{:.3f}'.format(eval_elbo.result()))
     if check_numerics:
         tf.debugging.disable_check_numerics()
     tf.saved_model.save(vae_mdp, os.path.join(save_directory, 'models', model_name))

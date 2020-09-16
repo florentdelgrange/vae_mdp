@@ -239,8 +239,14 @@ def main(argv):
             params['encoder_temperature_decay_rate'],
             params['prior_temperature_decay_rate'])
     else:
+        name_list = params['load_vae'].split(os.path.sep)
+        if 'models' in name_list and name_list.index('models') < len(name_list) - 1:
+            vae_name = '_'.join(name_list[name_list.index('models') + 1:])
+        else:
+            vae_name = os.path.split(params['load_vae'])[-1]
+
         vae_name = os.path.join(
-            os.path.split(params['load_vae'])[-1],
+            vae_name,
             os.path.split(params['policy_path'])[-1],
             'action_discretizer',
             'LA{}_MC{}_CER{}-decay={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
