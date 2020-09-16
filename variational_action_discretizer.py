@@ -32,6 +32,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             action_decoder_network: Model,
             transition_network: Model,
             reward_network: Model,
+            simplified_policy_network: Model,
             branching_action_networks: bool = False,
             pre_processing_network: Model = Sequential(
                 [Dense(units=256, activation=tf.nn.leaky_relu),
@@ -106,8 +107,17 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 name="action_encoder")
 
             # prior over actions
-            self.action_prior_logits = tf.compat.v1.get_variable(
-                shape=(number_of_discrete_actions,), name='action_prior_exp_one_hot_logits')
+            self.simplified_policy_network = simplified_policy_network(latent_state)
+            self.simplified_policy_network = Dense(
+                units=self.number_of_discrete_actions,
+                activation=None,
+                name='simplified_policy_exp_one_hot_logits'
+            )(self.simplified_policy_network)
+            self.simplified_policy_network = Model(
+                inputs=latent_state,
+                outputs=self.simplified_policy_network,
+                name='simplified_policy_network'
+            )
 
             # discrete actions transition network
             if not one_output_per_action:
@@ -290,6 +300,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         else:
             self.action_encoder = action_encoder_network
+            self.simplified_policy_network = simplified_policy_network
             self.action_transition_network = transition_network
             self.action_reward_network = reward_network
             self.action_decoder = action_decoder_network
@@ -343,12 +354,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
         return tfd.OneHotCategorical(logits=log_probs)
 
-    def relaxed_action_prior(self, temperature: float):
+    def relaxed_simplified_policy(self, latent_state: tf.Tensor, temperature: float):
         return tfd.ExpRelaxedOneHotCategorical(
-            temperature=temperature, logits=self.action_prior_logits)
+            temperature=temperature, logits=self.simplified_policy_network(latent_state))
 
-    def discrete_action_prior(self):
-        relaxed_distribution = self.relaxed_action_prior(temperature=1e-5)
+    def discrete_simplified_policy(self, latent_state: tf.Tensor):
+        relaxed_distribution = self.relaxed_simplified_policy(latent_state, temperature=1e-5)
         log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
         return tfd.OneHotCategorical(logits=log_probs)
 
@@ -482,7 +493,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             z = tf.cast(self.binary_encode(s_0, a_0, r_0, s_1, l_1).sample(), tf.float32)
             z_prime = tf.cast(self.binary_encode(s_1, a_1, r_1, s_2, l_2).sample(), tf.float32)
         q = self.relaxed_action_encoding(z, a_1, self.encoder_temperature)
-        p = self.relaxed_action_prior(self.prior_temperature)
+        p = self.relaxed_simplified_policy(z, self.prior_temperature)
         latent_action = q.sample()
 
         log_q_latent_action = q.log_prob(latent_action)
@@ -617,7 +628,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         z = tf.cast(self.binary_encode(s_0, a_0, r_0, s_1, l_1).sample(), tf.float32)
         z_prime = tf.cast(self.binary_encode(s_1, a_1, r_1, s_2, l_2).sample(), tf.float32)
         q = self.discrete_action_encoding(z, a_1)
-        p = self.discrete_action_prior()
+        p = self.discrete_simplified_policy(z)
         latent_action = tf.cast(q.sample(), tf.float32)
 
         # transition probability reconstruction
@@ -798,6 +809,7 @@ def load(tf_model_path: str) -> VariationalActionDiscretizer:
         action_decoder_network=model.action_decoder,
         transition_network=model.action_transition_network,
         reward_network=model.action_reward_network,
+        simplified_policy_network=model.simplified_policy_network,
         one_output_per_action=model.action_decoder.variables[0].shape[0] == state_vae.latent_state_size,
         encoder_temperature=model._encoder_temperature,
         prior_temperature=model._prior_temperature,

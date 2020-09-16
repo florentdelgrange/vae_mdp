@@ -157,6 +157,11 @@ flags.DEFINE_multi_integer(
     default=[256, 256],
     help='Number of units to use for each layer of the reward network.'
 )
+flags.DEFINE_multi_integer(
+    "discrete_policy_layers",
+    default=[256, 256],
+    help="Number of units to use for each layer of the discrete policy network."
+)
 flags.DEFINE_string(
     "policy_path",
     default='',
@@ -293,11 +298,16 @@ def main(argv):
             p_r.add(Dense(units, activation=activation, name='{}reward_{}'.format(name, i)))
 
         # Decoder network body
-        p_decode = Sequential(name="{}decoder_body".format(name))
+        p_decode = Sequential(name="{}decoder_network_body".format(name))
         for i, units in enumerate(params['decoder_layers']):
             p_decode.add(Dense(units, activation=activation, name='{}decoder_{}'.format(name, i)))
 
-        return q, p_t, p_r, p_decode
+        # Policy network body
+        discrete_policy = Sequential(name="{}policy_network_body".format(name))
+        for i, units in enumerate(params['discrete_policy_layers']):
+            discrete_policy.add(Dense(units, activation=activation, name='{}discrete_policy_{}'.format(name, i)))
+
+        return q, p_t, p_r, p_decode, discrete_policy
 
     if params['env_suite'] != '':
         try:
@@ -335,7 +345,7 @@ def main(argv):
         del environment
 
     if params['load_vae'] == '':
-        q, p_t, p_r, p_decode = generate_networks(name='state')
+        q, p_t, p_r, p_decode, _ = generate_networks(name='state')
         vae_mdp_model = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
             encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
@@ -356,11 +366,12 @@ def main(argv):
         vae_mdp_model.prior_temperature = relaxed_state_prior_temperature
 
     if params['action_discretizer']:
-        q, p_t, p_r, p_decode = generate_networks(name='action')
+        q, p_t, p_r, p_decode, discrete_policy = generate_networks(name='action')
         vae_mdp_model = variational_action_discretizer.VariationalActionDiscretizer(
             vae_mdp=vae_mdp_model,
             number_of_discrete_actions=params['number_of_discrete_actions'],
             action_encoder_network=q, transition_network=p_t, reward_network=p_r, action_decoder_network=p_decode,
+            simplified_policy_network=discrete_policy,
             encoder_temperature=params['encoder_temperature'],
             prior_temperature=params['prior_temperature'],
             encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
