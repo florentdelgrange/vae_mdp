@@ -239,14 +239,9 @@ def main(argv):
             params['encoder_temperature_decay_rate'],
             params['prior_temperature_decay_rate'])
     else:
-        name_list = params['load_vae'].split(os.path.sep)
-        if 'models' in name_list and name_list.index('models') < len(name_list) - 1:
-            vae_name = '_'.join(name_list[name_list.index('models') + 1:])
-        else:
-            vae_name = os.path.split(params['load_vae'])[-1]
 
         vae_name = os.path.join(
-            vae_name,
+            os.path.split(params['load_vae'])[-1],
             os.path.split(params['policy_path'])[-1],
             'action_discretizer',
             'LA{}_MC{}_CER{}-decay={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
@@ -398,6 +393,12 @@ def main(argv):
     checkpoint_directory = os.path.join(params['save_dir'], 'saves', environment_name, 'training_checkpoints', vae_name)
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
     manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
+
+    name_list = params['load_vae'].split(os.path.sep)
+    if 'models' in name_list and name_list.index('models') < len(name_list) - 1:
+        vae_name_list = vae_name.split(os.path.sep)
+        vae_name_list[0] = '_'.join(name_list[name_list.index('models') + 1:])
+        vae_name = os.path.join(vae_name_list)
 
     if dataset_path == '':
         policy = tf.compat.v2.saved_model.load(params['policy_path'])
