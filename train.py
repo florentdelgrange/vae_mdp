@@ -124,7 +124,7 @@ flags.DEFINE_bool(
 )
 flags.DEFINE_bool(
     'relaxed_state_encoding',
-    default=False,
+    default=True,
     help='Use a relaxed encoding of states to optimize the action discretizer part of the VAE.'
 )
 flags.DEFINE_integer(
@@ -160,7 +160,7 @@ flags.DEFINE_multi_integer(
 flags.DEFINE_multi_integer(
     "discrete_policy_layers",
     default=[256, 256],
-    help="Number of units to use for each layer of the discrete policy network."
+    help="Number of units to use for each layer of the simplified policy network."
 )
 flags.DEFINE_string(
     "policy_path",
@@ -221,8 +221,18 @@ def main(argv):
     mixture_components = params['mixture_components']
     latent_state_size = params['latent_size']  # depends on the number of bits reserved for labels
 
-    if params['load_vae'] != '' and params['load_vae'][-1] == os.path.sep:
-        params['load_vae'] = params['load_vae'][:-1]
+    if params['load_vae'] != '':
+        name_list = params['load_vae'].split(os.path.sep)
+        if 'models' in name_list and name_list.index('models') < len(name_list) - 1:
+            base_model_name = os.path.join(name_list[name_list.index('models') + 1:])
+        else:
+            base_model_name = os.path.split(params['load_vae'])[-1]
+
+        if params['load_vae'][-1] == os.path.sep:
+            params['load_vae'] = params['load_vae'][:-1]
+    else:
+        base_model_name = ''
+
     if params['policy_path'] != '' and params['policy_path'][-1] == os.path.sep:
         params['policy_path'] = params['policy_path'][:-1]
 
@@ -239,9 +249,8 @@ def main(argv):
             params['encoder_temperature_decay_rate'],
             params['prior_temperature_decay_rate'])
     else:
-
         vae_name = os.path.join(
-            os.path.split(params['load_vae'])[-1],
+            base_model_name,
             os.path.split(params['policy_path'])[-1],
             'action_discretizer',
             'LA{}_MC{}_CER{}-decay={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
@@ -278,7 +287,7 @@ def main(argv):
 
     dataset_size = -1
 
-    def generate_networks(name=''):
+    def generate_network_components(name=''):
 
         if name != '':
             name += '_'
@@ -346,7 +355,7 @@ def main(argv):
         del environment
 
     if params['load_vae'] == '':
-        q, p_t, p_r, p_decode, _ = generate_networks(name='state')
+        q, p_t, p_r, p_decode, _ = generate_network_components(name='state')
         vae_mdp_model = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
             encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
@@ -367,7 +376,7 @@ def main(argv):
         vae_mdp_model.prior_temperature = relaxed_state_prior_temperature
 
     if params['action_discretizer']:
-        q, p_t, p_r, p_decode, discrete_policy = generate_networks(name='action')
+        q, p_t, p_r, p_decode, discrete_policy = generate_network_components(name='action')
         vae_mdp_model = variational_action_discretizer.VariationalActionDiscretizer(
             vae_mdp=vae_mdp_model,
             number_of_discrete_actions=params['number_of_discrete_actions'],
@@ -394,11 +403,10 @@ def main(argv):
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
     manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
 
-    name_list = params['load_vae'].split(os.path.sep)
-    if 'models' in name_list and name_list.index('models') < len(name_list) - 1:
+    if base_model_name != '':
         vae_name_list = vae_name.split(os.path.sep)
-        vae_name_list[0] = '_'.join(name_list[name_list.index('models') + 1:])
-        vae_name = os.path.join(vae_name_list)
+        vae_name_list[0] = '_'.join(base_model_name.split(os.path.sep))
+        vae_name = os.path.join(*vae_name_list)
 
     if dataset_path == '':
         policy = tf.compat.v2.saved_model.load(params['policy_path'])
