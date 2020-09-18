@@ -267,9 +267,9 @@ def main(argv):
             )
         )
 
-    additional_parameters = {'one_output_per_action',
+    additional_parameters = ['one_output_per_action',
                              'full_vae_optimization',
-                             'relaxed_state_encoding',}
+                             'relaxed_state_encoding']
     nb_additional_params = sum(map(lambda x: params[x], additional_parameters))
     if nb_additional_params > 0:
         vae_name += ('_params={}' + '-{}' * (nb_additional_params - 1)).format(
