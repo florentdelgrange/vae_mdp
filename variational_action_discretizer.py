@@ -785,6 +785,45 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         return VariationalTFEnvironmentDiscretizer(self, tf_env, labeling_function)
 
+    def get_simplified_policy(self) -> tf_policy.Base:
+
+        action_spec = specs.BoundedTensorSpec(
+            shape=(),
+            dtype=tf.int32,
+            minimum=0,
+            maximum=self.number_of_discrete_actions - 1,
+            name='action'
+        )
+        observation_spec = specs.BoundedTensorSpec(
+            shape=(self.latent_state_size,),
+            dtype=tf.int32,
+            minimum=0,
+            maximum=1,
+            name='observation'
+        )
+        time_step_spec = ts.time_step_spec(observation_spec)
+
+        class RandomDiscreteActorNetwork(network.Network):
+
+            def __init__(self, vae_mdp: VariationalActionDiscretizer):
+                super().__init__(observation_spec, state_spec=(), name='DiscreteActionVAEActorNetwork')
+                self._vae_mdp = vae_mdp
+
+            def call(self, observations, step_type, network_state):
+                del step_type
+
+                z = tf.cast(observations, dtype=tf.float32)
+                one_hot_sample = self._vae_mdp.discrete_simplified_policy(z).sample()
+                action = tf.cast(tf.argmax(one_hot_sample, axis=1), tf.int32)
+
+                return action, network_state
+
+        return actor_policy.ActorPolicy(
+            time_step_spec=time_step_spec,
+            action_spec=action_spec,
+            actor_network=RandomDiscreteActorNetwork(vae_mdp=self)
+        )
+
 
 def load(tf_model_path: str) -> VariationalActionDiscretizer:
     model = tf.saved_model.load(tf_model_path)
