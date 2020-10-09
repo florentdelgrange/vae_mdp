@@ -1,3 +1,4 @@
+import os
 from typing import Callable, Optional, Tuple
 import time
 
@@ -7,7 +8,7 @@ from scipy.sparse import dok_matrix
 from scipy.sparse import spmatrix
 import numpy as np
 from tensorflow.python.keras.utils.generic_utils import Progbar
-from tf_agents.drivers import dynamic_step_driver
+from tf_agents.drivers import dynamic_step_driver, dynamic_episode_driver
 from tf_agents.environments import parallel_py_environment, py_environment, tf_py_environment
 from tf_agents.metrics import tf_metrics
 from tf_agents.policies import random_tf_policy
@@ -32,28 +33,29 @@ def learn_empirical_mdp(
         replay_buffer_capacity: int = int(1e6),
         collect_steps_per_iteration: Optional[int] = None,
         policy: Optional[tf_agents.policies.tf_policy.Base] = None,
-        initial_collect_steps: int = int(1e4),
-        num_iterations: int = int(1e6),
-        use_sparse_tensors: bool = True
-) -> spmatrix:
+        episode_per_iteration: int = 1,
+        num_episodes: int = int(2 ** 14),
+) -> tf.SparseTensor:
     if collect_steps_per_iteration is None:
         collect_steps_per_iteration = batch_size
     replay_buffer_capacity = replay_buffer_capacity // num_parallel_calls
     collect_steps_per_iteration = collect_steps_per_iteration // num_parallel_calls
 
-    number_of_states = tf.pow(tf.constant(2, dtype=tf.int64), tf.constant(vae_mdp.latent_state_size, dtype=tf.int64))
+    import datetime
+    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    train_log_dir = os.path.join('logs', environment_name, 'model_generation', current_time)
+    if not os.path.exists(train_log_dir):
+        os.makedirs(train_log_dir)
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 
-    if use_sparse_tensors:
-        mdp_matrix = tf.SparseTensor(
-            indices=tf.zeros((0, 2), tf.int64),
-            values=tf.cast([], dtype=tf.int32),
-            dense_shape=[number_of_states * vae_mdp.number_of_discrete_actions, number_of_states]
-        )
-    else:
-        mdp_matrix = dok_matrix(
-            (number_of_states * vae_mdp.number_of_discrete_actions, number_of_states),
-            dtype=np.int32
-        )
+    number_of_states = tf.pow(tf.constant(2, dtype=tf.int64), tf.constant(vae_mdp.latent_state_size, dtype=tf.int64))
+    number_of_actions = tf.cast(vae_mdp.number_of_discrete_actions, tf.int64)
+
+    mdp_matrix = tf.SparseTensor(
+        indices=tf.zeros((0, 2), tf.int64),
+        values=tf.cast([], dtype=tf.int32),
+        dense_shape=[number_of_states * vae_mdp.number_of_discrete_actions, number_of_states]
+    )
 
     if num_parallel_calls > 1:
         tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
@@ -86,57 +88,61 @@ def learn_empirical_mdp(
     replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
         data_spec=trajectory_spec,
         batch_size=tf_env.batch_size,
-        max_length=replay_buffer_capacity
+        max_length=replay_buffer_capacity,
+        dataset_drop_remainder=True,
+        dataset_window_shift=1  # to recover all transitions
     )
 
-    dataset = replay_buffer.as_dataset(
-        num_parallel_calls=num_parallel_calls,
-        num_steps=2,
-        #  single_deterministic_pass=True  # gather transitions only once
-    ).map(
-        map_func=retrieve_states_and_actions_indices,
-        num_parallel_calls=num_parallel_calls,
-        #  deterministic=False  # TF version >= 2.2.0
-    ).batch(batch_size=batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
-    dataset_iterator = iter(dataset)
-
-    num_episodes = tf_metrics.NumberOfEpisodes()
+    episode_counter = tf_metrics.NumberOfEpisodes()
     env_steps = tf_metrics.EnvironmentSteps()
-    observers = [num_episodes, env_steps] if parallel_py_environment == 1 else []
+    observers = [episode_counter, env_steps] if parallel_py_environment == 1 else []
     observers += [replay_buffer.add_batch]
 
-    driver = dynamic_step_driver.DynamicStepDriver(
-        tf_env, policy, observers=observers, num_steps=collect_steps_per_iteration)
+    # driver = dynamic_step_driver.DynamicStepDriver(
+    #     tf_env, policy, observers=observers, num_steps=collect_steps_per_iteration)
+
+    driver = dynamic_episode_driver.DynamicEpisodeDriver(
+        tf_env, policy, observers=observers, num_episodes=episode_per_iteration
+    )
 
     driver.run = common.function(driver.run)
 
-    progressbar = Progbar(target=num_iterations, interval=0.1)
+    progressbar = Progbar(target=num_episodes, interval=0.1)
 
-    print("Initial collect steps...")
-    for _ in range(initial_collect_steps // collect_steps_per_iteration):
+    # print("Initial collect steps...")
+    # for _ in range(initial_collect_steps // collect_steps_per_iteration):
+    #     driver.run()
+    # print("Start training.")
+
+    for episode in tf.range(tf.cast(tf.math.floor(num_episodes / episode_per_iteration), tf.int64)):
         driver.run()
-    print("Start training.")
-
-    for _ in range(num_iterations):
-        driver.run()
-        states, actions, next_states = next(dataset_iterator)
-
-        if use_sparse_tensors:
-            sparse_transitions = retrieve_sparse_transitions(
-                states,
-                actions,
-                next_states,
-                number_of_states,
-                vae_mdp.number_of_discrete_actions)
-            mdp_matrix = update_mdp_sparse_tensor(mdp_matrix, sparse_transitions)
-        else:
-            update_mdp_sparse_matrix(
-                states=states,
-                actions=actions,
-                next_states=next_states,
+        states, actions, next_states = next(iter(
+            replay_buffer.as_dataset(
                 num_parallel_calls=num_parallel_calls,
-                mdp_matrix=mdp_matrix)
-        progressbar.add(1)
+                num_steps=2,
+                single_deterministic_pass=True  # gather transitions only once
+            ).map(
+                map_func=retrieve_states_and_actions_indices,
+                num_parallel_calls=num_parallel_calls,
+                #  deterministic=False  # TF version >= 2.2.0
+            ).batch(
+                batch_size=replay_buffer.num_frames(),
+                drop_remainder=False)
+        ))
+
+        with train_summary_writer.as_default():
+            tf.summary.histogram('state_frequency', states, episode * episode_per_iteration)
+
+        sparse_transitions = retrieve_sparse_transitions(
+            states,
+            actions,
+            next_states,
+            number_of_states,
+            number_of_actions)
+        mdp_matrix = update_mdp_sparse_tensor(mdp_matrix, sparse_transitions)
+
+        replay_buffer.clear()
+        progressbar.add(episode_per_iteration)
 
     return mdp_matrix
 
@@ -150,13 +156,13 @@ def retrieve_states_and_actions_indices(trajectory, info) -> Tuple[tf.Tensor, tf
     return latent_state[0], tf.cast(trajectory.action[0], tf.int64), latent_state[1]
 
 
-@tf.function
+@tf.function(experimental_relax_shapes=True)
 def retrieve_sparse_transitions(
         states: tf.Tensor,
         actions: tf.Tensor,
         next_states: tf.Tensor,
-        num_states: int,
-        num_actions: int
+        num_states: tf.int64,
+        num_actions: tf.int64
 ) -> tf.SparseTensor:
     transitions = (states * num_actions * num_states +  # index of the state group
                    actions * num_states +  # index of the action group
@@ -167,7 +173,7 @@ def retrieve_sparse_transitions(
     sparse_transitions = tf.sparse.SparseTensor(
         indices=transitions,
         values=count,
-        dense_shape=[num_states * num_actions, num_states]
+        dense_shape=(num_states * num_actions, num_states)
     )
     return tf.sparse.reorder(sparse_transitions)
 
@@ -191,14 +197,15 @@ def update_mdp_sparse_matrix(states, actions, next_states, num_parallel_calls, m
 
 
 if __name__ == '__main__':
-    dir = "saves/BipedalWalker-v2/models/vae_LS14_MC5_CER10.0_KLA0.0_TD1.00-0.90_1e-06-2e-06_step410000_eval_elbo52.650/policy/action_discretizer/LA6_MC16_CER1.0-decay=0.001_KLA0.0-growth=5e-06_TD0.20-0.13_1e-06-2e-06_params=one_output_per_action_base/step200000/eval_elbo0.426"
-    vae_mdp = variational_action_discretizer.load(dir)
+    vae_mdp = variational_action_discretizer.load(
+        "/home/florentdelgrange/workspace/hpc_hydra/policy/Bipedal-walker/vae_LS15_MC16_CER10.0-decay=0.0015_KLA0.0"
+        "-growth=5e-06_TD1.00-0.95_1e-06-2e-06_step400000_eval_elbo53.687/step3000000/eval_elbo0.227"
+    )
 
     from tf_agents.environments import suite_gym
     from reinforcement_learning import labeling_functions
 
     environment_name = 'BipedalWalker-v2'
-    num_iterations = int(1e4)
 
     start_time = time.time()
     sparse_tensor_mdp = learn_empirical_mdp(
@@ -207,10 +214,6 @@ if __name__ == '__main__':
         environment_name=environment_name,
         vae_mdp=vae_mdp,
         num_parallel_calls=16,
-        num_iterations=num_iterations
     )
-
-    print('Time to create an MDP via sparse tensors in {} iterations: {} sec'.format(num_iterations,
-                                                                                     time.time() - start_time))
 
     tf.print(sparse_tensor_mdp, summarize=-1)
