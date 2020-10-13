@@ -355,14 +355,8 @@ class VariationalMarkovDecisionProcess(Model):
         distortion = -1. * (log_p_state + log_p_rewards)
         rate = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
 
-        def compute_cross_entropy_regularization():
-            log_alpha = self.encoder_network([s_1, a_1, r_1, s_2])
-            discrete_latent_distribution = tfd.Bernoulli(logits=log_alpha)
-            uniform_distribution = tfd.Bernoulli(probs=0.5 * tf.ones(shape=tf.shape(log_alpha)))
-            return tf.reduce_sum(uniform_distribution.kl_divergence(discrete_latent_distribution), axis=1)
-
         # cross-entropy regularization
-        cross_entropy_regularizer = compute_cross_entropy_regularization()
+        cross_entropy_regularizer = self._compute_cross_entropy_regularization(s_1, a_1, r_1, s_2)
 
         if metrics:
             self.loss_metrics['ELBO'](-1 * (distortion + rate))
@@ -390,6 +384,15 @@ class VariationalMarkovDecisionProcess(Model):
             tf.print(log_q_z_prime - log_p_z_prime, "log Q(z') - log P(z')")
 
         return [distortion, rate, cross_entropy_regularizer]
+
+    @tf.function
+    def _compute_cross_entropy_regularization(
+            self, s_1: tf.Tensor, a_1: tf.Tensor, r_1: tf.Tensor, s_2: tf.Tensor
+    ):
+        log_alpha = self.encoder_network([s_1, a_1, r_1, s_2])
+        discrete_latent_distribution = tfd.Bernoulli(logits=log_alpha)
+        uniform_distribution = tfd.Bernoulli(probs=0.5 * tf.ones(shape=tf.shape(log_alpha)))
+        return tf.reduce_sum(uniform_distribution.kl_divergence(discrete_latent_distribution), axis=1)
 
     def eval(self, inputs):
         """
@@ -789,8 +792,8 @@ def training_step(dataset_batch, batch_size, vae_mdp, optimizer, annealing_perio
                          [(key, value) for key, value in additional_metrics.items()] + \
                          [(key, value) for key, value in vae_mdp.mean_latent_bits_used(dataset_batch).items()]
     if annealing_period != 0:
-        metrics_key_values.append(('t_1', vae_mdp.encoder_temperature.numpy()))
-        metrics_key_values.append(('t_2', vae_mdp.prior_temperature.numpy()))
+        metrics_key_values.append(('t_1', vae_mdp.encoder_temperature))
+        metrics_key_values.append(('t_2', vae_mdp.prior_temperature))
         metrics_key_values.append(('regularizer_scale_factor', vae_mdp.regularizer_scale_factor))
         metrics_key_values.append(('kl_annealing_scale_factor', vae_mdp.kl_scale_factor))
     if progressbar is not None:

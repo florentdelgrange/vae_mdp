@@ -19,7 +19,12 @@ flags.DEFINE_integer("batch_size", default=128, help="Batch size.")
 flags.DEFINE_integer(
     "mixture_components",
     default=1,
-    help="Number of gaussian mixture components used to model the states reconstruction distribution.")
+    help="Number of gaussian mixture components used to model the reconstruction distributions.")
+flags.DEFINE_integer(
+    "action_mixture_components",
+    default=0,
+    help="Number of gaussian mixture components used to model the action reconstruction distribution (optional). If not"
+         "set, all mixture distributions take the same value obtained via --mixture_components.")
 flags.DEFINE_bool(
     "full_covariance",
     default=False,
@@ -120,7 +125,7 @@ flags.DEFINE_bool(
     "full_vae_optimization",
     default=False,
     help='Set whether the ELBO is optimized over the whole VAE or if the optimization is only focused on the'
-         'action discretizer part of the VAE.'
+         'state or action discretizer part of the VAE.'
 )
 flags.DEFINE_bool(
     'relaxed_state_encoding',
@@ -236,7 +241,8 @@ def main(argv):
     if params['policy_path'] != '' and params['policy_path'][-1] == os.path.sep:
         params['policy_path'] = params['policy_path'][:-1]
 
-    if not params['action_discretizer']:
+    vae_name = ''
+    if not params['action_discretizer'] or params['full_vae_optimization']:
         vae_name = 'vae_LS{}_MC{}_CER{}-decay={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
             latent_state_size,
             mixture_components,
@@ -248,7 +254,9 @@ def main(argv):
             relaxed_state_prior_temperature,
             params['encoder_temperature_decay_rate'],
             params['prior_temperature_decay_rate'])
-    else:
+    if params['action_discretizer']:
+        if vae_name != '':
+            base_model_name = vae_name
         vae_name = os.path.join(
             base_model_name,
             os.path.split(params['policy_path'])[-1],
@@ -267,9 +275,8 @@ def main(argv):
             )
         )
 
-    additional_parameters = ['one_output_per_action',
-                             'full_vae_optimization',
-                             'relaxed_state_encoding']
+    additional_parameters = [
+        'one_output_per_action', 'full_vae_optimization', 'relaxed_state_encoding']
     nb_additional_params = sum(map(lambda x: params[x], additional_parameters))
     if nb_additional_params > 0:
         vae_name += ('_params={}' + '-{}' * (nb_additional_params - 1)).format(
@@ -343,12 +350,13 @@ def main(argv):
         environment = environment_suite.load(environment_name)
 
         state_shape, action_shape, reward_shape, label_shape = (
-            shape if shape != () else (1, ) for shape in (
+            shape if shape != () else (1,) for shape in (
                 environment.observation_spec().shape,
                 environment.action_spec().shape,
                 environment.time_step_spec().reward.shape,
                 tuple(reinforcement_learning.labeling_functions[environment_name](
-                    environment.reset().observation).shape))
+                    environment.reset().observation).shape)
+            )
         )
 
         environment.close()
@@ -389,7 +397,9 @@ def main(argv):
             one_output_per_action=params['one_output_per_action'],
             relaxed_state_encoding=params['relaxed_state_encoding'],
             full_optimization=params['full_vae_optimization'],
-            reconstruction_mixture_components=mixture_components,
+            reconstruction_mixture_components=(
+                mixture_components if params['action_mixture_components'] == 0 else params['action_mixture_components']
+            ),
         )
         vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
         vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
