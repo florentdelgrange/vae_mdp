@@ -224,7 +224,7 @@ def main(argv):
     if params['load_vae'] != '':
         name_list = params['load_vae'].split(os.path.sep)
         if 'models' in name_list and name_list.index('models') < len(name_list) - 1:
-            base_model_name = os.path.join(name_list[name_list.index('models') + 1:])
+            base_model_name = os.path.join(*name_list[name_list.index('models') + 1:])
         else:
             base_model_name = os.path.split(params['load_vae'])[-1]
 
@@ -400,6 +400,7 @@ def main(argv):
 
     step = tf.compat.v1.train.get_or_create_global_step()
     checkpoint_directory = os.path.join(params['save_dir'], 'saves', environment_name, 'training_checkpoints', vae_name)
+    print("checkpoint path:", checkpoint_directory)
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
     manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
 
