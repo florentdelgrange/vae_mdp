@@ -652,7 +652,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         rate = q.kl_divergence(p)
         distortion = -1. * (log_p_action + log_p_rewards + log_p_transition)
 
-        return -1. * (distortion + rate)
+        return (
+            -1. * (distortion + rate),
+            tf.concat([tf.cast(z, tf.int32), tf.cast(z_prime, tf.int32)], axis=0),
+            tf.cast(tf.argmax(latent_action, axis=1), tf.int32)
+        )
 
     def mean_latent_bits_used(self, inputs, eps=1e-3):
         """
@@ -852,6 +856,6 @@ def load(tf_model_path: str) -> VariationalActionDiscretizer:
         one_output_per_action=model.action_decoder.variables[0].shape[0] == state_vae.latent_state_size,
         encoder_temperature=model._encoder_temperature,
         prior_temperature=model._prior_temperature,
-        reconstruction_mixture_components=2,  # mixture components > 1 is sufficient
+        reconstruction_mixture_components=model.action_decoder.variables[-1].shape[0],
         pre_loaded_model=True
     )

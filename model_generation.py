@@ -90,16 +90,13 @@ def learn_empirical_mdp(
         batch_size=tf_env.batch_size,
         max_length=replay_buffer_capacity,
         dataset_drop_remainder=True,
-        dataset_window_shift=1  # to recover all transitions
+        dataset_window_shift=1  # to retrieve all transitions
     )
 
     episode_counter = tf_metrics.NumberOfEpisodes()
     env_steps = tf_metrics.EnvironmentSteps()
     observers = [episode_counter, env_steps] if parallel_py_environment == 1 else []
     observers += [replay_buffer.add_batch]
-
-    # driver = dynamic_step_driver.DynamicStepDriver(
-    #     tf_env, policy, observers=observers, num_steps=collect_steps_per_iteration)
 
     driver = dynamic_episode_driver.DynamicEpisodeDriver(
         tf_env, policy, observers=observers, num_episodes=episode_per_iteration
@@ -108,11 +105,6 @@ def learn_empirical_mdp(
     driver.run = common.function(driver.run)
 
     progressbar = Progbar(target=num_episodes, interval=0.1)
-
-    # print("Initial collect steps...")
-    # for _ in range(initial_collect_steps // collect_steps_per_iteration):
-    #     driver.run()
-    # print("Start training.")
 
     for episode in tf.range(tf.cast(tf.math.floor(num_episodes / episode_per_iteration), tf.int64)):
         driver.run()
@@ -198,8 +190,12 @@ def update_mdp_sparse_matrix(states, actions, next_states, num_parallel_calls, m
 
 if __name__ == '__main__':
     vae_mdp = variational_action_discretizer.load(
-        "/home/florentdelgrange/workspace/hpc_hydra/policy/Bipedal-walker/vae_LS15_MC16_CER10.0-decay=0.0015_KLA0.0"
-        "-growth=5e-06_TD1.00-0.95_1e-06-2e-06_step400000_eval_elbo53.687/step3000000/eval_elbo0.227"
+        # "/home/florentdelgrange/workspace/hpc_hydra/policy/Bipedal-walker/vae_LS15_MC16_CER10.0-decay=0.0015_KLA0.0"
+        # "-growth=5e-06_TD1.00-0.95_1e-06-2e-06_step400000_eval_elbo53.687/step3000000/eval_elbo0.227"
+        "saves/BipedalWalker-v2/models/vae_LS13_MC3_CER10.0-decay=0.0015_KLA0.0-growth=5e-06_TD1.00-0.90_1e-06-2e"
+        "-06_params=relaxed_state_encoding_step320000_eval_elbo55.821/step320000/eval_elbo55.821/policy"
+        "/action_discretizer/LA5_MC1_CER1.0-decay=0.001_KLA0.0-growth=5e-06_TD0.25-0.17_1e-06-2e-06_params"
+        "=one_output_per_action-relaxed_state_encoding/step200000/eval_elbo-0.866"
     )
 
     from tf_agents.environments import suite_gym
@@ -213,7 +209,9 @@ if __name__ == '__main__':
         labeling_function=labeling_functions[environment_name],
         environment_name=environment_name,
         vae_mdp=vae_mdp,
+        policy=vae_mdp.get_simplified_policy(),
         num_parallel_calls=16,
+        episode_per_iteration=8
     )
 
     tf.print(sparse_tensor_mdp, summarize=-1)

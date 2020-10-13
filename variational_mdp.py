@@ -413,7 +413,11 @@ class VariationalMarkovDecisionProcess(Model):
         state_distribution = self.decode(z_prime)
         log_p_reconstruction = state_distribution.log_prob(s_2)
 
-        return tf.reduce_mean(log_p_reconstruction + log_p_rewards - rate)
+        return (
+            tf.reduce_mean(log_p_reconstruction + log_p_rewards - rate),
+            tf.concat([tf.cast(z, tf.int32), tf.cast(z_prime, tf.int32)], axis=0),
+            None
+        )
 
     def mean_latent_bits_used(self, inputs, eps=1e-3):
         """
@@ -583,7 +587,6 @@ def train_from_policy(
         logs: bool = True,
         display_progressbar: bool = True,
         save_directory='.'):
-
     if collect_steps_per_iteration is None:
         collect_steps_per_iteration = batch_size
     if parallelization:
@@ -601,12 +604,14 @@ def train_from_policy(
             print("Initializing from scratch.")
 
     # initialize logs
-    import datetime
-    #  current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    train_log_dir = os.path.join('logs', 'gradient_tape', env_name, log_name)   # , current_time)
-    if not os.path.exists(train_log_dir) and logs:
-        os.makedirs(train_log_dir)
-    train_summary_writer = tf.summary.create_file_writer(train_log_dir) if logs else None
+    if logs:
+        train_log_dir = os.path.join('logs', 'gradient_tape', env_name, log_name)  # , current_time)
+        print('logs path:', train_log_dir)
+        if not os.path.exists(train_log_dir) and logs:
+            os.makedirs(train_log_dir)
+        train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+    else:
+        train_summary_writer = None
 
     # Load step
     global_step = checkpoint.save_counter if checkpoint else tf.Variable(0)
@@ -685,11 +690,10 @@ def train_from_policy(
                       save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
                       log_interval=log_interval, manager=manager, logs=logs, start_annealing_step=start_annealing_step,
                       additional_metrics={
-                "num_episodes": num_episodes.result(),
-                "env_steps": env_steps.result(),
-                "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
-                "replay_buffer_frames": replay_buffer.num_frames()},
-                      train_log_dir=train_log_dir)
+                          "num_episodes": num_episodes.result(),
+                          "env_steps": env_steps.result(),
+                          "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
+                          "replay_buffer_frames": replay_buffer.num_frames()}, )
 
 
 def train_from_dataset(
@@ -738,8 +742,8 @@ def train_from_dataset(
     for epoch in range(epochs):
         progressbar = Progbar(
             target=dataset_size,
-            stateful_metrics=list(vae_mdp.loss_metrics.keys()) + ['loss', 't_1', 't_2', 'regularizer_scale_factor',
-                                                                  'step'],
+            stateful_metrics=list(vae_mdp.loss_metrics.keys()) + [
+                'loss', 't_1', 't_2', 'regularizer_scale_factor', 'step'],
             interval=0.1) if display_progressbar else None
         print("Epoch: {}/{}".format(epoch + 1, epochs))
 
@@ -752,8 +756,7 @@ def train_from_dataset(
                           progressbar=progressbar, dataset_generator=dataset_generator,
                           save_model_interval=save_model_interval, eval_ratio=eval_ratio, save_directory=save_directory,
                           log_name=log_name, train_summary_writer=train_summary_writer, log_interval=log_interval,
-                          manager=manager, logs=logs, start_annealing_step=start_annealing_step,
-                          train_log_dir=train_log_dir)
+                          manager=manager, logs=logs, start_annealing_step=start_annealing_step, )
 
         # reset metrics
         vae_mdp.reset_metrics()
@@ -769,8 +772,7 @@ def train_from_dataset(
 def training_step(dataset_batch, batch_size, vae_mdp, optimizer, annealing_period, global_step, dataset_size,
                   display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
                   eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
-                  train_log_dir, start_annealing_step,
-                  additional_metrics: Optional[Dict[str, tf.Tensor]] = None):
+                  start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None):
     if additional_metrics is None:
         additional_metrics = {}
 
@@ -833,9 +835,13 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
         eval_progressbar = Progbar(target=eval_steps * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
 
         tf.print("\nEvalutation over {} steps".format(eval_steps))
-
+        data = {'state': None, 'action': None}
         for step, x in enumerate(eval_set):
-            eval_elbo(vae_mdp.eval(x))
+            elbo, latent_states, latent_actions = vae_mdp.eval(x)
+            for value in ('state', 'action'):
+                latent = latent_states if value == 'state' else latent_actions
+                data[value] = latent if data[value] is None else tf.concat([data[value], latent], axis=0)
+            eval_elbo(elbo)
             eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
             if step > eval_steps:
                 break
@@ -846,6 +852,14 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
         if train_summary_writer is not None:
             with train_summary_writer.as_default():
                 tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
+                for value in ('state', 'action'):
+                    if data[value] is not None:
+                        if value == 'state':
+                            data[value] = tf.cast(
+                                tf.reduce_sum(data[value] * 2 ** tf.range(vae_mdp.latent_state_size), axis=-1),
+                                dtype=tf.int64
+                            )
+                        tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
         print('eval ELBO: ', eval_elbo.result().numpy())
         model_name = os.path.join(log_name, 'step{}'.format(global_step), 'eval_elbo{:.3f}'.format(eval_elbo.result()))
     else:
