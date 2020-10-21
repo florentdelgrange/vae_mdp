@@ -26,7 +26,7 @@ tfb = tfp.bijectors
 debug = False
 debug_verbosity = -1
 debug_gradients = False
-check_numerics = False
+check_numerics = True
 
 debug_gradients &= debug
 if check_numerics:
@@ -526,43 +526,23 @@ def compute_apply_gradients(vae_mdp: VariationalMarkovDecisionProcess, x, optimi
 
 
 def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
-    if float(tf.__version__.split('.')[0] + '.' + "".join(tf.__version__.split('.')[1:])) >= 2.2:
-        # only with TensorFlow>=2.2.0
-        model = tf.keras.models.load_model(tf_model_path)
-        label_shape = model.transition_network.output.get_shape()[1] - model.encoder_network.output.get_shape()[1]
-        return VariationalMarkovDecisionProcess(
-            tuple(model.encoder_network.input[0].shape.as_list()[1:]),
-            tuple(model.encoder_network.input[1].shape.as_list()[1:]),
-            tuple(model.encoder_network.input[2].shape.as_list()[1:]),
-            (label_shape,),
-            model.encoder_network,
-            model.transition_network,
-            model.reward_network,
-            model.reconstruction_network,
-            model.transition_network.inputs[0].shape[-1],
-            encoder_temperature=model._encoder_temperature,
-            prior_temperature=model._prior_temperature,
-            regularizer_scale_factor=model._regularizer_scale_factor,
-            kl_scale_factor=model._kl_scale_factor,
-            pre_loaded_model=True)
-    else:
-        model = tf.saved_model.load(tf_model_path)
-        assert model.transition_network.variables[-1].name == 'transition_logistic_locations/bias:0'
-        return VariationalMarkovDecisionProcess(
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
-            model.encoder_network,
-            model.transition_network,
-            model.reward_network,
-            model.reconstruction_network,
-            model.transition_network.variables[-1].shape[0],
-            encoder_temperature=model._encoder_temperature,
-            prior_temperature=model._prior_temperature,
-            regularizer_scale_factor=model._regularizer_scale_factor,
-            kl_scale_factor=model._kl_scale_factor,
-            pre_loaded_model=True)
+    model = tf.saved_model.load(tf_model_path)
+    assert model.transition_network.variables[-1].name == 'transition_logistic_locations/bias:0'
+    return VariationalMarkovDecisionProcess(
+        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
+        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
+        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
+        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
+        model.encoder_network,
+        model.transition_network,
+        model.reward_network,
+        model.reconstruction_network,
+        model.transition_network.variables[-1].shape[0],
+        encoder_temperature=model._encoder_temperature,
+        prior_temperature=model._prior_temperature,
+        regularizer_scale_factor=model._regularizer_scale_factor,
+        kl_scale_factor=model._kl_scale_factor,
+        pre_loaded_model=True)
 
 
 def train_from_policy(
@@ -850,7 +830,6 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                 break
 
         del eval_set
-        del dataset
 
         if train_summary_writer is not None:
             with train_summary_writer.as_default():
@@ -873,39 +852,6 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
     if check_numerics:
         tf.debugging.enable_check_numerics()
 
+    del dataset
+
     return eval_elbo
-
-
-def evaluate_encoder_distribution(vae_mdp: VariationalMarkovDecisionProcess,
-                                  dataset: tf.data.Dataset,
-                                  dataset_size: int,
-                                  display_progressbar: bool = True,
-                                  batch_size: int = 128):
-    from IPython.display import clear_output
-    import time
-
-    mean = None
-
-    step = tf.Variable(0., dtype=tf.float32)
-    wait_time = 1.
-    progressbar = Progbar(target=dataset_size, interval=0.1) if display_progressbar else None
-    t = time.time()
-
-    for x in dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE):
-        for i in (0, 1):
-            s, a, r, s_prime, l_prime = (transition[:, i, :] for transition in x)
-            probs = tf.reduce_mean(vae_mdp.binary_encode(s, a, r, s_prime, l_prime).probs_parameter(), axis=0)
-            if mean is None:
-                mean = probs
-            else:
-                mean += probs
-        step.assign_add(1)
-        if step < dataset_size and display_progressbar:
-            progressbar.add(batch_size)
-        if not display_progressbar and time.time() - t > wait_time:
-            b = 'mean=' + str(mean / (2 * (step + 1)))
-            c = 'current=' + str(probs / 1.)
-            print('\n', b, '\n', c)
-            clear_output(wait=True)
-            t = time.time()
-    return mean / (2 * (step + 1))

@@ -384,23 +384,27 @@ def main(argv):
         vae_mdp_model.prior_temperature = relaxed_state_prior_temperature
 
     if params['action_discretizer']:
-        q, p_t, p_r, p_decode, discrete_policy = generate_network_components(name='action')
-        vae_mdp_model = variational_action_discretizer.VariationalActionDiscretizer(
-            vae_mdp=vae_mdp_model,
-            number_of_discrete_actions=params['number_of_discrete_actions'],
-            action_encoder_network=q, transition_network=p_t, reward_network=p_r, action_decoder_network=p_decode,
-            simplified_policy_network=discrete_policy,
-            encoder_temperature=params['encoder_temperature'],
-            prior_temperature=params['prior_temperature'],
-            encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
-            prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
-            one_output_per_action=params['one_output_per_action'],
-            relaxed_state_encoding=params['relaxed_state_encoding'],
-            full_optimization=params['full_vae_optimization'],
-            reconstruction_mixture_components=(
-                mixture_components if params['action_mixture_components'] == 0 else params['action_mixture_components']
-            ),
-        )
+        if params['full_vae_optimization'] and params['load_vae'] != '':
+            vae_mdp_model = variational_action_discretizer.load(params['load_vae'], full_optimization=True)
+        else:
+            q, p_t, p_r, p_decode, discrete_policy = generate_network_components(name='action')
+            vae_mdp_model = variational_action_discretizer.VariationalActionDiscretizer(
+                vae_mdp=vae_mdp_model,
+                number_of_discrete_actions=params['number_of_discrete_actions'],
+                action_encoder_network=q, transition_network=p_t, reward_network=p_r, action_decoder_network=p_decode,
+                simplified_policy_network=discrete_policy,
+                encoder_temperature=params['encoder_temperature'],
+                prior_temperature=params['prior_temperature'],
+                encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
+                prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
+                one_output_per_action=params['one_output_per_action'],
+                relaxed_state_encoding=params['relaxed_state_encoding'],
+                full_optimization=params['full_vae_optimization'],
+                reconstruction_mixture_components=(
+                    mixture_components if params['action_mixture_components'] == 0
+                    else params['action_mixture_components']
+                ),
+            )
         vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
         vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
         vae_mdp_model.regularizer_scale_factor = params['regularizer_scale_factor']

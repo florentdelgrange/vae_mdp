@@ -667,21 +667,13 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         )
         weighted_distribution_entropy = -1. * weighted_distribution.prob(a_1) * weighted_distribution.log_prob(a_1)
 
-        if self.mixture_components == 1:
-            weighted_entropy = tf.reduce_sum(
-                [
-                    1. / self.number_of_discrete_actions * posterior_distributions[action].entropy()
-                    for action in range(self.number_of_discrete_actions)
-                ],
-            )
-        else:
-            weighted_entropy = tf.reduce_sum(
-                [
-                    - 1. * 1. / self.number_of_discrete_actions *
-                    posterior_distributions[action].prob(a_1) * posterior_distributions[action].log_prob(a_1)
-                    for action in range(self.number_of_discrete_actions)
-                ], axis=0
-            )
+        weighted_entropy = tf.reduce_sum(
+            [
+                - 1. * 1. / self.number_of_discrete_actions *
+                posterior_distributions[action].prob(a_1) * posterior_distributions[action].log_prob(a_1)
+                for action in range(self.number_of_discrete_actions)
+            ], axis=0
+        )
 
         return weighted_distribution_entropy - weighted_entropy
 
@@ -923,7 +915,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         )
 
 
-def load(tf_model_path: str) -> VariationalActionDiscretizer:
+def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActionDiscretizer:
     model = tf.saved_model.load(tf_model_path)
     state_model = model._state_vae
     state_vae = VariationalMarkovDecisionProcess(
@@ -951,5 +943,6 @@ def load(tf_model_path: str) -> VariationalActionDiscretizer:
         encoder_temperature=model._encoder_temperature,
         prior_temperature=model._prior_temperature,
         reconstruction_mixture_components=model.action_decoder.variables[-1].shape[0],
-        pre_loaded_model=True
+        pre_loaded_model=True,
+        full_optimization=full_optimization
     )

@@ -192,10 +192,15 @@ if __name__ == '__main__':
     vae_mdp = variational_action_discretizer.load(
         # "/home/florentdelgrange/workspace/hpc_hydra/policy/Bipedal-walker/vae_LS15_MC16_CER10.0-decay=0.0015_KLA0.0"
         # "-growth=5e-06_TD1.00-0.95_1e-06-2e-06_step400000_eval_elbo53.687/step3000000/eval_elbo0.227"
-        "saves/BipedalWalker-v2/models/vae_LS13_MC3_CER10.0-decay=0.0015_KLA0.0-growth=5e-06_TD1.00-0.90_1e-06-2e"
-        "-06_params=relaxed_state_encoding_step320000_eval_elbo55.821/step320000/eval_elbo55.821/policy"
-        "/action_discretizer/LA5_MC1_CER1.0-decay=0.001_KLA0.0-growth=5e-06_TD0.25-0.17_1e-06-2e-06_params"
-        "=one_output_per_action-relaxed_state_encoding/step200000/eval_elbo-0.866"
+        #
+        # "saves/BipedalWalker-v2/models/vae_LS13_MC3_CER10.0-decay=0.0015_KLA0.0-growth=5e-06_TD1.00-0.90_1e-06-2e"
+        # "-06_params=relaxed_state_encoding_step320000_eval_elbo55.821/step320000/eval_elbo55.821/policy"
+        # "/action_discretizer/LA5_MC1_CER1.0-decay=0.001_KLA0.0-growth=5e-06_TD0.25-0.17_1e-06-2e-06_params"
+        # "=one_output_per_action-relaxed_state_encoding/step200000/eval_elbo-0.866"
+        #
+        "saves/BipedalWalker-v2/models/vae_LS13_MC3_CER10.0-decay=0.001_KLA0.0-growth=5e-06_TD0.99-0.95_1e-06-2e"
+        "-06/policy/action_discretizer/LA5_MC3_CER10.0-decay=0.001_KLA0.0-growth=5e-06_TD0.50-0.40_1e-06-2e-06_params"
+        "=one_output_per_action-full_vae_optimization-relaxed_state_encoding/step400000/eval_elbo53.956"
     )
 
     from tf_agents.environments import suite_gym
@@ -209,7 +214,7 @@ if __name__ == '__main__':
         labeling_function=labeling_functions[environment_name],
         environment_name=environment_name,
         vae_mdp=vae_mdp,
-        policy=vae_mdp.get_simplified_policy(),
+        # policy=vae_mdp.get_abstract_policy(),
         num_parallel_calls=16,
         episode_per_iteration=8
     )
