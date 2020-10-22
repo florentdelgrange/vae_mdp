@@ -336,6 +336,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         if self.full_optimization:
             self.loss_metrics.update({
                 'state_mse': tf.keras.metrics.MeanSquaredError(name='state_mse'),
+                'state_encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
                 'state_rate': tf.keras.metrics.Mean(name='state_rate'),
                 'action_rate': tf.keras.metrics.Mean(name='action_rate'),
                 't_1_state': tf.keras.metrics.Mean(name='state_encoder_temperature'),
@@ -618,6 +619,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
         self.loss_metrics['state_mse'](s_2, state_distribution.sample())
         self.loss_metrics['state_rate'](state_rate)
+        self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(s_1, a_1, r_1, s_2, l_2).entropy())
         self.loss_metrics['action_rate'](action_rate)
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
