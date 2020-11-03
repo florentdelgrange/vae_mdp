@@ -433,7 +433,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 mixture_distribution=action_categorical,
                 components_distribution=tfd.MultivariateNormalDiag(
                     loc=reward_mean,
-                    scale_diag=self.scale_activation(reward_raw_covariance)),
+                    scale_diag=self.scale_activation(reward_raw_covariance) + epsilon),
             )
 
     def decode_action(
@@ -550,8 +550,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
         self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
-        if self.one_output_per_action:
-            self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
+        # if self.one_output_per_action:
+        #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
 
         if variational_mdp.debug:
             tf.print(z, "sampled z", summarize=variational_mdp.debug_verbosity)
@@ -625,8 +625,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
         self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
-        if self.one_output_per_action:
-            self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
+        # if self.one_output_per_action:
+        #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
         self.loss_metrics['t_1_state'].reset_states()
         self.loss_metrics['t_1_state'](self._state_vae.encoder_temperature)
         self.loss_metrics['t_2_state'].reset_states()

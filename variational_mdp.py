@@ -1,4 +1,5 @@
 import os
+import threading
 from typing import Tuple, Optional, List, Callable, Dict, Union
 import numpy as np
 
@@ -12,7 +13,7 @@ from tensorflow.keras.utils import Progbar
 import tf_agents.policies.tf_policy
 import tf_agents.agents.tf_agent
 from tf_agents.drivers import dynamic_step_driver
-from tf_agents.environments import tf_py_environment, parallel_py_environment
+from tf_agents.environments import tf_py_environment, parallel_py_environment, tf_environment
 from tf_agents.metrics import tf_metrics
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.trajectories import policy_step, trajectory
@@ -26,7 +27,7 @@ tfb = tfp.bijectors
 debug = False
 debug_verbosity = -1
 debug_gradients = False
-check_numerics = True
+check_numerics = False
 
 debug_gradients &= debug
 if check_numerics:
@@ -201,6 +202,7 @@ class VariationalMarkovDecisionProcess(Model):
             'rate': tf.keras.metrics.Mean(name='rate'),
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'cross_entropy_regularizer': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
+            'encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy')
         }
 
     def reset_metrics(self):
@@ -362,6 +364,7 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['ELBO'](-1 * (distortion + rate))
             self.loss_metrics['state_mse'](s_2, state_distribution.sample())
             self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
+            self.loss_metrics['encoder_entropy'](self.binary_encode(s_1, a_1, r_1, s_2, l_2).entropy())
             self.loss_metrics['distortion'](distortion)
             self.loss_metrics['rate'](rate)
             self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
@@ -371,7 +374,7 @@ class VariationalMarkovDecisionProcess(Model):
             tf.print(z, "sampled z")
             tf.print(logistic_z_prime, "sampled (logistic) z'")
             tf.print(self.encoder_network([s_1, a_1, r_1, s_2]), "log locations[:-1] of Q")
-            tf.print(log_q_z_prime, "Log Q(logistic z'|s, a, r, s', l')")
+            tf.rint(log_q_z_prime, "Log Q(logistic z'|s, a, r, s', l')")
             tf.print(self.transition_network([z, a_1]), "log-locations P_transition")
             tf.print(log_p_z_prime, "log P(logistic z'|z, a)")
             tf.print(z_prime, "sampled z'")
@@ -569,7 +572,11 @@ def train_from_policy(
         start_annealing_step: int = 0,
         logs: bool = True,
         display_progressbar: bool = True,
-        save_directory='.'):
+        save_directory='.',
+        get_policy_evaluation: Optional[Callable[[], tf_agents.policies.tf_policy.Base]] = None,
+        policy_evaluation_num_episodes: int = 30,
+        wrap_eval_tf_env: Optional[Callable[[tf_environment.TFEnvironment], tf_environment.TFEnvironment]] = None,
+):
     if collect_steps_per_iteration is None:
         collect_steps_per_iteration = batch_size
     if parallelization:
@@ -654,6 +661,16 @@ def train_from_policy(
     initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
         tf_env, policy, observers=observers, num_steps=initial_collect_steps)
 
+    policy_evaluation_driver = None
+    if get_policy_evaluation is not None and wrap_eval_tf_env is not None:
+        py_eval_env = environment_suite.load(env_name)
+        eval_env = tf_py_environment.TFPyEnvironment(py_eval_env)
+        eval_env = wrap_eval_tf_env(eval_env)
+        eval_env.reset()
+        policy_evaluation_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
+            eval_env, get_policy_evaluation(), num_episodes=policy_evaluation_num_episodes
+        )
+
     driver.run = common.function(driver.run)
 
     print("Initial collect steps...")
@@ -664,19 +681,22 @@ def train_from_policy(
         # Collect a few steps and save them to the replay buffer.
         driver.run()
 
-        training_step(dataset_batch=next(dataset_iterator), batch_size=batch_size, vae_mdp=vae_mdp, optimizer=optimizer,
-                      annealing_period=annealing_period, global_step=global_step,
-                      dataset_size=replay_buffer.num_frames().numpy(), display_progressbar=display_progressbar,
-                      start_step=start_step, epoch=0, progressbar=progressbar, dataset_generator=dataset_generator,
-                      save_model_interval=save_model_interval,
-                      eval_ratio=eval_steps * batch_size / replay_buffer.num_frames(),
-                      save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
-                      log_interval=log_interval, manager=manager, logs=logs, start_annealing_step=start_annealing_step,
-                      additional_metrics={
-                          "num_episodes": num_episodes.result(),
-                          "env_steps": env_steps.result(),
-                          "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
-                          "replay_buffer_frames": replay_buffer.num_frames()}, )
+        training_step(
+            dataset_batch=next(dataset_iterator), batch_size=batch_size, vae_mdp=vae_mdp, optimizer=optimizer,
+            annealing_period=annealing_period, global_step=global_step,
+            dataset_size=replay_buffer.num_frames().numpy(), display_progressbar=display_progressbar,
+            start_step=start_step, epoch=0, progressbar=progressbar, dataset_generator=dataset_generator,
+            save_model_interval=save_model_interval,
+            eval_ratio=eval_steps * batch_size / replay_buffer.num_frames(),
+            save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
+            log_interval=log_interval, manager=manager, logs=logs, start_annealing_step=start_annealing_step,
+            additional_metrics={
+                "num_episodes": num_episodes.result(),
+                "env_steps": env_steps.result(),
+                "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
+                "replay_buffer_frames": replay_buffer.num_frames()},
+            eval_policy_driver=policy_evaluation_driver
+        )
 
 
 def train_from_dataset(
@@ -752,10 +772,13 @@ def train_from_dataset(
             return
 
 
-def training_step(dataset_batch, batch_size, vae_mdp, optimizer, annealing_period, global_step, dataset_size,
-                  display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
-                  eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
-                  start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None):
+def training_step(
+        dataset_batch, batch_size, vae_mdp, optimizer, annealing_period, global_step, dataset_size,
+        display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
+        eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
+        start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None,
+        eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None
+):
     if additional_metrics is None:
         additional_metrics = {}
 
@@ -792,7 +815,8 @@ def training_step(dataset_batch, batch_size, vae_mdp, optimizer, annealing_perio
         eval_and_save(vae_mdp=vae_mdp, dataset=dataset_generator(),
                       batch_size=batch_size, eval_steps=eval_steps,
                       global_step=int(global_step.numpy()), save_directory=save_directory, log_name=log_name,
-                      train_summary_writer=train_summary_writer)
+                      train_summary_writer=train_summary_writer,
+                      eval_policy_driver=eval_policy_driver)
     if global_step.numpy() % log_interval == 0:
         if manager is not None:
             manager.save()
@@ -804,14 +828,17 @@ def training_step(dataset_batch, batch_size, vae_mdp, optimizer, annealing_perio
         vae_mdp.reset_metrics()
 
 
-def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
-                  dataset: tf.data.Dataset,
-                  batch_size: int,
-                  eval_steps: int,
-                  global_step: int,
-                  save_directory: str,
-                  log_name: str,
-                  train_summary_writer: Optional[tf.summary.SummaryWriter] = None):
+def eval_and_save(
+        vae_mdp: VariationalMarkovDecisionProcess,
+        dataset: tf.data.Dataset,
+        batch_size: int,
+        eval_steps: int,
+        global_step: int,
+        save_directory: str,
+        log_name: str,
+        train_summary_writer: Optional[tf.summary.SummaryWriter] = None,
+        eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None
+):
     eval_elbo = tf.metrics.Mean()
     if eval_steps > 0:
         eval_set = dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
@@ -830,6 +857,14 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
                 break
 
         del eval_set
+
+        if eval_policy_driver is not None:
+            eval_policy_thread = threading.Thread(
+               target=eval_policy,
+               args=(eval_policy_driver, train_summary_writer, global_step),
+               daemon=True,
+               name='eval')
+            eval_policy_thread.start()
 
         if train_summary_writer is not None:
             with train_summary_writer.as_default():
@@ -855,3 +890,12 @@ def eval_and_save(vae_mdp: VariationalMarkovDecisionProcess,
     del dataset
 
     return eval_elbo
+
+def eval_policy(eval_policy_driver, train_summary_writer, global_step):
+    eval_avg_rewards = tf_agents.metrics.tf_metrics.AverageReturnMetric()
+    eval_policy_driver.observers.append(eval_avg_rewards)
+    eval_policy_driver.run()
+    eval_policy_driver.observers.remove(eval_avg_rewards)
+    with train_summary_writer.as_default():
+        tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
+    print('eval policy', eval_avg_rewards.result().numpy())

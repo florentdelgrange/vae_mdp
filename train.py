@@ -351,16 +351,13 @@ def main(argv):
 
         state_shape, action_shape, reward_shape, label_shape = (
             shape if shape != () else (1,) for shape in (
-                environment.observation_spec().shape,
-                environment.action_spec().shape,
-                environment.time_step_spec().reward.shape,
-                tuple(reinforcement_learning.labeling_functions[environment_name](
-                    environment.reset().observation).shape)
+            environment.observation_spec().shape,
+            environment.action_spec().shape,
+            environment.time_step_spec().reward.shape,
+            tuple(reinforcement_learning.labeling_functions[environment_name](
+                environment.reset().observation).shape)
             )
         )
-
-        environment.close()
-        del environment
 
     if params['load_vae'] == '':
         q, p_t, p_r, p_decode, _ = generate_network_components(name='state')
@@ -438,7 +435,16 @@ def main(argv):
                                           save_directory=params['save_dir'],
                                           parallelization=params['parallel_env'] > 1,
                                           num_parallel_call=params['parallel_env'],
-                                          eval_steps=int(1e3) if not params['do_not_eval'] else 0)
+                                          eval_steps=int(1e3) if not params['do_not_eval'] else 0,
+                                          get_policy_evaluation=(
+                                              None if not params['action_discretizer'] else
+                                              vae_mdp_model.get_abstract_policy),
+                                          wrap_eval_tf_env=(
+                                              None if not params['action_discretizer'] else
+                                              lambda tf_env: vae_mdp_model.wrap_tf_environment(
+                                                  tf_env, reinforcement_learning.labeling_functions[environment_name]
+                                              )
+                                          ))
     else:
         variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,
                                            batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
