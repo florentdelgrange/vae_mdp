@@ -56,11 +56,13 @@ class VariationalMarkovDecisionProcess(Model):
                  kl_scale_factor: float = 1.,
                  kl_annealing_growth_rate: float = 0.,
                  mixture_components: int = 3,
+                 max_decoder_variance: Optional[float] = None,
                  multivariate_normal_raw_scale_diag_activation: Callable[[tf.Tensor], tf.Tensor] = tf.nn.softplus,
                  multivariate_normal_full_covariance: bool = False,
                  action_pre_processing_network: Model = None,
                  state_pre_processing_network: Model = None,
                  state_post_processing_network: Model = None,
+                 state_scaler: Optional[Callable[[tf.Tensor], tf.Tensor]] = None,
                  pre_loaded_model: bool = False):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
@@ -81,8 +83,10 @@ class VariationalMarkovDecisionProcess(Model):
         self.prior_temperature_decay_rate = prior_temperature_decay_rate
         self.regularizer_decay_rate = regularizer_decay_rate
         self.kl_growth_rate = kl_annealing_growth_rate
+        self.max_decoder_variance = max_decoder_variance
 
         self.scale_activation = multivariate_normal_raw_scale_diag_activation
+        self.state_scaler = state_scaler
 
         if not (len(state_shape) == len(action_shape) == len(reward_shape) == len(label_shape)):
             if state_pre_processing_network is None:
@@ -110,6 +114,11 @@ class VariationalMarkovDecisionProcess(Model):
             apply_pre_processing = TimeDistributed(
                 state_pre_processing_network, input_shape=(2,) + state_shape)(stack_inputs)
             state, next_state = apply_pre_processing[:, 0], apply_pre_processing[:, 1]
+
+        if self.state_scaler is not None:
+            scaler = Lambda(self.state_scaler, name='state_scaler')
+            state = scaler(state)
+            next_state = scaler(next_state)
 
         if not pre_loaded_model:
             # Encoder network
@@ -178,7 +187,7 @@ class VariationalMarkovDecisionProcess(Model):
                 decoder_raw_output = Dense(
                     units=mixture_components * np.prod(state_shape),
                     activation=None,
-                    name='GMM_raw_diag_covariance_0'
+                    name='GMM_raw_diag_covariance_0',
                 )(decoder)
                 decoder_raw_output = Reshape(
                     (mixture_components,) + state_shape, name="GMM_raw_diag_covar")(decoder_raw_output)
@@ -202,7 +211,8 @@ class VariationalMarkovDecisionProcess(Model):
             'rate': tf.keras.metrics.Mean(name='rate'),
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'cross_entropy_regularizer': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
-            'encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy')
+            'encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
+            'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
         }
 
     def reset_metrics(self):
@@ -242,10 +252,17 @@ class VariationalMarkovDecisionProcess(Model):
 
     def decode(self, latent_state: tf.Tensor) -> tfd.Distribution:
         """
-        Decode a binary latent state into a probability distribution over original states of the MDP, modeled by a GMM
+        Decode a binary latent state into a probability distribution over original states of the MDP
         """
-        [reconstruction_mean, reconstruction_raw_covariance, reconstruction_prior_components] = \
-            self.reconstruction_network(latent_state)
+        [
+            reconstruction_mean, reconstruction_raw_covariance, reconstruction_prior_components
+        ] = self.reconstruction_network(latent_state)
+        if self.max_decoder_variance is None:
+            reconstruction_raw_covariance = self.scale_activation(reconstruction_raw_covariance)
+        else:
+            reconstruction_raw_covariance = tfp.bijectors.SoftClip(
+                low=epsilon, high=self.max_decoder_variance ** 0.5).forward(reconstruction_raw_covariance)
+
         if self.mixture_components == 1:
             if self.full_covariance:
                 return tfd.MultivariateNormalTriL(
@@ -255,7 +272,7 @@ class VariationalMarkovDecisionProcess(Model):
             else:
                 return tfd.MultivariateNormalDiag(
                     loc=reconstruction_mean[0],
-                    scale_diag=self.scale_activation(reconstruction_raw_covariance[0]),
+                    scale_diag=reconstruction_raw_covariance[0]
                 )
         else:
             if self.full_covariance:
@@ -271,7 +288,7 @@ class VariationalMarkovDecisionProcess(Model):
                     mixture_distribution=tfd.Categorical(probs=reconstruction_prior_components),
                     components_distribution=tfd.MultivariateNormalDiag(
                         loc=reconstruction_mean,
-                        scale_diag=self.scale_activation(reconstruction_raw_covariance),
+                        scale_diag=reconstruction_raw_covariance
                     ),
                 )
 
@@ -334,6 +351,7 @@ class VariationalMarkovDecisionProcess(Model):
 
         latent_distribution = self.relaxed_encoding(s_0, a_0, r_0, s_1, l_1, self.encoder_temperature)
         latent_distribution_prime = self.relaxed_encoding(s_1, a_1, r_1, s_2, l_2, self.encoder_temperature)
+        # tf.print('state_0 \n', s_0, 'state_1\n', s_1, 'state_2\n', s_2, summarize=debug_verbosity)
 
         z = tf.sigmoid(latent_distribution.sample())
         logistic_z_prime = latent_distribution_prime.sample()
@@ -352,6 +370,7 @@ class VariationalMarkovDecisionProcess(Model):
 
         # Reconstruction P(s_2 | z')
         state_distribution = self.decode(z_prime)
+        # tf.print('variance\n\n', state_distribution.variance(), summarize=debug_verbosity)
         log_p_state = state_distribution.log_prob(s_2)
 
         distortion = -1. * (log_p_state + log_p_rewards)
@@ -365,6 +384,7 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['state_mse'](s_2, state_distribution.sample())
             self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
             self.loss_metrics['encoder_entropy'](self.binary_encode(s_1, a_1, r_1, s_2, l_2).entropy())
+            self.loss_metrics['decoder_variance'](state_distribution.variance())
             self.loss_metrics['distortion'](distortion)
             self.loss_metrics['rate'](rate)
             self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
@@ -374,7 +394,7 @@ class VariationalMarkovDecisionProcess(Model):
             tf.print(z, "sampled z")
             tf.print(logistic_z_prime, "sampled (logistic) z'")
             tf.print(self.encoder_network([s_1, a_1, r_1, s_2]), "log locations[:-1] of Q")
-            tf.rint(log_q_z_prime, "Log Q(logistic z'|s, a, r, s', l')")
+            tf.print(log_q_z_prime, "Log Q(logistic z'|s, a, r, s', l')")
             tf.print(self.transition_network([z, a_1]), "log-locations P_transition")
             tf.print(log_p_z_prime, "log P(logistic z'|z, a)")
             tf.print(z_prime, "sampled z'")
@@ -613,7 +633,7 @@ def train_from_policy(
         stateful_metrics=list(vae_mdp.loss_metrics.keys()) + [
             'loss', 't_1', 't_2', 'regularizer_scale_factor', 'step', "num_episodes", "env_steps",
             "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv", 'state_rate',
-            "state_distortion", 'action_rate', 'action_distortion'],
+            "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used'],
         interval=0.1) if display_progressbar else None
 
     if parallelization:
@@ -860,10 +880,10 @@ def eval_and_save(
 
         if eval_policy_driver is not None:
             eval_policy_thread = threading.Thread(
-               target=eval_policy,
-               args=(eval_policy_driver, train_summary_writer, global_step),
-               daemon=True,
-               name='eval')
+                target=eval_policy,
+                args=(eval_policy_driver, train_summary_writer, global_step),
+                daemon=True,
+                name='eval')
             eval_policy_thread.start()
 
         if train_summary_writer is not None:
@@ -890,6 +910,7 @@ def eval_and_save(
     del dataset
 
     return eval_elbo
+
 
 def eval_policy(eval_policy_driver, train_summary_writer, global_step):
     eval_avg_rewards = tf_agents.metrics.tf_metrics.AverageReturnMetric()
