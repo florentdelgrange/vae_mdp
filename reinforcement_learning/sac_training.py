@@ -2,6 +2,8 @@ import os
 from typing import Tuple, Callable, Optional
 import threading
 import datetime
+from absl import app
+from absl import flags
 
 import PIL
 import imageio
@@ -15,7 +17,6 @@ from tf_agents.agents.ddpg import critic_network
 from tf_agents.drivers import dynamic_step_driver
 from tf_agents.drivers import dynamic_episode_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment
-from tf_agents.environments import suite_pybullet
 from tf_agents.metrics import tf_metrics, tf_metric
 from tf_agents.networks import actor_distribution_network
 from tf_agents.networks import normal_projection_network
@@ -27,7 +28,19 @@ import tf_agents.trajectories.time_step as ts
 from reinforcement_learning import labeling_functions
 from util.io import dataset_generator
 
-from tf_agents.utils import common
+flags.DEFINE_string(
+    'env_name', help='Name of the environment', default='HumanoidBulletEnv-v0'
+)
+flags.DEFINE_string(
+    'env_suite', help='Environment suite', default='suite_pybullet'
+)
+flags.DEFINE_integer(
+    'steps', help='Number of iterations', default=int(1.2e7)
+)
+flags.DEFINE_integer(
+    'num_parallel_env', help='Number of parallel environments', default=16
+)
+FLAGS = flags.FLAGS
 
 
 class NumberOfSafetyViolations(tf_metric.TFStepMetric):
@@ -61,11 +74,11 @@ class NumberOfSafetyViolations(tf_metric.TFStepMetric):
 
 class SACLearner:
     def __init__(self,
-                 env_name: str = 'HumanoidBulletEnv-v0',
-                 env_suite=suite_pybullet,
+                 env_name: str,
+                 env_suite,
                  num_iterations: int = int(3e6),
                  initial_collect_steps: int = int(1e4),
-                 collect_steps_per_iteration: Optional[int] = None,
+                 collect_steps_per_iteration: int = 1,
                  replay_buffer_capacity: int = int(1e6),
                  critic_learning_rate: float = 3e-4,
                  actor_learning_rate: float = 3e-4,
@@ -93,7 +106,7 @@ class SACLearner:
             collect_steps_per_iteration = batch_size
         if parallelization:
             replay_buffer_capacity = replay_buffer_capacity // num_parallel_environments
-            collect_steps_per_iteration = collect_steps_per_iteration // num_parallel_environments
+            collect_steps_per_iteration = max(1, collect_steps_per_iteration // num_parallel_environments)
 
         self.env_name = env_name
         self.labeling_function = labeling_function
@@ -232,7 +245,8 @@ class SACLearner:
             self.tf_env, self.collect_policy, observers=[self.replay_buffer.add_batch], num_steps=initial_collect_steps)
 
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        train_log_dir = os.path.join('logs', 'gradient_tape', env_name, 'sac_agent_training', current_time)
+        train_log_dir = os.path.join(
+            save_directory_location, 'logs', 'gradient_tape', env_name, 'sac_agent_training', current_time)
         self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
         self.save_directory_location = os.path.join(save_directory_location, 'saves', env_name)
         self.save_exploration_dataset = save_exploration_dataset
@@ -344,8 +358,7 @@ class SACLearner:
                 self.stochastic_policy_saver.save(self.stochastic_policy_dir)
                 with self.train_summary_writer.as_default():
                     tf.summary.scalar('loss', train_loss.loss, step=step)
-                    if not self.parallelization:
-                        tf.summary.scalar('training average returns', self.avg_return.result(), step=step)
+                    tf.summary.scalar('training average returns', self.avg_return.result(), step=step)
 
             if step % self.eval_interval == 0:
                 eval_thread = threading.Thread(target=self.eval, args=(step, progressbar), daemon=True, name='eval')
@@ -417,3 +430,28 @@ class SACLearner:
             dynamic_episode_driver.DynamicEpisodeDriver(self.eval_env, policy,
                                                         observers + [lambda _: video.append_data(self.py_env.render())],
                                                         num_episodes=self.num_eval_episodes).run()
+
+
+def main(argv):
+    del argv
+    params = FLAGS.flag_values_dict()
+    try:
+        import importlib
+        env_suite = importlib.import_module('tf_agents.environments.' + params['env_suite'])
+    except BaseException as err:
+        serr = str(err)
+        print("Error to load module '" + params['env_suite'] + "': " + serr)
+        return -1
+    learner = SACLearner(
+        env_name=params['env_name'],
+        env_suite=env_suite,
+        num_iterations=params['steps'],
+        num_parallel_environments=params['num_parallel_env'],
+        save_directory_location='..',
+    )
+    learner.train_and_eval()
+    return 0
+
+
+if __name__ == '__main__':
+    app.run(main)
