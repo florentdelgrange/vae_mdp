@@ -50,6 +50,9 @@ flags.DEFINE_multi_float(
     help='variance multiplier for the permissive variance policy',
     default=[1.5, 2., 2.5, 3., 3.5, 4., 4.5, 5.]
 )
+flags.DEFINE_string(
+    'save_dir', help='Save directory location', default='.'
+)
 FLAGS = flags.FLAGS
 
 
@@ -457,7 +460,7 @@ def main(argv):
         env_suite=env_suite,
         num_iterations=params['steps'],
         num_parallel_environments=params['num_parallel_env'],
-        save_directory_location='..',
+        save_directory_location=params['save_dir'],
     )
     if params['permissive_policy_saver']:
         for variance_multiplier in params['variance']:
