@@ -40,6 +40,16 @@ flags.DEFINE_integer(
 flags.DEFINE_integer(
     'num_parallel_env', help='Number of parallel environments', default=16
 )
+flags.DEFINE_boolean(
+    'permissive_policy_saver',
+    help='Set this flag to save a permissive variance policy of the current policy',
+    default=False
+)
+flags.DEFINE_multi_float(
+    'variance',
+    help='variance multiplier for the permissive variance policy',
+    default=[1.5, 2., 2.5, 3., 3.5, 4., 4.5, 5.]
+)
 FLAGS = flags.FLAGS
 
 
@@ -449,6 +459,10 @@ def main(argv):
         num_parallel_environments=params['num_parallel_env'],
         save_directory_location='..',
     )
+    if params['permissive_policy_saver']:
+        for variance_multiplier in params['variance']:
+            learner.save_permissive_variance_policy(variance_multiplier)
+            return 0
     learner.train_and_eval()
     return 0
 
