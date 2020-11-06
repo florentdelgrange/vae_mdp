@@ -1,4 +1,5 @@
 import os
+import sys
 from typing import Tuple, Callable, Optional
 import threading
 import datetime
@@ -25,6 +26,9 @@ from tf_agents.utils import common
 from tf_agents.policies import policy_saver
 import tf_agents.trajectories.time_step as ts
 
+
+path = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, path + '/../')
 from reinforcement_learning import labeling_functions
 from util.io import dataset_generator
 
