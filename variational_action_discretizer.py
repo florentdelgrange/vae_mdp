@@ -49,14 +49,24 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             reconstruction_mixture_components: int = 1,
     ):
 
-        super().__init__(vae_mdp.state_shape, vae_mdp.action_shape, vae_mdp.reward_shape, vae_mdp.label_shape,
-                         vae_mdp.encoder_network, vae_mdp.transition_network, vae_mdp.reward_network,
-                         vae_mdp.reconstruction_network, vae_mdp.latent_state_size,
-                         vae_mdp.encoder_temperature.numpy(), vae_mdp.prior_temperature.numpy(),
-                         vae_mdp.encoder_temperature_decay_rate.numpy(), vae_mdp.prior_temperature_decay_rate.numpy(),
-                         vae_mdp.regularizer_scale_factor.numpy(), vae_mdp.regularizer_decay_rate.numpy(),
-                         vae_mdp.kl_scale_factor.numpy(), vae_mdp.kl_growth_rate.numpy(), vae_mdp.mixture_components,
-                         vae_mdp.scale_activation, vae_mdp.full_covariance, pre_loaded_model=True)
+        super().__init__(
+            state_shape=vae_mdp.state_shape, action_shape=vae_mdp.action_shape, reward_shape=vae_mdp.reward_shape,
+            label_shape=vae_mdp.label_shape, encoder_network=vae_mdp.encoder_network,
+            transition_network=vae_mdp.transition_network, reward_network=vae_mdp.reward_network,
+            decoder_network=vae_mdp.reconstruction_network,
+            latent_state_size=vae_mdp.latent_state_size,
+            encoder_temperature=vae_mdp.encoder_temperature.numpy(),
+            prior_temperature=vae_mdp.prior_temperature.numpy(),
+            encoder_temperature_decay_rate=vae_mdp.encoder_temperature_decay_rate.numpy(),
+            prior_temperature_decay_rate=vae_mdp.prior_temperature_decay_rate.numpy(),
+            regularizer_scale_factor=vae_mdp.regularizer_scale_factor.numpy(),
+            regularizer_decay_rate=vae_mdp.regularizer_decay_rate.numpy(),
+            kl_scale_factor=vae_mdp.kl_scale_factor.numpy(),
+            kl_annealing_growth_rate=vae_mdp.kl_growth_rate.numpy(),
+            mixture_components=vae_mdp.mixture_components,
+            multivariate_normal_raw_scale_diag_activation=vae_mdp.scale_activation,
+            multivariate_normal_full_covariance=vae_mdp.full_covariance,
+            pre_loaded_model=True)
 
         if encoder_temperature is None:
             encoder_temperature = 1. / (number_of_discrete_actions - 1)
@@ -331,12 +341,13 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             'rate': tf.keras.metrics.Mean(name='rate'),
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'cross_entropy_regularizer': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
-            'decoder_divergence': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
+            # 'decoder_divergence': tf.keras.metrics.Mean(name='decoder_divergence'),
         }
         if self.full_optimization:
             self.loss_metrics.update({
                 'state_mse': tf.keras.metrics.MeanSquaredError(name='state_mse'),
                 'state_encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
+                'state_decoder_variance': tf.keras.metrics.Mean('decoder_variance'),
                 'state_rate': tf.keras.metrics.Mean(name='state_rate'),
                 'action_rate': tf.keras.metrics.Mean(name='action_rate'),
                 't_1_state': tf.keras.metrics.Mean(name='state_encoder_temperature'),
@@ -433,7 +444,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 mixture_distribution=action_categorical,
                 components_distribution=tfd.MultivariateNormalDiag(
                     loc=reward_mean,
-                    scale_diag=self.scale_activation(reward_raw_covariance) + epsilon),
+                    scale_diag=self.scale_activation(reward_raw_covariance) + epsilon
+                ),
             )
 
     def decode_action(
@@ -588,7 +600,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         # transitions
         transition_probability_distribution = self.discrete_latent_transition_probability_distribution(
-                z, latent_action, relaxed_state_encoding=True, log_latent_action=True)
+            z, latent_action, relaxed_state_encoding=True, log_latent_action=True)
         log_p_z_prime = transition_probability_distribution.log_prob(logistic_z_prime)
 
         state_rate = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
@@ -620,6 +632,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['state_mse'](s_2, state_distribution.sample())
         self.loss_metrics['state_rate'](state_rate)
         self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(s_1, a_1, r_1, s_2, l_2).entropy())
+        self.loss_metrics['state_decoder_variance'](state_distribution.variance())
         self.loss_metrics['action_rate'](action_rate)
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
@@ -678,7 +691,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         )
 
         return weighted_distribution_entropy - weighted_entropy
-
 
     def eval(self, inputs):
         s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)

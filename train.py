@@ -37,6 +37,11 @@ flags.DEFINE_string(
     help="Activation function for all hidden layers.")
 flags.DEFINE_integer("latent_size", default=17, help='Number of bits used for the discrete latent state space.')
 flags.DEFINE_float(
+    "max_state_decoder_variance",
+    default="0.",
+    help='Maximum variance allowed for the state decoder.'
+)
+flags.DEFINE_float(
     "encoder_temperature",
     default=-1.,
     help="Temperature of the relaxation of the discrete encoder distribution."
@@ -129,7 +134,7 @@ flags.DEFINE_bool(
 )
 flags.DEFINE_bool(
     'relaxed_state_encoding',
-    default=True,
+    default=False,
     help='Use a relaxed encoding of states to optimize the action discretizer part of the VAE.'
 )
 flags.DEFINE_integer(
@@ -186,6 +191,16 @@ flags.DEFINE_integer(
     "parallel_env",
     default=1,
     help='Number of parallel environments to be used during training.'
+)
+flags.DEFINE_float(
+    'state_scaling',
+    default=1.,
+    help='Scaler for the input states of the environment.'
+)
+flags.DEFINE_integer(
+    'annealing_period',
+    default=1,
+    help='annealing period'
 )
 FLAGS = flags.FLAGS
 
@@ -274,10 +289,16 @@ def main(argv):
                 params['prior_temperature_decay_rate']
             )
         )
+    if params['max_state_decoder_variance'] > 0:
+        vae_name += '_max_state_decoder_variance={:g}'.format(params['max_state_decoder_variance'])
+    if params['state_scaling'] != 1.:
+        vae_name += '_state_scaling={:g}'.format(params['state_scaling'])
 
     additional_parameters = [
-        'one_output_per_action', 'full_vae_optimization', 'relaxed_state_encoding']
-    nb_additional_params = sum(map(lambda x: params[x], additional_parameters))
+        'one_output_per_action', 'full_vae_optimization', 'relaxed_state_encoding', 'full_covariance'
+    ]
+    nb_additional_params = sum(
+        map(lambda x: params[x], additional_parameters))
     if nb_additional_params > 0:
         vae_name += ('_params={}' + '-{}' * (nb_additional_params - 1)).format(
             *filter(lambda x: params[x], additional_parameters))
@@ -358,7 +379,6 @@ def main(argv):
                 environment.reset().observation).shape)
             )
         )
-
     if params['load_vae'] == '':
         q, p_t, p_r, p_decode, _ = generate_network_components(name='state')
         vae_mdp_model = variational_mdp.VariationalMarkovDecisionProcess(
@@ -374,7 +394,12 @@ def main(argv):
             regularizer_decay_rate=params['regularizer_decay_rate'],
             kl_scale_factor=params['kl_annealing_scale_factor'],
             kl_annealing_growth_rate=params['kl_annealing_growth_rate'],
-            multivariate_normal_full_covariance=params['full_covariance'])
+            multivariate_normal_full_covariance=params['full_covariance'],
+            max_decoder_variance=(
+                None if params['max_state_decoder_variance'] == 0. else params['max_state_decoder_variance']
+            ),
+            state_scaler=lambda x: x * params['state_scaling'],
+        )
     else:
         vae_mdp_model = variational_mdp.load(params['load_vae'])
         vae_mdp_model.encoder_temperature = relaxed_state_encoder_temperature
@@ -429,7 +454,7 @@ def main(argv):
                                           batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
                                           manager=manager, log_name=vae_name,
                                           start_annealing_step=params['start_annealing_step'],
-                                          logs=True, annealing_period=1,
+                                          logs=True,
                                           num_iterations=params['max_steps'],
                                           display_progressbar=params['display_progressbar'],
                                           save_directory=params['save_dir'],
@@ -444,11 +469,13 @@ def main(argv):
                                               lambda tf_env: vae_mdp_model.wrap_tf_environment(
                                                   tf_env, reinforcement_learning.labeling_functions[environment_name]
                                               )
-                                          ))
+                                          ),
+                                          annealing_period=params['annealing_period'])
     else:
         variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,
                                            batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
-                                           manager=manager, dataset_size=dataset_size, annealing_period=1,
+                                           manager=manager, dataset_size=dataset_size,
+                                           annealing_period=params['annealing_period'],
                                            start_annealing_step=params['start_annealing_step'],
                                            log_name=vae_name, logs=True, max_steps=params['max_steps'],
                                            display_progressbar=params['display_progressbar'],

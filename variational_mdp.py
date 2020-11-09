@@ -62,7 +62,7 @@ class VariationalMarkovDecisionProcess(Model):
                  action_pre_processing_network: Model = None,
                  state_pre_processing_network: Model = None,
                  state_post_processing_network: Model = None,
-                 state_scaler: Optional[Callable[[tf.Tensor], tf.Tensor]] = None,
+                 state_scaler: Callable[[tf.Tensor], tf.Tensor] = lambda x: x,
                  pre_loaded_model: bool = False):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
@@ -115,20 +115,19 @@ class VariationalMarkovDecisionProcess(Model):
                 state_pre_processing_network, input_shape=(2,) + state_shape)(stack_inputs)
             state, next_state = apply_pre_processing[:, 0], apply_pre_processing[:, 1]
 
-        if self.state_scaler is not None:
-            scaler = Lambda(self.state_scaler, name='state_scaler')
-            state = scaler(state)
-            next_state = scaler(next_state)
+        scaler = Lambda(self.state_scaler, name='state_scaler')
+        state = scaler(state)
+        next_state = scaler(next_state)
 
         if not pre_loaded_model:
             # Encoder network
             encoder_input = Concatenate(name="encoder_input")([state, action, reward, next_state])
             encoder = encoder_network(encoder_input)
-            log_alpha_layer = Dense(
-                units=latent_state_size - np.prod(label_shape), activation=None, name='log_alpha')(encoder)
+            logits_layer = Dense(
+                units=latent_state_size - np.prod(label_shape), activation=None, name='bernoulli_logits')(encoder)
             self.encoder_network = Model(
                 inputs=[input_state, action, reward, input_next_state],
-                outputs=log_alpha_layer,
+                outputs=logits_layer,
                 name='encoder')
 
             # Transition network
@@ -231,12 +230,12 @@ class VariationalMarkovDecisionProcess(Model):
               z ~ BinaryConcrete(loc=alpha, temperature) = sigmoid(z_logistic)
               with z_logistic ~ Logistic(loc=log alpha / temperature, scale=1. / temperature))
         """
-        log_alpha = self.encoder_network([state, action, reward, state_prime])
-        # change label = 1 to 100 or label = 0 to -100 so that
+        logits = self.encoder_network([state, action, reward, state_prime])
+        # change label = 1 to 100 and label = 0 to -100 so that
         # sigmoid(logistic_z[-1]) ~= 1 if label = 1 and sigmoid(logistic_z[-1]) ~= 0 if label = 0
         logistic_label = (label * 2. - 1.) * 1e2
-        log_alpha = tf.concat([log_alpha, logistic_label * temperature], axis=-1)
-        return tfd.Logistic(loc=log_alpha / temperature, scale=1. / temperature)
+        logits = tf.concat([logits, logistic_label * temperature], axis=-1)
+        return tfd.Logistic(loc=logits / temperature, scale=1. / temperature)
 
     def binary_encode(
             self, state: tf.Tensor, action: tf.Tensor, reward: tf.Tensor, state_prime: tf.Tensor, label: tf.Tensor
@@ -244,9 +243,9 @@ class VariationalMarkovDecisionProcess(Model):
         """
         Encode the sample (s, a, r, l, s') into a Bernoulli probability distribution over binary latent states.
         """
-        log_alpha = self.encoder_network([state, action, reward, state_prime])
+        logits = self.encoder_network([state, action, reward, state_prime])
         return tfd.Bernoulli(
-            logits=tf.concat([log_alpha, (label * 2. - 1.) * 1e2], axis=-1),
+            logits=tf.concat([logits, (label * 2. - 1.) * 1e2], axis=-1),
             name='discrete_state_encoder_distribution'
         )
 
@@ -302,8 +301,8 @@ class VariationalMarkovDecisionProcess(Model):
               z ~ BinaryConcrete(loc=alpha, temperature) = sigmoid(z_logistic)
               with z_logistic ~ Logistic(loc=log alpha / temperature, scale=1. / temperature))
         """
-        log_alpha = self.transition_network([latent_state, action])
-        return tfd.Logistic(loc=log_alpha / temperature, scale=1. / temperature)
+        logits = self.transition_network([latent_state, action])
+        return tfd.Logistic(loc=logits / temperature, scale=1. / temperature)
 
     def discrete_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, action: tf.Tensor
@@ -312,8 +311,8 @@ class VariationalMarkovDecisionProcess(Model):
         Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states, given a binary latent
         state z and action a.
         """
-        log_alpha = self.transition_network([latent_state, action])
-        return tfd.Bernoulli(logits=log_alpha, name='discrete_state_transition_distribution')
+        logits = self.transition_network([latent_state, action])
+        return tfd.Bernoulli(logits=logits, name='discrete_state_transition_distribution')
 
     def reward_probability_distribution(
             self, latent_state, action, next_latent_state
@@ -351,7 +350,6 @@ class VariationalMarkovDecisionProcess(Model):
 
         latent_distribution = self.relaxed_encoding(s_0, a_0, r_0, s_1, l_1, self.encoder_temperature)
         latent_distribution_prime = self.relaxed_encoding(s_1, a_1, r_1, s_2, l_2, self.encoder_temperature)
-        # tf.print('state_0 \n', s_0, 'state_1\n', s_1, 'state_2\n', s_2, summarize=debug_verbosity)
 
         z = tf.sigmoid(latent_distribution.sample())
         logistic_z_prime = latent_distribution_prime.sample()
@@ -362,6 +360,7 @@ class VariationalMarkovDecisionProcess(Model):
             z, a_1, self.prior_temperature
         ).log_prob(logistic_z_prime)
 
+        # retrieve binary concrete sample
         z_prime = tf.sigmoid(logistic_z_prime)
 
         # Normal log-probability P(r_1 | z, a_1, z')
@@ -370,18 +369,15 @@ class VariationalMarkovDecisionProcess(Model):
 
         # Reconstruction P(s_2 | z')
         state_distribution = self.decode(z_prime)
-        # tf.print('variance\n\n', state_distribution.variance(), summarize=debug_verbosity)
-        log_p_state = state_distribution.log_prob(s_2)
+        log_p_state = state_distribution.log_prob(self.state_scaler(s_2))
 
         distortion = -1. * (log_p_state + log_p_rewards)
         rate = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
-
-        # cross-entropy regularization
         cross_entropy_regularizer = self._compute_cross_entropy_regularization(s_1, a_1, r_1, s_2)
 
         if metrics:
             self.loss_metrics['ELBO'](-1 * (distortion + rate))
-            self.loss_metrics['state_mse'](s_2, state_distribution.sample())
+            self.loss_metrics['state_mse'](self.state_scaler(s_2), state_distribution.sample())
             self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
             self.loss_metrics['encoder_entropy'](self.binary_encode(s_1, a_1, r_1, s_2, l_2).entropy())
             self.loss_metrics['decoder_variance'](state_distribution.variance())
@@ -410,12 +406,30 @@ class VariationalMarkovDecisionProcess(Model):
 
     @tf.function
     def _compute_cross_entropy_regularization(
+            self, s_1: tf.Tensor, a_1: tf.Tensor, r_1: tf.Tensor, s_2: tf.Tensor, relaxed=False
+    ):
+        logits = self.encoder_network([s_1, a_1, r_1, s_2])
+        if relaxed:
+            relaxed_latent_distribution = tfd.Logistic(loc=logits, scale=1./self.encoder_temperature)
+            uniform_distribution = tfd.Logistic(tf.zeros(shape=tf.shape(logits)), 1./self.encoder_temperature)
+            # monte carlo kl divergence
+            z_uniform = uniform_distribution.sample()
+            kl_divergence = uniform_distribution.log_prob(z_uniform) - relaxed_latent_distribution.log_prob(z_uniform)
+            return tf.reduce_sum(kl_divergence, axis=1)
+        else:
+            discrete_latent_distribution = tfd.Bernoulli(logits=logits)
+            uniform_distribution = tfd.Bernoulli(logits=tf.zeros(shape=tf.shape(logits)))
+            return tf.reduce_sum(uniform_distribution.kl_divergence(discrete_latent_distribution), axis=1)
+
+    @tf.function
+    def _compute_bit_entropy_regularization(
             self, s_1: tf.Tensor, a_1: tf.Tensor, r_1: tf.Tensor, s_2: tf.Tensor
     ):
-        log_alpha = self.encoder_network([s_1, a_1, r_1, s_2])
-        discrete_latent_distribution = tfd.Bernoulli(logits=log_alpha)
-        uniform_distribution = tfd.Bernoulli(probs=0.5 * tf.ones(shape=tf.shape(log_alpha)))
-        return tf.reduce_sum(uniform_distribution.kl_divergence(discrete_latent_distribution), axis=1)
+        logits = self.encoder_network([s_1, a_1, r_1, s_2])
+        probs_parameter = tf.reduce_mean(tf.sigmoid(logits), axis=0)
+        logits = tf.math.log(probs_parameter) - tf.math.log(1 - probs_parameter)
+        return -1. * tf.reduce_sum(tfd.Bernoulli(logits=logits).entropy(), axis=0)
+
 
     def eval(self, inputs):
         """
@@ -437,7 +451,7 @@ class VariationalMarkovDecisionProcess(Model):
         log_p_rewards = reward_distribution.log_prob(r_1)
 
         state_distribution = self.decode(z_prime)
-        log_p_reconstruction = state_distribution.log_prob(s_2)
+        log_p_reconstruction = state_distribution.log_prob(self.state_scaler(s_2))
 
         return (
             tf.reduce_mean(log_p_reconstruction + log_p_rewards - rate),
@@ -528,9 +542,10 @@ class VariationalMarkovDecisionProcess(Model):
 @tf.function
 def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x):
     distortion, rate, cross_entropy_regularizer = vae_mdp(x)
+    alpha = vae_mdp.regularizer_scale_factor
+    beta = vae_mdp.kl_scale_factor
     return tf.reduce_mean(
-        distortion + vae_mdp.kl_scale_factor * rate +
-        vae_mdp.regularizer_scale_factor * cross_entropy_regularizer
+        distortion + beta * rate + alpha * cross_entropy_regularizer
     )
 
 
@@ -576,7 +591,7 @@ def train_from_policy(
         labeling_function: Callable,
         num_iterations: int = int(3e6),
         initial_collect_steps: int = int(1e4),
-        collect_steps_per_iteration: Optional[int] = None,
+        collect_steps_per_iteration: int = 1,
         replay_buffer_capacity: int = int(1e6),
         parallelization: bool = True,
         num_parallel_call: int = 4,
@@ -601,7 +616,7 @@ def train_from_policy(
         collect_steps_per_iteration = batch_size
     if parallelization:
         replay_buffer_capacity = replay_buffer_capacity // num_parallel_call
-        collect_steps_per_iteration = collect_steps_per_iteration // num_parallel_call
+        collect_steps_per_iteration = max(1, collect_steps_per_iteration // num_parallel_call)
 
     save_directory = os.path.join(save_directory, 'saves', env_name)
 
@@ -633,7 +648,7 @@ def train_from_policy(
         stateful_metrics=list(vae_mdp.loss_metrics.keys()) + [
             'loss', 't_1', 't_2', 'regularizer_scale_factor', 'step', "num_episodes", "env_steps",
             "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv", 'state_rate',
-            "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used'],
+            "state_distortion", 'action_rate', 'action_distortion'],
         interval=0.1) if display_progressbar else None
 
     if parallelization:
