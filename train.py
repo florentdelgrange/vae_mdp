@@ -202,6 +202,11 @@ flags.DEFINE_integer(
     default=1,
     help='annealing period'
 )
+flags.DEFINE_bool(
+    'aggressive_training',
+    default=False,
+    help='Set whether to perform aggressive inference optimizations.'
+)
 FLAGS = flags.FLAGS
 
 
@@ -470,7 +475,8 @@ def main(argv):
                                                   tf_env, reinforcement_learning.labeling_functions[environment_name]
                                               )
                                           ),
-                                          annealing_period=params['annealing_period'])
+                                          annealing_period=params['annealing_period'],
+                                          aggressive_training=params['aggressive_training'])
     else:
         variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,
                                            batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,

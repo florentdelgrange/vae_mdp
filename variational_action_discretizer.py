@@ -928,6 +928,20 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             actor_network=RandomDiscreteActorNetwork(vae_mdp=self)
         )
 
+    @property
+    def inference_variables(self):
+        variables = []
+        for network in [self.action_encoder, self.encoder_network]:
+            variables += network.trainable_variables
+        return variables
+
+    @property
+    def generator_variables(self):
+        variables = []
+        for network in [self.reconstruction_network, self.action_transition_network, self.action_reward_network]:
+            variables += network.trainable_variables
+        return variables
+
 
 def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActionDiscretizer:
     model = tf.saved_model.load(tf_model_path)

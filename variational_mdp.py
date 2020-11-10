@@ -29,7 +29,6 @@ debug_verbosity = -1
 debug_gradients = False
 check_numerics = False
 
-debug_gradients &= debug
 if check_numerics:
     tf.debugging.enable_check_numerics()
 
@@ -410,8 +409,8 @@ class VariationalMarkovDecisionProcess(Model):
     ):
         logits = self.encoder_network([s_1, a_1, r_1, s_2])
         if relaxed:
-            relaxed_latent_distribution = tfd.Logistic(loc=logits, scale=1./self.encoder_temperature)
-            uniform_distribution = tfd.Logistic(tf.zeros(shape=tf.shape(logits)), 1./self.encoder_temperature)
+            relaxed_latent_distribution = tfd.Logistic(loc=logits, scale=1. / self.encoder_temperature)
+            uniform_distribution = tfd.Logistic(tf.zeros(shape=tf.shape(logits)), 1. / self.encoder_temperature)
             # monte carlo kl divergence
             z_uniform = uniform_distribution.sample()
             kl_divergence = uniform_distribution.log_prob(z_uniform) - relaxed_latent_distribution.log_prob(z_uniform)
@@ -429,7 +428,6 @@ class VariationalMarkovDecisionProcess(Model):
         probs_parameter = tf.reduce_mean(tf.sigmoid(logits), axis=0)
         logits = tf.math.log(probs_parameter) - tf.math.log(1 - probs_parameter)
         return -1. * tf.reduce_sum(tfd.Bernoulli(logits=logits).entropy(), axis=0)
-
 
     def eval(self, inputs):
         """
@@ -538,6 +536,17 @@ class VariationalMarkovDecisionProcess(Model):
         self._decay_kl_scale_factor = tf.Variable(1., dtype=tf.float32, trainable=False)
         self._kl_growth_rate = tf.constant(value, dtype=tf.float32)
 
+    @property
+    def inference_variables(self):
+        return self.encoder_network.trainable_variables
+
+    @property
+    def generator_variables(self):
+        variables = []
+        for network in [self.reconstruction_network, self.reward_network, self.transition_network]:
+            variables += network.trainable_variables
+        return variables
+
 
 @tf.function
 def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x):
@@ -553,6 +562,7 @@ def compute_loss(vae_mdp: VariationalMarkovDecisionProcess, x):
 def compute_apply_gradients(vae_mdp: VariationalMarkovDecisionProcess, x, optimizer):
     with tf.GradientTape() as tape:
         loss = compute_loss(vae_mdp, x)
+
     gradients = tape.gradient(loss, vae_mdp.trainable_variables)
 
     if debug_gradients:
@@ -560,6 +570,36 @@ def compute_apply_gradients(vae_mdp: VariationalMarkovDecisionProcess, x, optimi
             tf.print(gradient, "Gradient for {}".format(variable.name))
 
     optimizer.apply_gradients(zip(gradients, vae_mdp.trainable_variables))
+    return loss
+
+
+@tf.function
+def compute_apply_gradients_inference_update(vae_mdp: VariationalMarkovDecisionProcess, x, optimizer):
+    with tf.GradientTape() as tape:
+        loss = compute_loss(vae_mdp, x)
+
+    gradients = tape.gradient(loss, vae_mdp.inference_variables)
+
+    if debug_gradients:
+        for gradient, variable in zip(gradients, vae_mdp.inference_variables):
+            tf.print(gradient, "Gradient for {}".format(variable.name))
+
+    optimizer.apply_gradients(zip(gradients, vae_mdp.inference_variables))
+    return loss
+
+
+@tf.function
+def compute_apply_gradients_generator_update(vae_mdp: VariationalMarkovDecisionProcess, x, optimizer):
+    with tf.GradientTape() as tape:
+        loss = compute_loss(vae_mdp, x)
+
+    gradients = tape.gradient(loss, vae_mdp.generator_variables)
+
+    if debug_gradients:
+        for gradient, variable in zip(gradients, vae_mdp.generator_variables):
+            tf.print(gradient, "Gradient for {}".format(variable.name))
+
+    optimizer.apply_gradients(zip(gradients, vae_mdp.generator_variables))
     return loss
 
 
@@ -591,7 +631,7 @@ def train_from_policy(
         labeling_function: Callable,
         num_iterations: int = int(3e6),
         initial_collect_steps: int = int(1e4),
-        collect_steps_per_iteration: int = 1,
+        collect_steps_per_iteration: Optional[int] = None,
         replay_buffer_capacity: int = int(1e6),
         parallelization: bool = True,
         num_parallel_call: int = 4,
@@ -611,6 +651,10 @@ def train_from_policy(
         get_policy_evaluation: Optional[Callable[[], tf_agents.policies.tf_policy.Base]] = None,
         policy_evaluation_num_episodes: int = 30,
         wrap_eval_tf_env: Optional[Callable[[tf_environment.TFEnvironment], tf_environment.TFEnvironment]] = None,
+        aggressive_training: bool = False,
+        approximate_convergence_error: float = 5e-1,
+        approximate_convergence_steps: int = 10,
+        aggressive_training_steps: int = int(5e4)
 ):
     if collect_steps_per_iteration is None:
         collect_steps_per_iteration = batch_size
@@ -648,7 +692,7 @@ def train_from_policy(
         stateful_metrics=list(vae_mdp.loss_metrics.keys()) + [
             'loss', 't_1', 't_2', 'regularizer_scale_factor', 'step', "num_episodes", "env_steps",
             "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv", 'state_rate',
-            "state_distortion", 'action_rate', 'action_distortion'],
+            "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used'],
         interval=0.1) if display_progressbar else None
 
     if parallelization:
@@ -712,11 +756,18 @@ def train_from_policy(
     initial_collect_driver.run()
     print("Start training.")
 
+    # aggressive training metrics
+    best_loss = None
+    prev_loss = None
+    convergence_error = approximate_convergence_error
+    convergence_steps = approximate_convergence_steps
+    aggressive_inference_optimization = True
+
     for _ in range(global_step.numpy(), num_iterations):
         # Collect a few steps and save them to the replay buffer.
         driver.run()
 
-        training_step(
+        loss = training_step(
             dataset_batch=next(dataset_iterator), batch_size=batch_size, vae_mdp=vae_mdp, optimizer=optimizer,
             annealing_period=annealing_period, global_step=global_step,
             dataset_size=replay_buffer.num_frames().numpy(), display_progressbar=display_progressbar,
@@ -730,8 +781,28 @@ def train_from_policy(
                 "env_steps": env_steps.result(),
                 "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
                 "replay_buffer_frames": replay_buffer.num_frames()},
-            eval_policy_driver=policy_evaluation_driver
+            eval_policy_driver=policy_evaluation_driver,
+            aggressive_training=aggressive_training and global_step.numpy() < aggressive_training_steps,
+            aggressive_update=aggressive_inference_optimization
         )
+
+        if aggressive_training and global_step.numpy() < aggressive_training_steps:
+            if display_progressbar:
+                progressbar.add(0, [('aggressive_updates_ratio', aggressive_inference_optimization)])
+            if best_loss is None:
+                best_loss = loss
+            if prev_loss is not None:
+                if tf.abs(loss - prev_loss) > convergence_error:  # and loss < best_loss:
+                    convergence_steps = approximate_convergence_steps
+                else:
+                    convergence_steps -= 1
+                best_loss = min(loss, best_loss)
+            prev_loss = loss
+            if convergence_steps == 0:
+                aggressive_inference_optimization = not aggressive_inference_optimization
+                convergence_steps = approximate_convergence_steps if aggressive_inference_optimization else 0
+                best_loss = None
+                prev_loss = None
 
 
 def train_from_dataset(
@@ -812,12 +883,17 @@ def training_step(
         display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
         eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
         start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None,
-        eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None
+        eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
+        aggressive_training=False, aggressive_update=True
 ):
     if additional_metrics is None:
         additional_metrics = {}
-
-    gradients = compute_apply_gradients(vae_mdp, dataset_batch, optimizer)
+    if not aggressive_training:
+        gradients = compute_apply_gradients(vae_mdp, dataset_batch, optimizer)
+    elif aggressive_update:
+        gradients = compute_apply_gradients_inference_update(vae_mdp, dataset_batch, optimizer)
+    else:
+        gradients = compute_apply_gradients_generator_update(vae_mdp, dataset_batch, optimizer)
     loss = gradients
 
     if annealing_period > 0 and \
@@ -861,6 +937,8 @@ def training_step(
                     tf.summary.scalar(key, value, step=global_step.numpy())
         # reset metrics
         vae_mdp.reset_metrics()
+
+    return loss
 
 
 def eval_and_save(
