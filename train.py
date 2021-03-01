@@ -207,6 +207,11 @@ flags.DEFINE_bool(
     default=False,
     help='Set whether to perform aggressive inference optimizations.'
 )
+flags.DEFINE_integer(
+    'initial_collect_steps',
+    default=int(1e4),
+    help='Number of frames to be collected in the replay buffer before starting the training.'
+)
 FLAGS = flags.FLAGS
 
 
@@ -382,7 +387,7 @@ def main(argv):
             environment.time_step_spec().reward.shape,
             tuple(reinforcement_learning.labeling_functions[environment_name](
                 environment.reset().observation).shape)
-            )
+        )
         )
     if params['load_vae'] == '':
         q, p_t, p_r, p_decode, _ = generate_network_components(name='state')
@@ -453,40 +458,41 @@ def main(argv):
     if dataset_path == '':
         policy = tf.compat.v2.saved_model.load(params['policy_path'])
 
-        variational_mdp.train_from_policy(vae_mdp_model, policy=policy, environment_suite=environment_suite,
-                                          env_name=environment_name,
-                                          labeling_function=reinforcement_learning.labeling_functions[environment_name],
-                                          batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
-                                          manager=manager, log_name=vae_name,
-                                          start_annealing_step=params['start_annealing_step'],
-                                          logs=True,
-                                          num_iterations=params['max_steps'],
-                                          display_progressbar=params['display_progressbar'],
-                                          save_directory=params['save_dir'],
-                                          parallelization=params['parallel_env'] > 1,
-                                          num_parallel_call=params['parallel_env'],
-                                          eval_steps=int(1e3) if not params['do_not_eval'] else 0,
-                                          get_policy_evaluation=(
-                                              None if not params['action_discretizer'] else
-                                              vae_mdp_model.get_abstract_policy),
-                                          wrap_eval_tf_env=(
-                                              None if not params['action_discretizer'] else
-                                              lambda tf_env: vae_mdp_model.wrap_tf_environment(
-                                                  tf_env, reinforcement_learning.labeling_functions[environment_name]
-                                              )
-                                          ),
-                                          annealing_period=params['annealing_period'],
-                                          aggressive_training=params['aggressive_training'])
+        vae_mdp_model.train_from_policy(policy=policy, environment_suite=environment_suite,
+                                        env_name=environment_name,
+                                        labeling_function=reinforcement_learning.labeling_functions[environment_name],
+                                        batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
+                                        manager=manager, log_name=vae_name,
+                                        start_annealing_step=params['start_annealing_step'],
+                                        logs=True,
+                                        num_iterations=params['max_steps'],
+                                        display_progressbar=params['display_progressbar'],
+                                        save_directory=params['save_dir'],
+                                        parallelization=params['parallel_env'] > 1,
+                                        num_parallel_call=params['parallel_env'],
+                                        eval_steps=int(1e3) if not params['do_not_eval'] else 0,
+                                        get_policy_evaluation=(
+                                            None if not params['action_discretizer'] else
+                                            vae_mdp_model.get_abstract_policy),
+                                        wrap_eval_tf_env=(
+                                            None if not params['action_discretizer'] else
+                                            lambda tf_env: vae_mdp_model.wrap_tf_environment(
+                                                tf_env, reinforcement_learning.labeling_functions[environment_name]
+                                            )
+                                        ),
+                                        annealing_period=params['annealing_period'],
+                                        aggressive_training=params['aggressive_training'],
+                                        initial_collect_steps=params['initial_collect_steps'])
     else:
-        variational_mdp.train_from_dataset(vae_mdp_model, dataset_generator=generate_dataset,
-                                           batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
-                                           manager=manager, dataset_size=dataset_size,
-                                           annealing_period=params['annealing_period'],
-                                           start_annealing_step=params['start_annealing_step'],
-                                           log_name=vae_name, logs=True, max_steps=params['max_steps'],
-                                           display_progressbar=params['display_progressbar'],
-                                           save_directory=params['save_dir'],
-                                           eval_ratio=int(1e3) if not params['do_not_eval'] else 0)
+        vae_mdp_model.train_from_dataset(dataset_generator=generate_dataset,
+                                         batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
+                                         manager=manager, dataset_size=dataset_size,
+                                         annealing_period=params['annealing_period'],
+                                         start_annealing_step=params['start_annealing_step'],
+                                         log_name=vae_name, logs=True, max_steps=params['max_steps'],
+                                         display_progressbar=params['display_progressbar'],
+                                         save_directory=params['save_dir'],
+                                         eval_ratio=int(1e3) if not params['do_not_eval'] else 0, )
 
     return 0
 
