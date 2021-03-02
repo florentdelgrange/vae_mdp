@@ -63,51 +63,23 @@ def gather_rl_observations(
 
 
 @tf.function
-def map_rl_trajectory_to_vae_input(
-        trajectory, labeling_function,
-        scalar_rewards=True, initial_state=None, initial_action=None, deadlock_action=None):
+def map_rl_trajectory_to_vae_input(trajectory, labeling_function, scalar_rewards=True):
+    """
+    Maps a tf-agent trajectory of 2 time steps to a transition tuple of the form
+    <state, action, reward, next state, next label>
+    """
 
-    state_type = trajectory.step_type[:2]
-    next_state_type = trajectory.next_step_type[:2]
-    states = trajectory.observation[:2, :]
-    actions = trajectory.action[:2, :]
-    rewards = trajectory.reward[:2] if scalar_rewards else trajectory.reward[:2, :]
+    state = trajectory.observation[0, :]
+    action = trajectory.action[0, :]
+    reward = trajectory.reward[0] if scalar_rewards else trajectory.reward[0, :]
     if scalar_rewards:
-        rewards = tf.reshape(rewards, list(rewards.shape) + [1])
-    next_states = trajectory.observation[1:, :]
-    next_labels = tf.cast(labeling_function(next_states), tf.float32)
-    if next_labels.shape == states.shape[:-1]:
-        next_labels = tf.reshape(next_labels, list(next_labels.shape) + [1])
+        reward = tf.reshape(reward, list(reward.shape) + [1])
+    next_state = trajectory.observation[1, :]
+    next_label = tf.cast(labeling_function(next_state), tf.float32)
+    if next_label.shape == state.shape[:-1]:
+        next_label = tf.reshape(next_label, list(next_label.shape) + [1])
 
-    if initial_state is None:
-        initial_state = tf.zeros(shape=tf.shape(states)[1:], dtype=tf.float32)
-    if initial_action is None:
-        initial_action = tf.zeros(shape=tf.shape(actions)[1:], dtype=tf.float32)
-    if deadlock_action is None:
-        deadlock_action = tf.zeros(shape=tf.shape(actions)[1:], dtype=tf.float32)
-
-    # check if the transition incident state is terminal and if next state is initial
-    # note: such transitions correspond to those where the reset() function has been called
-
-    states, actions, rewards, next_labels = tf.cond(
-        tf.equal(state_type[0], ts.StepType.LAST),  # and state_type[1] == next_state_type[0] == ts.StepType.FIRST,
-        lambda: (
-            tf.stack([initial_state, states[1]]),
-            tf.stack([initial_action, actions[1]]),
-            tf.stack([tf.zeros(shape=tf.shape(rewards)[1:], dtype=tf.float32), rewards[1]]),
-            tf.stack([next_labels[1], next_labels[1]])
-        ), lambda: (states, actions, rewards, next_labels))
-
-    next_states, actions, rewards, next_labels = tf.cond(
-        tf.equal(next_state_type[1], ts.StepType.FIRST),  # and state_type[1] == next_state_type[0] == ts.StepType.LAST
-        lambda: (
-            tf.stack([next_states[0], next_states[0]]),
-            tf.stack([actions[0], deadlock_action]),
-            tf.stack([rewards[0], tf.zeros(shape=tf.shape(rewards)[1:], dtype=tf.float32)]),
-            tf.stack([next_labels[0], next_labels[0]])
-        ), lambda: (next_states, actions, rewards, next_labels))
-
-    return states, actions, rewards, next_states, next_labels
+    return state, action, reward, next_state, next_label
 
 
 class DictionaryDatasetGenerator:

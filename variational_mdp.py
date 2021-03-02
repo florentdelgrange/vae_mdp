@@ -679,7 +679,7 @@ class VariationalMarkovDecisionProcess(Model):
 
         dataset_generator = lambda: replay_buffer.as_dataset(
             num_parallel_calls=num_parallel_call,
-            num_steps=3
+            num_steps=2
         ).map(
             map_func=lambda trajectory, _: map_rl_trajectory_to_vae_input(trajectory, labeling_function),
             num_parallel_calls=num_parallel_call,
