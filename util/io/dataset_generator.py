@@ -63,23 +63,25 @@ def gather_rl_observations(
 
 
 @tf.function
-def map_rl_trajectory_to_vae_input(trajectory, labeling_function, scalar_rewards=True):
+def map_rl_trajectory_to_vae_input(trajectory, labeling_function):
     """
     Maps a tf-agent trajectory of 2 time steps to a transition tuple of the form
-    <state, action, reward, next state, next label>
+    <state, state label, action, reward, next state, next state label>
     """
 
-    state = trajectory.observation[0, :]
-    action = trajectory.action[0, :]
-    reward = trajectory.reward[0] if scalar_rewards else trajectory.reward[0, :]
-    if scalar_rewards:
+    state = trajectory.observation[0, ...]
+    labels = tf.cast(labeling_function(trajectory.observation), tf.float32)
+    if tf.rank(labels) == 1:
+        labels = tf.reshape(labels, list(labels.shape) + [1])
+    label = labels[0, ...]
+    action = trajectory.action[0, ...]
+    reward = trajectory.reward[0, ...]
+    if tf.rank(reward) == 1:
         reward = tf.reshape(reward, list(reward.shape) + [1])
-    next_state = trajectory.observation[1, :]
-    next_label = tf.cast(labeling_function(next_state), tf.float32)
-    if next_label.shape == state.shape[:-1]:
-        next_label = tf.reshape(next_label, list(next_label.shape) + [1])
+    next_state = trajectory.observation[1, ...]
+    next_label = labels[1, ...]
 
-    return state, action, reward, next_state, next_label
+    return state, label, action, reward, next_state, next_label
 
 
 class DictionaryDatasetGenerator:
