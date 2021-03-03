@@ -404,7 +404,7 @@ class VariationalMarkovDecisionProcess(Model):
 
     def eval(self, inputs):
         """
-        Evaluate the objective by considering discrete latent states
+        Evaluate the ELBO by making use of a discrete latent space.
         """
         state, label, action, reward, next_state, next_label = inputs
 
@@ -430,7 +430,7 @@ class VariationalMarkovDecisionProcess(Model):
 
     def mean_latent_bits_used(self, inputs, eps=1e-3):
         """
-        Compute the mean number of bits used to represent latent states of the vae_mdp for the given dataset batch.
+        Compute the mean number of bits used to represent the latent space of the vae_mdp for the given dataset batch.
         This allows monitoring if the latent space is effectively used by the VAE or if posterior collapse happens.
         """
         mean_bits_used = 0

@@ -47,6 +47,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             relaxed_state_encoding: bool = False,
             full_optimization: bool = False,
             reconstruction_mixture_components: int = 1,
+            action_regularizer_scaling: float = 1e-1,
     ):
 
         super().__init__(
@@ -89,6 +90,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.prior_temperature = tf.Variable(prior_temperature, dtype=tf.float32, trainable=False)
         self.encoder_temperature_decay_rate = tf.constant(encoder_temperature_decay_rate, dtype=tf.float32)
         self.prior_temperature_decay_rate = tf.constant(prior_temperature_decay_rate, dtype=tf.float32)
+        self._action_regularizer_scaling = tf.constant(action_regularizer_scaling, dtype=tf.float32)
 
         def clone_model(model: tf.keras.Model, copy_name: str = ''):
             model = model_from_json(model.to_json(), custom_objects={'leaky_relu': tf.nn.leaky_relu})
@@ -117,15 +119,15 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 name="action_encoder")
 
             # prior over actions
-            self.simplified_policy_network = simplified_policy_network(latent_state)
-            self.simplified_policy_network = Dense(
+            self.latent_policy_network = simplified_policy_network(latent_state)
+            self.latent_policy_network = Dense(
                 units=self.number_of_discrete_actions,
                 activation=None,
                 name='simplified_policy_exp_one_hot_logits'
-            )(self.simplified_policy_network)
-            self.simplified_policy_network = Model(
+            )(self.latent_policy_network)
+            self.latent_policy_network = Model(
                 inputs=latent_state,
-                outputs=self.simplified_policy_network,
+                outputs=self.latent_policy_network,
                 name='simplified_policy_network'
             )
 
@@ -310,7 +312,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         else:
             self.action_encoder = action_encoder_network
-            self.simplified_policy_network = simplified_policy_network
+            self.latent_policy_network = simplified_policy_network
             self.action_transition_network = transition_network
             self.action_reward_network = reward_network
             self.action_decoder = action_decoder_network
@@ -374,12 +376,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
         return tfd.OneHotCategorical(logits=log_probs)
 
-    def relaxed_abstract_policy(self, latent_state: tf.Tensor, temperature: float):
+    def relaxed_latent_policy(self, latent_state: tf.Tensor, temperature: float):
         return tfd.ExpRelaxedOneHotCategorical(
-            temperature=temperature, logits=self.simplified_policy_network(latent_state))
+            temperature=temperature, logits=self.latent_policy_network(latent_state))
 
-    def discrete_abstract_policy(self, latent_state: tf.Tensor):
-        relaxed_distribution = self.relaxed_abstract_policy(latent_state, temperature=1e-5)
+    def discrete_latent_policy(self, latent_state: tf.Tensor):
+        relaxed_distribution = self.relaxed_latent_policy(latent_state, temperature=1e-5)
         log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
         return tfd.OneHotCategorical(logits=log_probs)
 
@@ -501,22 +503,19 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
     def call(self, inputs, training=None, mask=None, **kwargs):
         if self.full_optimization:
             return self._full_optimization_call(inputs, training, mask)
-        # inputs are assumed to have shape
-        # [(?, 2, state_shape), (?, 2, action_shape), (?, 2, reward_shape), (?, 2, state_shape), (?, 2, label_shape)]
-        s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
-        s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
+
+        state, label, action, reward, next_state, next_label = inputs
 
         if self.relaxed_state_encoding:
-            z = self._state_vae.relaxed_encoding(
-                s_0, a_0, r_0, s_1, l_1, self._state_vae.encoder_temperature).sample()
-            z = tf.sigmoid(z)
-            z_prime = self._state_vae.relaxed_encoding(
-                s_1, a_1, r_1, s_2, l_2, self._state_vae.encoder_temperature).sample()
+            latent_state = self._state_vae.relaxed_encoding(state, label, self._state_vae.encoder_temperature).sample()
+            latent_state = tf.sigmoid(latent_state)
+            next_latent_state = self._state_vae.relaxed_encoding(
+                next_state, next_label, self._state_vae.encoder_temperature).sample()
         else:
-            z = tf.cast(self.binary_encode(s_0, a_0, r_0, s_1, l_1).sample(), tf.float32)
-            z_prime = tf.cast(self.binary_encode(s_1, a_1, r_1, s_2, l_2).sample(), tf.float32)
-        q = self.relaxed_action_encoding(z, a_1, self.encoder_temperature)
-        p = self.relaxed_abstract_policy(z, self.prior_temperature)
+            latent_state = tf.cast(self.binary_encode(state, label).sample(), tf.float32)
+            next_latent_state = tf.cast(self.binary_encode(next_state, next_label).sample(), tf.float32)
+        q = self.relaxed_action_encoding(latent_state, action, self.encoder_temperature)
+        p = self.relaxed_latent_policy(latent_state, self.prior_temperature)
         latent_action = q.sample()
 
         log_q_latent_action = q.log_prob(latent_action)
@@ -525,39 +524,41 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         # transition probability reconstruction
         transition_probability_distribution = \
             self.discrete_latent_transition_probability_distribution(
-                z, latent_action, relaxed_state_encoding=self.relaxed_state_encoding, log_latent_action=True)
+                latent_state, latent_action, relaxed_state_encoding=self.relaxed_state_encoding, log_latent_action=True)
         if self.relaxed_state_encoding:
             continuous_action_transition = self._state_vae.relaxed_latent_transition_probability_distribution(
-                z, a_1, self._state_vae.prior_temperature)
+                latent_state, action, self._state_vae.prior_temperature)
         else:
-            continuous_action_transition = self._state_vae.discrete_latent_transition_probability_distribution(z, a_1)
-        log_p_transition_action = continuous_action_transition.log_prob(z_prime)
-        log_p_transition_latent_action = transition_probability_distribution.log_prob(z_prime)
+            continuous_action_transition = self._state_vae.discrete_latent_transition_probability_distribution(
+                latent_state, action)
+        log_p_transition_action = continuous_action_transition.log_prob(next_latent_state)
+        log_p_transition_latent_action = transition_probability_distribution.log_prob(next_latent_state)
         log_p_transition = tf.reduce_sum(log_p_transition_latent_action - log_p_transition_action, axis=1)
 
         if self.relaxed_state_encoding:
-            z_prime = tf.sigmoid(z_prime)
+            next_latent_state = tf.sigmoid(next_latent_state)
 
         # rewards reconstruction
-        reward_distribution = self.reward_probability_distribution(z, latent_action, z_prime, log_latent_action=True)
+        reward_distribution = self.reward_probability_distribution(
+            latent_state, latent_action, next_latent_state, log_latent_action=True)
         log_p_rewards_action = self._state_vae.reward_probability_distribution(
-            z, a_1, z_prime).log_prob(r_1)
-        log_p_rewards_latent_action = reward_distribution.log_prob(r_1)
+            latent_state, action, next_latent_state).log_prob(reward)
+        log_p_rewards_latent_action = reward_distribution.log_prob(reward)
         log_p_rewards = log_p_rewards_latent_action - log_p_rewards_action
 
         # action reconstruction
-        action_distribution = self.decode_action(z, latent_action, log_latent_action=True)
-        log_p_action = action_distribution.log_prob(a_1)
+        action_distribution = self.decode_action(latent_state, latent_action, log_latent_action=True)
+        log_p_action = action_distribution.log_prob(action)
 
         rate = log_q_latent_action - log_p_latent_action
         distortion = -1. * (log_p_action + log_p_rewards + log_p_transition)
 
-        cross_entropy_regularizer = self._compute_encoder_uniform_cross_entropy(z, a_1)
+        cross_entropy_regularizer = self._compute_encoder_uniform_cross_entropy(latent_state, action)
 
         # metrics
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
-        self.loss_metrics['action_mse'](a_1, action_distribution.sample())
-        self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
+        self.loss_metrics['action_mse'](action, action_distribution.sample())
+        self.loss_metrics['reward_mse'](reward, reward_distribution.sample())
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
@@ -566,8 +567,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
 
         if variational_mdp.debug:
-            tf.print(z, "sampled z", summarize=variational_mdp.debug_verbosity)
-            tf.print(z_prime, "sampled z'", summarize=variational_mdp.debug_verbosity)
+            tf.print(latent_state, "sampled z", summarize=variational_mdp.debug_verbosity)
+            tf.print(next_latent_state, "sampled z'", summarize=variational_mdp.debug_verbosity)
             tf.print(q.logits, "logits of Q_action", summarize=variational_mdp.debug_verbosity)
             tf.print(p.logits, "logits of P_action", summarize=variational_mdp.debug_verbosity)
             tf.print(latent_action, "sampled log action from Q", summarize=variational_mdp.debug_verbosity)
@@ -580,58 +581,58 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         return [distortion, rate, cross_entropy_regularizer]
 
     def _full_optimization_call(self, inputs, training=None, mask=None, **kwargs):
-        s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
-        s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
+        state, label, action, reward, next_state, next_label = inputs
 
-        q_state = self._state_vae.relaxed_encoding(s_0, a_0, r_0, s_1, l_1, self._state_vae.encoder_temperature)
-        q_state_prime = self._state_vae.relaxed_encoding(s_1, a_1, r_1, s_2, l_2, self._state_vae.encoder_temperature)
-        z = tf.sigmoid(q_state.sample())
-        logistic_z_prime = q_state_prime.sample()
-        q_action = self.relaxed_action_encoding(z, a_1, self.encoder_temperature)
-        p_action = self.relaxed_abstract_policy(z, self.prior_temperature)
+        q_state = self._state_vae.relaxed_encoding(state, label, self._state_vae.encoder_temperature)
+        q_next_state = self._state_vae.relaxed_encoding(next_state, next_label, self._state_vae.encoder_temperature)
+        latent_state = tf.sigmoid(q_state.sample())
+        logistic_next_state = q_next_state.sample()
+        q_action = self.relaxed_action_encoding(latent_state, action, self.encoder_temperature)
+        p_action_prior = self.relaxed_latent_policy(latent_state, self.prior_temperature)
         latent_action = q_action.sample()
 
-        log_q_z_prime = q_state_prime.log_prob(logistic_z_prime)
-        log_q_latent_action = q_action.log_prob(latent_action)
-        log_p_latent_action = p_action.log_prob(latent_action)
+        log_q_state = q_next_state.log_prob(logistic_next_state)
+        log_q_action = q_action.log_prob(latent_action)
+        log_p_action_prior = p_action_prior.log_prob(latent_action)
 
         # action encoder rate
-        action_rate = log_q_latent_action - log_p_latent_action
+        action_rate = log_q_action - log_p_action_prior
 
         # transitions
         transition_probability_distribution = self.discrete_latent_transition_probability_distribution(
-            z, latent_action, relaxed_state_encoding=True, log_latent_action=True)
-        log_p_z_prime = transition_probability_distribution.log_prob(logistic_z_prime)
+            latent_state, latent_action, relaxed_state_encoding=True, log_latent_action=True)
+        log_p_z_prime = transition_probability_distribution.log_prob(logistic_next_state)
 
-        state_rate = tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
-        z_prime = tf.sigmoid(logistic_z_prime)
+        state_rate = tf.reduce_sum(log_q_state - log_p_z_prime, axis=1)
+        next_latent_state = tf.sigmoid(logistic_next_state)
 
         # rewards reconstruction
-        reward_distribution = self.reward_probability_distribution(z, latent_action, z_prime, log_latent_action=True)
-        log_p_rewards = reward_distribution.log_prob(r_1)
+        reward_distribution = self.reward_probability_distribution(
+            latent_state, latent_action, next_latent_state, log_latent_action=True)
+        log_p_rewards = reward_distribution.log_prob(reward)
 
         # state reconstruction
-        state_distribution = self._state_vae.decode(z_prime)
-        log_p_state = state_distribution.log_prob(s_2)
+        state_distribution = self._state_vae.decode(next_latent_state)
+        log_p_state = state_distribution.log_prob(next_state)
 
         # action reconstruction
-        action_distribution = self.decode_action(z, latent_action, log_latent_action=True)
-        log_p_action = action_distribution.log_prob(a_1)
+        action_distribution = self.decode_action(latent_state, latent_action, log_latent_action=True)
+        log_p_action = action_distribution.log_prob(action)
 
         rate = state_rate + action_rate
         distortion = -1. * (log_p_state + log_p_action + log_p_rewards)
 
         cross_entropy_regularizer = (
-                self._compute_encoder_uniform_cross_entropy(z, a_1) +
-                self._compute_cross_entropy_regularization(s_1, a_1, r_1, s_2)
+                self._action_regularizer_scaling * self._compute_encoder_uniform_cross_entropy(latent_state, action) +
+                self.mean_binary_entropy(state, action, reward, next_state)
         )
 
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
-        self.loss_metrics['action_mse'](a_1, action_distribution.sample())
-        self.loss_metrics['reward_mse'](r_1, reward_distribution.sample())
-        self.loss_metrics['state_mse'](s_2, state_distribution.sample())
+        self.loss_metrics['action_mse'](action, action_distribution.sample())
+        self.loss_metrics['reward_mse'](reward, reward_distribution.sample())
+        self.loss_metrics['state_mse'](next_state, state_distribution.sample())
         self.loss_metrics['state_rate'](state_rate)
-        self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(s_1, a_1, r_1, s_2, l_2).entropy())
+        self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(state, action, reward, next_state, next_label).entropy())
         self.loss_metrics['state_decoder_variance'](state_distribution.variance())
         self.loss_metrics['action_rate'](action_rate)
         self.loss_metrics['distortion'](distortion)
@@ -656,117 +657,52 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         )
         return prior_uniform_distribution.kl_divergence(discrete_action_posterior)
 
-    @tf.function
-    def _compute_decoder_jensen_shannon_divergence(self, z: tf.Tensor, a_1: tf.Tensor):
-        [action_mean, action_raw_covariance, categorical_logits] = self.action_decoder(z)
-        action_means = tf.unstack(action_mean, axis=1)
-        action_raw_covariances = tf.unstack(action_raw_covariance, axis=1)
-        cat_logits = tf.unstack(categorical_logits, axis=1)
-        posterior_distributions = [
-            tfd.MultivariateNormalDiag(loc=mean, scale_diag=self.scale_activation(raw_covariance))
-            for mean, raw_covariance in zip(action_means, action_raw_covariances)
-        ] if self.mixture_components == 1 else [
-            tfd.MixtureSameFamily(
-                mixture_distribution=tfd.Categorical(logits=logits),
-                components_distribution=tfd.MultivariateNormalDiag(
-                    loc=mean,
-                    scale_diag=self.scale_activation(raw_covariance)
-                ),
-            ) for logits, mean, raw_covariance in
-            zip(cat_logits, action_means, action_raw_covariances)
-        ]
-        weighted_distribution = tfd.Mixture(
-            cat=tfd.Categorical(
-                logits=tf.ones(shape=(tf.shape(categorical_logits)[0], self.number_of_discrete_actions))),
-            components=posterior_distributions
-        )
-        weighted_distribution_entropy = -1. * weighted_distribution.prob(a_1) * weighted_distribution.log_prob(a_1)
-
-        weighted_entropy = tf.reduce_sum(
-            [
-                - 1. * 1. / self.number_of_discrete_actions *
-                posterior_distributions[action].prob(a_1) * posterior_distributions[action].log_prob(a_1)
-                for action in range(self.number_of_discrete_actions)
-            ], axis=0
-        )
-
-        return weighted_distribution_entropy - weighted_entropy
-
     def eval(self, inputs):
-        s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
-        s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
+        state, label, action, reward, next_state, next_label = inputs
 
-        latent_distribution = self.binary_encode(s_0, a_0, r_0, s_1, l_1)
-        latent_distribution_prime = self.binary_encode(s_1, a_1, r_1, s_2, l_2)
-        z = tf.cast(latent_distribution.sample(), tf.float32)
-        z_prime = tf.cast(latent_distribution_prime.sample(), tf.float32)
+        latent_distribution = self.binary_encode(state, label)
+        latent_distribution_prime = self.binary_encode(next_state, next_label)
+        latent_state = tf.cast(latent_distribution.sample(), tf.float32)
+        next_latent_state = tf.cast(latent_distribution_prime.sample(), tf.float32)
 
-        q = self.discrete_action_encoding(z, a_1)
-        p = self.discrete_abstract_policy(z)
+        q = self.discrete_action_encoding(latent_state, action)
+        p = self.discrete_latent_policy(latent_state)
         latent_action = tf.cast(q.sample(), tf.float32)
         rate = q.kl_divergence(p)
 
-        if not self.full_optimization:
+        # transition probability reconstruction
+        transition_distribution = self.discrete_latent_transition_probability_distribution(
+            latent_state, tf.math.log(latent_action + epsilon), log_latent_action=True)
+        log_q_state = latent_distribution_prime.log_prob(next_latent_state)
+        log_p_state_prior = transition_distribution.log_prob(next_latent_state)
+        rate += tf.reduce_sum(log_q_state - log_p_state_prior, axis=1)
 
-            # transition probability reconstruction
-            log_p_transition_action = \
-                self._state_vae.discrete_latent_transition_probability_distribution(z, a_1).log_prob(z_prime)
-            log_p_transition_latent_action = self.discrete_latent_transition_probability_distribution(
-                z, tf.math.log(latent_action + epsilon), log_latent_action=True).log_prob(z_prime)
-            log_p_transition = tf.reduce_sum(log_p_transition_latent_action - log_p_transition_action, axis=1)
+        # rewards reconstruction
+        log_p_rewards = self.reward_probability_distribution(
+            latent_state, tf.math.log(latent_action + epsilon), next_latent_state, log_latent_action=True
+        ).log_prob(reward)
 
-            # rewards reconstruction
-            log_p_rewards_action = self._state_vae.reward_probability_distribution(
-                z, a_1, z_prime).log_prob(r_1)
-            log_p_rewards_latent_action = self.reward_probability_distribution(
-                z, tf.math.log(latent_action + epsilon), z_prime, log_latent_action=True).log_prob(r_1)
-            log_p_rewards = log_p_rewards_latent_action - log_p_rewards_action
+        # action reconstruction
+        action_distribution = self.decode_action(
+            latent_state, tf.math.log(latent_action + epsilon), log_latent_action=True)
+        log_p_action = action_distribution.log_prob(action)
 
-            # action reconstruction
-            action_distribution = self.decode_action(z, tf.math.log(latent_action + epsilon), log_latent_action=True)
-            log_p_action = action_distribution.log_prob(a_1)
+        # state reconstruction
+        state_distribution = self._state_vae.decode(next_latent_state)
+        log_p_reconstruction = state_distribution.log_prob(next_state)
 
-            rate = q.kl_divergence(p)
-            distortion = -1. * (log_p_action + log_p_rewards + log_p_transition)
-
-        else:
-
-            # transition probability reconstruction
-            transition_distribution = self.discrete_latent_transition_probability_distribution(
-                z, tf.math.log(latent_action + epsilon), log_latent_action=True)
-            log_q_z_prime = latent_distribution_prime.log_prob(z_prime)
-            log_p_z_prime = transition_distribution.log_prob(z_prime)
-            rate += tf.reduce_sum(log_q_z_prime - log_p_z_prime, axis=1)
-
-            # rewards reconstruction
-            log_p_rewards = self.reward_probability_distribution(
-                z, tf.math.log(latent_action + epsilon), z_prime, log_latent_action=True).log_prob(r_1)
-
-            # action reconstruction
-            action_distribution = self.decode_action(z, tf.math.log(latent_action + epsilon), log_latent_action=True)
-            log_p_action = action_distribution.log_prob(a_1)
-
-            # state reconstruction
-            state_distribution = self._state_vae.decode(z_prime)
-            log_p_reconstruction = state_distribution.log_prob(s_2)
-
-            distortion = -1. * (log_p_action + log_p_reconstruction + log_p_rewards)
+        distortion = -1. * (log_p_action + log_p_reconstruction + log_p_rewards)
 
         return (
             tf.reduce_mean(-1. * (distortion + rate)),
-            tf.concat([tf.cast(z, tf.int32), tf.cast(z_prime, tf.int32)], axis=0),
+            tf.concat([tf.cast(latent_state, tf.int32), tf.cast(next_latent_state, tf.int32)], axis=0),
             tf.cast(tf.argmax(latent_action, axis=1), tf.int32)
         )
 
     def mean_latent_bits_used(self, inputs, eps=1e-3):
-        """
-        Compute the mean number of bits used in the latent space of the vae_mdp for the given dataset batch.
-        This allows monitoring if the latent space is effectively used by the VAE or if posterior collapse happens.
-        """
-        s_0, a_0, r_0, _, l_1 = (x[:, 0, :] for x in inputs)
-        s_1, a_1, r_1, s_2, l_2 = (x[:, 1, :] for x in inputs)
-        z = tf.cast(self.binary_encode(s_0, a_0, r_0, s_1, l_1).sample(), tf.float32)
-        mean = tf.reduce_mean(self.discrete_action_encoding(z, a_1).probs_parameter(), axis=0)
+        state, label, action, reward, next_state, next_label = inputs
+        latent_state = tf.cast(self.binary_encode(state, label).sample(), tf.float32)
+        mean = tf.reduce_mean(self.discrete_action_encoding(latent_state, action).probs_parameter(), axis=0)
         check = lambda x: 1 if 1 - eps > x > eps else 0
         mean_bits_used = tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
 
@@ -837,11 +773,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     tf.one_hot(indices=action, depth=self.action_spec().maximum + 1, dtype=tf.float32)
                 ).sample()
                 time_step = self.tf_env.step(real_action)
-                reward = time_step.reward
-                reward = tf.cond(
-                    tf.shape(reward) == (self.batch_size,),
-                    lambda: tf.expand_dims(reward, axis=-1),
-                    lambda: reward)
                 label = tf.cast(self.labeling_function(time_step.observation), tf.float32)
                 label = tf.cond(
                     tf.shape(label) == (self.batch_size,),
@@ -849,9 +780,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     lambda: label)
 
                 latent_state = self.encode_observation(
-                    self._current_observation,
-                    real_action,
-                    reward,
                     time_step.observation,
                     label
                 ).sample()
@@ -867,16 +795,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     lambda: tf.expand_dims(label, axis=-1),
                     lambda: label)
 
-                initial_observation, initial_action, initial_reward = [
-                    tf.stack([tf.zeros(shape=shape, dtype=tf.float32) for _ in range(self.batch_size)]) for shape in [
-                        self.observation_shape, self.action_shape, self.reward_shape
-                    ]
-                ]
-
                 latent_state = self.encode_observation(
-                    initial_observation,
-                    initial_action,
-                    initial_reward,
                     time_step.observation,
                     label
                 ).sample()
@@ -917,7 +836,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 del step_type
 
                 z = tf.cast(observations, dtype=tf.float32)
-                one_hot_sample = self._vae_mdp.discrete_abstract_policy(z).sample()
+                one_hot_sample = self._vae_mdp.discrete_latent_policy(z).sample()
                 action = tf.cast(tf.argmax(one_hot_sample, axis=1), tf.int32)
 
                 return action, network_state
@@ -966,7 +885,7 @@ def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActi
         action_decoder_network=model.action_decoder,
         transition_network=model.action_transition_network,
         reward_network=model.action_reward_network,
-        simplified_policy_network=model.simplified_policy_network,
+        simplified_policy_network=model.latent_policy_network,
         one_output_per_action=model.action_decoder.variables[0].shape[0] == state_vae.latent_state_size,
         encoder_temperature=model._encoder_temperature,
         prior_temperature=model._prior_temperature,
