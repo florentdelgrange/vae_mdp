@@ -72,12 +72,12 @@ def map_rl_trajectory_to_vae_input(trajectory, labeling_function):
     state = trajectory.observation[0, ...]
     labels = tf.cast(labeling_function(trajectory.observation), tf.float32)
     if tf.rank(labels) == 1:
-        labels = tf.reshape(labels, list(labels.shape) + [1])
+        labels = tf.expand_dims(labels, axis=-1)
     label = labels[0, ...]
     action = trajectory.action[0, ...]
     reward = trajectory.reward[0, ...]
     if tf.rank(reward) == 1:
-        reward = tf.reshape(reward, list(reward.shape) + [1])
+        reward = tf.expand_dims(reward, axis=-1)
     next_state = trajectory.observation[1, ...]
     next_label = labels[1, ...]
 
