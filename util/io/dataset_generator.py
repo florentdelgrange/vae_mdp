@@ -63,7 +63,7 @@ def gather_rl_observations(
 
 
 @tf.function
-def map_rl_trajectory_to_vae_input(trajectory, labeling_function):
+def map_rl_trajectory_to_vae_input(trajectory, labeling_function, reset_state_handling=False):
     """
     Maps a tf-agent trajectory of 2 time steps to a transition tuple of the form
     <state, state label, action, reward, next state, next state label>
@@ -80,6 +80,26 @@ def map_rl_trajectory_to_vae_input(trajectory, labeling_function):
         reward = tf.expand_dims(reward, axis=-1)
     next_state = trajectory.observation[1, ...]
     next_label = labels[1, ...]
+
+    if reset_state_handling:
+        reset_label = tf.ones(
+            shape=tf.concat([tf.shape(label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
+            dtype=tf.float32)
+        new_state_label = tf.concat([label, reset_label - 1.], axis=-1)
+        new_next_state_label = tf.concat([next_label, reset_label - 1.], axis=-1)
+        if trajectory.step_type[0] == ts.StepType.LAST \
+                and trajectory.next_step_type[0] == ts.StepType.FIRST:
+            reset_state = tf.zeros(shape=tf.shape(state), dtype=tf.float32)
+            reset_state_label = tf.concat(
+                [tf.zeros(shape=tf.shape(label), dtype=tf.float32), reset_label], axis=-1)
+            reset_action = tf.zeros(shape=tf.shape(action), dtype=tf.float32)
+            reset_reward = tf.zeros(shape=tf.shape(reward), dtype=tf.float32)
+            if tf.random.uniform(shape=[]) > 0.5:
+                return state, new_state_label, action, reward, reset_state, reset_state_label
+            else:
+                return reset_state, reset_state_label, reset_action, reset_reward, next_state, new_next_state_label
+        else:
+            return state, new_state_label, action, reward, next_state, new_next_state_label
 
     return state, label, action, reward, next_state, next_label
 

@@ -367,7 +367,7 @@ class VariationalMarkovDecisionProcess(Model):
 
         distortion = -1. * (log_p_state + log_p_rewards)
         rate = tf.reduce_sum(log_q - log_p_prior, axis=1)
-        entropy_regularizer = self.mean_binary_entropy(next_state)
+        entropy_regularizer = -1. * self.mean_binary_entropy(next_state)
 
         if metrics:
             self.loss_metrics['ELBO'](-1 * (distortion + rate))
@@ -655,14 +655,15 @@ class VariationalMarkovDecisionProcess(Model):
                 output_types=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32))
             return dataset.interleave(lambda *x: tf.data.Dataset.from_tensors(x), num_parallel_calls=num_parallel_call)
 
-        #  dataset_generator = lambda: replay_buffer.as_dataset(
-        #      num_parallel_calls=num_parallel_call,
-        #      num_steps=2
-        #  ).map(
-        #      map_func=lambda trajectory, _: map_rl_trajectory_to_vae_input(trajectory, labeling_function),
-        #      num_parallel_calls=num_parallel_call,
-        #      #  deterministic=False  # TF version >= 2.2.0
-        #  )
+        dataset_generator = lambda: replay_buffer.as_dataset(
+            num_parallel_calls=num_parallel_call,
+            num_steps=2
+        ).map(
+            map_func=lambda trajectory, _: map_rl_trajectory_to_vae_input(
+                trajectory, labeling_function, reset_state_handling=True),
+            num_parallel_calls=num_parallel_call,
+            #  deterministic=False  # TF version >= 2.2.0
+        )
         dataset = dataset_generator().batch(batch_size=batch_size, drop_remainder=True)
         dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
 

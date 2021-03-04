@@ -476,15 +476,15 @@ def main(argv):
                                         parallelization=params['parallel_env'] > 1,
                                         num_parallel_call=params['parallel_env'],
                                         eval_steps=int(1e3) if not params['do_not_eval'] else 0,
-                                        get_policy_evaluation=(
-                                            None if not params['action_discretizer'] else
-                                            vae_mdp_model.get_abstract_policy),
-                                        wrap_eval_tf_env=(
-                                            None if not params['action_discretizer'] else
-                                            lambda tf_env: vae_mdp_model.wrap_tf_environment(
-                                                tf_env, reinforcement_learning.labeling_functions[environment_name]
-                                            )
-                                        ),
+                                        #  get_policy_evaluation=(
+                                        #      None if not params['action_discretizer'] else
+                                        #      vae_mdp_model.get_abstract_policy),
+                                        #  wrap_eval_tf_env=(
+                                        #      None if not params['action_discretizer'] else
+                                        #      lambda tf_env: vae_mdp_model.wrap_tf_environment(
+                                        #          tf_env, reinforcement_learning.labeling_functions[environment_name]
+                                        #      )
+                                        #  ),
                                         annealing_period=params['annealing_period'],
                                         aggressive_training=params['aggressive_training'],
                                         initial_collect_steps=params['initial_collect_steps'])
