@@ -76,12 +76,47 @@ def map_rl_trajectory_to_vae_input(trajectory, labeling_function):
     label = labels[0, ...]
     action = trajectory.action[0, ...]
     reward = trajectory.reward[0, ...]
-    if tf.rank(reward) == 1:
+    if tf.rank(reward) == 0:
         reward = tf.expand_dims(reward, axis=-1)
     next_state = trajectory.observation[1, ...]
     next_label = labels[1, ...]
 
     return state, label, action, reward, next_state, next_label
+
+
+class ErgodicMDPTransitionGenerator:
+    """
+    Generates a dataset from raw data contained in a replay buffer.
+    """
+
+    def __init__(self, replay_buffer, labeling_function, num_parallel_calls=tf.data.experimental.AUTOTUNE):
+        self.labeling_function = labeling_function
+        self.dataset = replay_buffer.as_dataset(
+            num_parallel_calls=num_parallel_calls,
+            num_steps=2).prefetch(tf.data.experimental.AUTOTUNE)
+
+    def __call__(self):
+        for raw_transition, _ in self.dataset:
+            state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
+                trajectory=raw_transition,
+                labeling_function=self.labeling_function,
+            )
+            reset_label = tf.ones(
+                shape=tf.concat([tf.shape(state_label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
+                dtype=tf.float32)
+            new_state_label = tf.concat([state_label, reset_label - 1.], axis=-1)
+            new_next_state_label = tf.concat([next_state_label, reset_label - 1.], axis=-1)
+            if raw_transition.step_type[0] == ts.StepType.LAST \
+                    and raw_transition.next_step_type[0] == ts.StepType.FIRST:
+                reset_state = tf.zeros(shape=tf.shape(state), dtype=tf.float32)
+                reset_state_label = tf.concat(
+                    [tf.zeros(shape=tf.shape(state_label), dtype=tf.float32), reset_label], axis=-1)
+                reset_action = tf.zeros(shape=tf.shape(action), dtype=tf.float32)
+                reset_reward = tf.zeros(shape=tf.shape(reward), dtype=tf.float32)
+                yield state, new_state_label, action, reward, reset_state, reset_state_label
+                yield reset_state, reset_state_label, reset_action, reset_reward, next_state, new_next_state_label
+            else:
+                yield state, new_state_label, action, reward, next_state, new_next_state_label
 
 
 class DictionaryDatasetGenerator:
@@ -122,37 +157,6 @@ class DictionaryDatasetGenerator:
     def __call__(self, file):
         with h5py.File(file, 'r') as hf:
             yield from self.process_data(data=hf)
-
-
-class RawDatasetGenerator:
-    """
-    Generates a dataset from raw data contained in a replay buffer.
-    """
-
-    def __init__(
-            self, replay_buffer, labeling_function,
-            initial_dummy_state=None, initial_dummy_action=None, deadlock_action=None,
-            scalar_rewards=True, num_parallel_calls=tf.data.experimental.AUTOTUNE
-    ):
-        self.initial_dummy_state = initial_dummy_state
-        self.initial_dummy_action = initial_dummy_action
-        self.deadlock_action = deadlock_action
-        self.labeling_function = labeling_function
-        self.raw_dataset = replay_buffer.as_dataset(
-            num_parallel_calls=num_parallel_calls,
-            num_steps=3).prefetch(tf.data.experimental.AUTOTUNE)
-        self.scalar_rewards = scalar_rewards
-
-    def __call__(self):
-        for raw_data, _ in self.raw_dataset:
-            yield from map_rl_trajectory_to_vae_input(
-                trajectory=raw_data,
-                labeling_function=self.labeling_function,
-                scalar_rewards=self.scalar_rewards,
-                initial_state=self.initial_dummy_state,
-                initial_action=self.initial_dummy_action,
-                deadlock_action=self.deadlock_action
-            )
 
 
 def get_tensor_shape(data):
