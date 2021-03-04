@@ -19,7 +19,7 @@ from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.trajectories import policy_step, trajectory
 from tf_agents.utils import common
 
-from util.io.dataset_generator import map_rl_trajectory_to_vae_input
+from util.io.dataset_generator import map_rl_trajectory_to_vae_input, ErgodicMDPTransitionGenerator
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -647,14 +647,21 @@ class VariationalMarkovDecisionProcess(Model):
             batch_size=tf_env.batch_size,
             max_length=replay_buffer_capacity)
 
-        dataset_generator = lambda: replay_buffer.as_dataset(
-            num_parallel_calls=num_parallel_call,
-            num_steps=2
-        ).map(
-            map_func=lambda trajectory, _: map_rl_trajectory_to_vae_input(trajectory, labeling_function),
-            num_parallel_calls=num_parallel_call,
-            #  deterministic=False  # TF version >= 2.2.0
-        )
+        def dataset_generator():
+            dataset = tf.data.Dataset.from_generator(
+                generator=ErgodicMDPTransitionGenerator(
+                    replay_buffer=replay_buffer, labeling_function=labeling_function),
+                output_types=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32))
+            return dataset.interleave(lambda *x: tf.data.Dataset.from_tensors(x), num_parallel_calls=num_parallel_call)
+
+        #  dataset_generator = lambda: replay_buffer.as_dataset(
+        #      num_parallel_calls=num_parallel_call,
+        #      num_steps=2
+        #  ).map(
+        #      map_func=lambda trajectory, _: map_rl_trajectory_to_vae_input(trajectory, labeling_function),
+        #      num_parallel_calls=num_parallel_call,
+        #      #  deterministic=False  # TF version >= 2.2.0
+        #  )
         dataset = dataset_generator().batch(batch_size=batch_size, drop_remainder=True)
         dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
 
