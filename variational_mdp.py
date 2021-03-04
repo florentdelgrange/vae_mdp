@@ -62,7 +62,8 @@ class VariationalMarkovDecisionProcess(Model):
                  state_pre_processing_network: Model = None,
                  state_post_processing_network: Model = None,
                  state_scaler: Callable[[tf.Tensor], tf.Tensor] = lambda x: x,
-                 pre_loaded_model: bool = False):
+                 pre_loaded_model: bool = False,
+                 reset_state_label: bool = True):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
 
@@ -121,7 +122,7 @@ class VariationalMarkovDecisionProcess(Model):
             # Encoder network
             encoder = encoder_network(state)
             logits_layer = Dense(
-                units=latent_state_size - np.prod(label_shape),
+                units=latent_state_size - np.prod(label_shape) - int(reset_state_label),
                 activation=None,
                 name='encoder_latent_distribution_logits'
             )(encoder)
@@ -526,11 +527,7 @@ class VariationalMarkovDecisionProcess(Model):
             distortion + beta * rate + alpha * cross_entropy_regularizer
         )
 
-    @tf.function
-    def compute_apply_gradients(self, x, optimizer, trainable_variables=None):
-        if self.trainable_variables is None:
-            trainable_variables = self.trainable_variables
-
+    def _compute_apply_gradients(self, x, optimizer, trainable_variables):
         with tf.GradientTape() as tape:
             loss = self.compute_loss(x)
 
@@ -544,12 +541,16 @@ class VariationalMarkovDecisionProcess(Model):
         return loss
 
     @tf.function
+    def compute_apply_gradients(self, x, optimizer):
+        return self._compute_apply_gradients(x, optimizer, self.trainable_variables)
+
+    @tf.function
     def inference_update(self, x, optimizer):
-        return self.compute_apply_gradients(x, optimizer, self.inference_variables)
+        return self._compute_apply_gradients(x, optimizer, self.inference_variables)
 
     @tf.function
     def generator_update(self, x, optimizer):
-        return self.compute_apply_gradients(x, optimizer, self.generator_variables)
+        return self._compute_apply_gradients(x, optimizer, self.generator_variables)
 
     def train_from_policy(
             self,
