@@ -8,10 +8,13 @@ labeling_functions = {
     'BipedalWalker-v2':
         lambda observation: tf.math.abs(observation[..., 0]) > math.pi / 3.,  # hull angle too high/low
     'Pendulum-v0':
-        lambda observation: tf.concat([
-            observation[..., 0] > 0. and tf.abs(observation[..., 1]) < tf.math.sin(math.pi / 2),  # easy: |theta| < 90
-            observation[..., 0] > 0. and tf.abs(observation[..., 1]) < tf.math.sin(math.pi / 6),  # soft: |theta| < 30
-            observation[..., 0] > 0. and tf.abs(observation[..., 1]) < tf.math.sin(math.pi / 9),  # hard: |theta| < 20
+        lambda observation: tf.stack([
+            tf.logical_and(observation[..., 0] > 0., tf.abs(observation[..., 1]) < tf.math.sin(math.pi / 2)),
+            # easy: |theta| < 90
+            tf.logical_and(observation[..., 0] > 0., tf.abs(observation[..., 1]) < tf.math.sin(math.pi / 6)),
+            # soft: |theta| < 30
+            tf.logical_and(observation[..., 0] > 0., tf.abs(observation[..., 1]) < tf.math.sin(math.pi / 9)),
+            # hard: |theta| < 20
         ], axis=-1)
 
 }
