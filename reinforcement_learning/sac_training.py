@@ -57,6 +57,9 @@ flags.DEFINE_multi_float(
 flags.DEFINE_string(
     'save_dir', help='Save directory location', default='.'
 )
+flags.DEFINE_float(
+    'seed', help='set seed', default=42
+)
 FLAGS = flags.FLAGS
 
 
@@ -452,6 +455,7 @@ class SACLearner:
 def main(argv):
     del argv
     params = FLAGS.flag_values_dict()
+    tf.random.set_seed(params['seed'])
     try:
         import importlib
         env_suite = importlib.import_module('tf_agents.environments.' + params['env_suite'])
@@ -469,7 +473,7 @@ def main(argv):
     if params['permissive_policy_saver']:
         for variance_multiplier in params['variance']:
             learner.save_permissive_variance_policy(variance_multiplier)
-            return 0
+        return 0
     learner.train_and_eval()
     return 0
 

@@ -212,12 +212,17 @@ flags.DEFINE_integer(
     default=int(1e4),
     help='Number of frames to be collected in the replay buffer before starting the training.'
 )
+flags.DEFINE_float(
+    'seed', help='set seed', default=42
+)
 FLAGS = flags.FLAGS
 
 
 def main(argv):
     del argv
     params = FLAGS.flag_values_dict()
+
+    tf.random.set_seed(params['seed'])
 
     def check_missing_argument(name: str):
         if params[name] == '':
