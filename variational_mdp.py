@@ -648,19 +648,12 @@ class VariationalMarkovDecisionProcess(Model):
             batch_size=tf_env.batch_size,
             max_length=replay_buffer_capacity)
 
-        def dataset_generator():
-            dataset = tf.data.Dataset.from_generator(
-                generator=ErgodicMDPTransitionGenerator(
-                    replay_buffer=replay_buffer, labeling_function=labeling_function),
-                output_types=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32))
-            return dataset.interleave(lambda *x: tf.data.Dataset.from_tensors(x), num_parallel_calls=num_parallel_call)
-
+        generator = ErgodicMDPTransitionGenerator(labeling_function, replay_buffer)
         dataset_generator = lambda: replay_buffer.as_dataset(
             num_parallel_calls=num_parallel_call,
             num_steps=2
         ).map(
-            map_func=lambda trajectory, _: map_rl_trajectory_to_vae_input(
-                trajectory, labeling_function, reset_state_handling=True),
+            map_func=generator,
             num_parallel_calls=num_parallel_call,
             #  deterministic=False  # TF version >= 2.2.0
         )

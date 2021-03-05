@@ -63,7 +63,7 @@ def gather_rl_observations(
 
 
 @tf.function
-def map_rl_trajectory_to_vae_input(trajectory, labeling_function, reset_state_handling=False):
+def map_rl_trajectory_to_vae_input(trajectory, labeling_function):
     """
     Maps a tf-agent trajectory of 2 time steps to a transition tuple of the form
     <state, state label, action, reward, next state, next state label>
@@ -81,62 +81,61 @@ def map_rl_trajectory_to_vae_input(trajectory, labeling_function, reset_state_ha
     next_state = trajectory.observation[1, ...]
     next_label = labels[1, ...]
 
-    if reset_state_handling:
-        reset_label = tf.ones(
-            shape=tf.concat([tf.shape(label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
-            dtype=tf.float32)
-        new_state_label = tf.concat([label, reset_label - 1.], axis=-1)
-        new_next_state_label = tf.concat([next_label, reset_label - 1.], axis=-1)
-        if trajectory.step_type[0] == ts.StepType.LAST \
-                and trajectory.next_step_type[0] == ts.StepType.FIRST:
-            reset_state = tf.zeros(shape=tf.shape(state), dtype=tf.float32)
-            reset_state_label = tf.concat(
-                [tf.zeros(shape=tf.shape(label), dtype=tf.float32), reset_label], axis=-1)
-            reset_action = tf.zeros(shape=tf.shape(action), dtype=tf.float32)
-            reset_reward = tf.zeros(shape=tf.shape(reward), dtype=tf.float32)
-            if tf.random.uniform(shape=[]) > 0.5:
-                return state, new_state_label, action, reward, reset_state, reset_state_label
-            else:
-                return reset_state, reset_state_label, reset_action, reset_reward, next_state, new_next_state_label
-        else:
-            return state, new_state_label, action, reward, next_state, new_next_state_label
-
     return state, label, action, reward, next_state, next_label
 
 
 class ErgodicMDPTransitionGenerator:
     """
-    Generates a dataset from raw data contained in a replay buffer.
+    Generates a dataset from 2-steps transitions contained in a replay buffer.
     """
 
-    def __init__(self, replay_buffer, labeling_function, num_parallel_calls=tf.data.experimental.AUTOTUNE):
+    def __init__(self, labeling_function, replay_buffer):
         self.labeling_function = labeling_function
-        self.dataset = replay_buffer.as_dataset(
-            num_parallel_calls=num_parallel_calls,
-            num_steps=2).prefetch(tf.data.experimental.AUTOTUNE)
+        self.cache_hit = False
 
-    def __call__(self):
-        for raw_transition, _ in self.dataset:
-            state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
-                trajectory=raw_transition,
-                labeling_function=self.labeling_function,
-            )
-            reset_label = tf.ones(
-                shape=tf.concat([tf.shape(state_label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
-                dtype=tf.float32)
-            new_state_label = tf.concat([state_label, reset_label - 1.], axis=-1)
-            new_next_state_label = tf.concat([next_state_label, reset_label - 1.], axis=-1)
-            if raw_transition.step_type[0] == ts.StepType.LAST \
-                    and raw_transition.next_step_type[0] == ts.StepType.FIRST:
-                reset_state = tf.zeros(shape=tf.shape(state), dtype=tf.float32)
-                reset_state_label = tf.concat(
-                    [tf.zeros(shape=tf.shape(state_label), dtype=tf.float32), reset_label], axis=-1)
-                reset_action = tf.zeros(shape=tf.shape(action), dtype=tf.float32)
-                reset_reward = tf.zeros(shape=tf.shape(reward), dtype=tf.float32)
-                yield state, new_state_label, action, reward, reset_state, reset_state_label
-                yield reset_state, reset_state_label, reset_action, reset_reward, next_state, new_next_state_label
-            else:
-                yield state, new_state_label, action, reward, next_state, new_next_state_label
+        state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
+            trajectory=next(iter(replay_buffer.as_dataset(
+                num_parallel_calls=tf.data.experimental.AUTOTUNE,
+                num_steps=2)))[0],
+            labeling_function=self.labeling_function,
+        )
+        self.reset_label = tf.ones(
+            shape=tf.concat([tf.shape(state_label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
+            dtype=tf.float32)
+        self.reset_state = tf.zeros(shape=tf.shape(state), dtype=tf.float32)
+        self.reset_state_label = tf.concat(
+            [tf.zeros(shape=tf.shape(state_label), dtype=tf.float32), self.reset_label], axis=-1)
+        self.reset_action = tf.zeros(shape=tf.shape(action), dtype=tf.float32)
+        self.reset_reward = tf.zeros(shape=tf.shape(reward), dtype=tf.float32)
+
+        self.cached_state = self.reset_state
+        self.cached_label = self.reset_state_label
+
+    def __call__(self, trajectory, buffer_info=None):
+        if self.cache_hit:
+            self.cache_hit = False
+            return (self.reset_state,
+                    self.reset_state_label,
+                    self.reset_action,
+                    self.reset_reward,
+                    self.cached_state,
+                    self.cached_label)
+
+        state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
+            trajectory=trajectory,
+            labeling_function=self.labeling_function,
+        )
+        new_state_label = tf.concat([state_label, self.reset_label - 1.], axis=-1)
+        new_next_state_label = tf.concat([next_state_label, self.reset_label - 1.], axis=-1)
+        if trajectory.step_type[0] == ts.StepType.LAST \
+                and trajectory.next_step_type[0] == ts.StepType.FIRST:
+            self.cache_hit = True
+            self.cached_state = next_state
+            self.cached_label = new_next_state_label
+            return state, new_state_label, action, reward, self.reset_state, self.reset_state_label
+
+        else:
+            return state, new_state_label, action, reward, next_state, new_next_state_label
 
 
 class DictionaryDatasetGenerator:
