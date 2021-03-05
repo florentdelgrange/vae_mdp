@@ -79,7 +79,7 @@ class VariationalMarkovDecisionProcess(Model):
         self.encoder_temperature = encoder_temperature
         self.prior_temperature = prior_temperature
         self.entropy_regularizer_scale_factor = (
-            entropy_regularizer_scale_factor - entropy_regularizer_scale_factor_min_value)
+                entropy_regularizer_scale_factor - entropy_regularizer_scale_factor_min_value)
         self.kl_scale_factor = kl_scale_factor
         self.encoder_temperature_decay_rate = encoder_temperature_decay_rate
         self.prior_temperature_decay_rate = prior_temperature_decay_rate
@@ -370,7 +370,7 @@ class VariationalMarkovDecisionProcess(Model):
 
         distortion = -1. * (log_p_state + log_p_rewards)
         rate = tf.reduce_sum(log_q - log_p_prior, axis=1)
-        entropy_regularizer = -1. * self.mean_binary_entropy(next_state)
+        entropy_regularizer = self.entropy_regularizer(next_state)
 
         if metrics:
             self.loss_metrics['ELBO'](-1 * (distortion + rate))
@@ -381,7 +381,7 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['distortion'](distortion)
             self.loss_metrics['rate'](rate)
             self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-            self.loss_metrics['entropy_regularizer'](-1. * self.entropy_regularizer_scale_factor * entropy_regularizer)
+            self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
 
         if debug:
             tf.print(latent_state, "sampled z")
@@ -402,9 +402,19 @@ class VariationalMarkovDecisionProcess(Model):
         return [distortion, rate, entropy_regularizer]
 
     @tf.function
-    def mean_binary_entropy(self, state: tf.Tensor):
+    def entropy_regularizer(self, state: tf.Tensor, enforce_latent_space_spreading: bool = True):
         logits = self.encoder_network(state)
-        return tf.reduce_mean(tfd.Bernoulli(logits=logits).entropy(), axis=1)
+        regularizer = -1. * tf.reduce_mean(tfd.Bernoulli(logits=logits).entropy(), axis=1)
+
+        if enforce_latent_space_spreading:
+            marginal_encoder = tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(logits=tf.ones(shape=tf.shape(state)[0])),
+                components_distribution=tfd.RelaxedBernoulli(logits=logits, temperature=self.encoder_temperature)
+            )
+            latent_states = marginal_encoder.sample(sample_shape=tf.shape(state)[0])
+            regularizer += (tf.abs(self.entropy_regularizer_scale_factor_min_value) / self.entropy_regularizer *
+                            tf.reduce_mean(marginal_encoder.log_prob(latent_states)))
+        return regularizer
 
     def eval(self, inputs):
         """

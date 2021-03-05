@@ -554,7 +554,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         rate = log_q_latent_action - log_p_latent_action
         distortion = -1. * (log_p_action + log_p_rewards + log_p_transition)
 
-        entropy_regularizer = -1. * self.entropy_regularizer(latent_state, action)
+        entropy_regularizer = self.entropy_regularizer(latent_state, action)
 
         # metrics
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
@@ -563,7 +563,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-        self.loss_metrics['entropy_regularizer'](-1. * self.entropy_regularizer_scale_factor * entropy_regularizer)
+        self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
         # if self.one_output_per_action:
         #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
 
@@ -621,12 +621,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         log_p_action = action_distribution.log_prob(action)
 
         rate = state_rate + action_rate
-        distortion = -1. * (log_p_state + log_p_action + log_p_rewards)
+        distortion = log_p_state + log_p_action + log_p_rewards
 
-        entropy_regularizer = (
-                -1. * self._action_regularizer_scaling * self.entropy_regularizer(latent_state, action) +
-                -1. * self.mean_binary_entropy(state)
-        )
+        entropy_regularizer = self._action_regularizer_scaling * self.entropy_regularizer(state, latent_state, action)
 
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
         self.loss_metrics['action_mse'](action, action_distribution.sample())
@@ -639,7 +636,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-        self.loss_metrics['entropy_regularizer'](-1. * self.entropy_regularizer_scale_factor * entropy_regularizer)
+        self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
         # if self.one_output_per_action:
         #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
         self.loss_metrics['t_1_state'].reset_states()
@@ -650,8 +647,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         return [distortion, rate, entropy_regularizer]
 
     @tf.function
-    def entropy_regularizer(self, latent_state: tf.Tensor, action: tf.Tensor):
-        return self.discrete_action_encoding(latent_state, action).entropy()
+    def entropy_regularizer(self, latent_state: tf.Tensor, action: tf.Tensor, state: Optional[tf.Tensor] = None):
+        if state is not None:
+            return super().entropy_regularizer(state) - self.discrete_action_encoding(latent_state, action).entropy()
+        else:
+            return -1. * self.discrete_action_encoding(latent_state, action).entropy()
 
     def eval(self, inputs):
         state, label, action, reward, next_state, next_label = inputs
@@ -712,7 +712,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
     def wrap_tf_environment(
             self,
             tf_env: tf_environment.TFEnvironment,
-            labeling_function: Callable[[tf.Tensor], tf.Tensor]
+            labeling_function: Callable[[tf.Tensor], tf.Tensor],
+            deterministic_embedding_functions: bool = True
     ) -> tf_environment.TFEnvironment:
 
         class VariationalTFEnvironmentDiscretizer(tf_environment.TFEnvironment):
@@ -722,7 +723,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     variational_action_discretizer: VariationalActionDiscretizer,
                     tf_env: tf_environment.TFEnvironment,
                     labeling_function: Callable[[tf.Tensor], tf.Tensor],
-                    deterministic_embedding_functions: bool = False
+                    deterministic_embedding_functions: bool = True
             ):
                 action_spec = specs.BoundedTensorSpec(
                     shape=(),
@@ -801,7 +802,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             def render(self):
                 return self.tf_env.render()
 
-        return VariationalTFEnvironmentDiscretizer(self, tf_env, labeling_function)
+        return VariationalTFEnvironmentDiscretizer(self, tf_env, labeling_function, deterministic_embedding_functions)
 
     def get_abstract_policy(self) -> tf_policy.Base:
 
