@@ -72,14 +72,19 @@ flags.DEFINE_float(
     help="Decay rate used to anneal the temperature of the prior distribution over latent states."
 )
 flags.DEFINE_float(
-    "regularizer_scale_factor",
+    "entropy_regularizer_scale_factor",
     default=0.,
-    help="Cross-entropy regularizer scale factor."
+    help="Entropy regularizer scale factor."
 )
 flags.DEFINE_float(
-    "regularizer_decay_rate",
+    "entropy_regularizer_decay_rate",
     default=0.,
-    help="Cross-entropy regularizer decay rate."
+    help="Decay rate of the scale factor of the entropy regularizer."
+)
+flags.DEFINE_float(
+    "entropy_regularizer_scale_factor_min_value",
+    default=0.,
+    help="Minimum value that can take the scale factor of the entropy regularizer."
 )
 flags.DEFINE_float(
     "kl_annealing_scale_factor",
@@ -140,7 +145,7 @@ flags.DEFINE_bool(
 flags.DEFINE_integer(
     "number_of_discrete_actions",
     default=16,
-    help='Number of discrete actions per states to learn.'
+    help='Number of discrete actions per latent state to learn.'
 )
 flags.DEFINE_string(
     "load_vae",
@@ -273,11 +278,12 @@ def main(argv):
 
     vae_name = ''
     if not params['action_discretizer'] or params['full_vae_optimization']:
-        vae_name = 'vae_LS{}_MC{}_CER{}-decay={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
+        vae_name = 'vae_LS{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
             latent_state_size,
             mixture_components,
-            params['regularizer_scale_factor'],
-            params['regularizer_decay_rate'],
+            params['entropy_regularizer_scale_factor'],
+            params['entropy_regularizer_decay_rate'],
+            params['entropy_regularizer_scale_factor_min_value'],
             params['kl_annealing_scale_factor'],
             params['kl_annealing_growth_rate'],
             relaxed_state_encoder_temperature,
@@ -291,11 +297,12 @@ def main(argv):
             base_model_name,
             os.path.split(params['policy_path'])[-1],
             'action_discretizer',
-            'LA{}_MC{}_CER{}-decay={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
+            'LA{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
                 params['number_of_discrete_actions'],
                 mixture_components,
-                params['regularizer_scale_factor'],
-                params['regularizer_decay_rate'],
+                params['entropy_regularizer_scale_factor'],
+                params['entropy_regularizer_decay_rate'],
+                params['entropy_regularizer_scale_factor_min_value'],
                 params['kl_annealing_scale_factor'],
                 params['kl_annealing_growth_rate'],
                 params['encoder_temperature'],
@@ -405,8 +412,9 @@ def main(argv):
             prior_temperature=relaxed_state_prior_temperature,
             encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
             prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
-            regularizer_scale_factor=params['regularizer_scale_factor'],
-            regularizer_decay_rate=params['regularizer_decay_rate'],
+            entropy_regularizer_scale_factor=params['entropy_regularizer_scale_factor'],
+            entropy_regularizer_decay_rate=params['entropy_regularizer_decay_rate'],
+            entropy_regularizer_scale_factor_min_value=params['entropy_regularizer_scale_factor_min_value'],
             kl_scale_factor=params['kl_annealing_scale_factor'],
             kl_annealing_growth_rate=params['kl_annealing_growth_rate'],
             multivariate_normal_full_covariance=params['full_covariance'],
@@ -444,8 +452,8 @@ def main(argv):
             )
         vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
         vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
-        vae_mdp_model.regularizer_scale_factor = params['regularizer_scale_factor']
-        vae_mdp_model.regularizer_decay_rate = params['regularizer_decay_rate']
+        vae_mdp_model.regularizer_scale_factor = params['entropy_regularizer_scale_factor']
+        vae_mdp_model.regularizer_decay_rate = params['entropy_regularizer_decay_rate']
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 
@@ -476,15 +484,15 @@ def main(argv):
                                         parallelization=params['parallel_env'] > 1,
                                         num_parallel_call=params['parallel_env'],
                                         eval_steps=int(1e3) if not params['do_not_eval'] else 0,
-                                        #  get_policy_evaluation=(
-                                        #      None if not params['action_discretizer'] else
-                                        #      vae_mdp_model.get_abstract_policy),
-                                        #  wrap_eval_tf_env=(
-                                        #      None if not params['action_discretizer'] else
-                                        #      lambda tf_env: vae_mdp_model.wrap_tf_environment(
-                                        #          tf_env, reinforcement_learning.labeling_functions[environment_name]
-                                        #      )
-                                        #  ),
+                                        get_policy_evaluation=(
+                                            None if not params['action_discretizer'] else
+                                            vae_mdp_model.get_abstract_policy),
+                                        wrap_eval_tf_env=(
+                                            None if not params['action_discretizer'] else
+                                            lambda tf_env: vae_mdp_model.wrap_tf_environment(
+                                                tf_env, reinforcement_learning.labeling_functions[environment_name]
+                                            )
+                                        ),
                                         annealing_period=params['annealing_period'],
                                         aggressive_training=params['aggressive_training'],
                                         initial_collect_steps=params['initial_collect_steps'])

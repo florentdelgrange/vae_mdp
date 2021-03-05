@@ -50,8 +50,9 @@ class VariationalMarkovDecisionProcess(Model):
                  prior_temperature: float = 1. / 2,
                  encoder_temperature_decay_rate: float = 0.,
                  prior_temperature_decay_rate: float = 0.,
-                 regularizer_scale_factor: float = 0.,
-                 regularizer_decay_rate: float = 0.,
+                 entropy_regularizer_scale_factor: float = 0.,
+                 entropy_regularizer_decay_rate: float = 0.,
+                 entropy_regularizer_scale_factor_min_value: float = 0.,
                  kl_scale_factor: float = 1.,
                  kl_annealing_growth_rate: float = 0.,
                  mixture_components: int = 3,
@@ -77,16 +78,18 @@ class VariationalMarkovDecisionProcess(Model):
 
         self.encoder_temperature = encoder_temperature
         self.prior_temperature = prior_temperature
-        self.regularizer_scale_factor = regularizer_scale_factor
+        self.entropy_regularizer_scale_factor = (
+            entropy_regularizer_scale_factor - entropy_regularizer_scale_factor_min_value)
         self.kl_scale_factor = kl_scale_factor
         self.encoder_temperature_decay_rate = encoder_temperature_decay_rate
         self.prior_temperature_decay_rate = prior_temperature_decay_rate
-        self.regularizer_decay_rate = regularizer_decay_rate
+        self.entropy_regularizer_decay_rate = entropy_regularizer_decay_rate
         self.kl_growth_rate = kl_annealing_growth_rate
         self.max_decoder_variance = max_decoder_variance
 
         self.scale_activation = multivariate_normal_raw_scale_diag_activation
         self.state_scaler = state_scaler
+        self.entropy_regularizer_scale_factor_min_value = tf.constant(entropy_regularizer_scale_factor_min_value)
 
         if not (len(state_shape) == len(action_shape) == len(reward_shape) == len(label_shape)):
             if state_pre_processing_network is None:
@@ -210,9 +213,9 @@ class VariationalMarkovDecisionProcess(Model):
             'distortion': tf.keras.metrics.Mean(name='distortion'),
             'rate': tf.keras.metrics.Mean(name='rate'),
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
-            'cross_entropy_regularizer': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
+            'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
             'encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
-            'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
+            #  'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
         }
 
     def reset_metrics(self):
@@ -328,7 +331,7 @@ class VariationalMarkovDecisionProcess(Model):
         for var, decay_rate in [
             (self.encoder_temperature, self.encoder_temperature_decay_rate),
             (self.prior_temperature, self.prior_temperature_decay_rate),
-            (self.regularizer_scale_factor, self.regularizer_decay_rate),
+            (self._entropy_regularizer_scale_factor, self.entropy_regularizer_decay_rate),
             (self._decay_kl_scale_factor, self.kl_growth_rate)
         ]:
             if decay_rate.numpy().all() > 0:
@@ -374,11 +377,11 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['state_mse'](self.state_scaler(next_state), state_distribution.sample())
             self.loss_metrics['reward_mse'](reward, reward_distribution.sample())
             self.loss_metrics['encoder_entropy'](self.binary_encode(next_state, next_label).entropy())
-            self.loss_metrics['decoder_variance'](state_distribution.variance())
+            #  self.loss_metrics['decoder_variance'](state_distribution.variance())
             self.loss_metrics['distortion'](distortion)
             self.loss_metrics['rate'](rate)
             self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-            self.loss_metrics['cross_entropy_regularizer'](entropy_regularizer)
+            self.loss_metrics['entropy_regularizer'](-1. * self.entropy_regularizer_scale_factor * entropy_regularizer)
 
         if debug:
             tf.print(latent_state, "sampled z")
@@ -474,19 +477,19 @@ class VariationalMarkovDecisionProcess(Model):
         self._prior_temperature_decay_rate = tf.constant(value, dtype=tf.float32)
 
     @property
-    def regularizer_scale_factor(self):
-        return self._regularizer_scale_factor
+    def entropy_regularizer_scale_factor(self):
+        return self._entropy_regularizer_scale_factor + self.entropy_regularizer_scale_factor_min_value
 
-    @regularizer_scale_factor.setter
-    def regularizer_scale_factor(self, value):
-        self._regularizer_scale_factor = tf.Variable(value, dtype=tf.float32, trainable=False)
+    @entropy_regularizer_scale_factor.setter
+    def entropy_regularizer_scale_factor(self, value):
+        self._entropy_regularizer_scale_factor = tf.Variable(value, dtype=tf.float32, trainable=False)
 
     @property
-    def regularizer_decay_rate(self):
+    def entropy_regularizer_decay_rate(self):
         return self._regularizer_decay_rate
 
-    @regularizer_decay_rate.setter
-    def regularizer_decay_rate(self, value):
+    @entropy_regularizer_decay_rate.setter
+    def entropy_regularizer_decay_rate(self, value):
         self._regularizer_decay_rate = tf.constant(value, dtype=tf.float32)
 
     @property
@@ -520,11 +523,11 @@ class VariationalMarkovDecisionProcess(Model):
 
     @tf.function
     def compute_loss(self, x):
-        distortion, rate, cross_entropy_regularizer = self(x)
-        alpha = self.regularizer_scale_factor
+        distortion, rate, entropy_regularizer = self(x)
+        alpha = self.entropy_regularizer_scale_factor
         beta = self.kl_scale_factor
         return tf.reduce_mean(
-            distortion + beta * rate + alpha * cross_entropy_regularizer
+            distortion + beta * rate + alpha * entropy_regularizer
         )
 
     def _compute_apply_gradients(self, x, optimizer, trainable_variables):
@@ -619,7 +622,7 @@ class VariationalMarkovDecisionProcess(Model):
         progressbar = Progbar(
             target=None,
             stateful_metrics=list(self.loss_metrics.keys()) + [
-                'loss', 't_1', 't_2', 'regularizer_scale_factor', 'step', "num_episodes", "env_steps",
+                'loss', 't_1', 't_2', 'entropy_regularizer_scale_factor', 'step', "num_episodes", "env_steps",
                 "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv", 'state_rate',
                 "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used'],
             interval=0.1) if display_progressbar else None
@@ -648,18 +651,6 @@ class VariationalMarkovDecisionProcess(Model):
             batch_size=tf_env.batch_size,
             max_length=replay_buffer_capacity)
 
-        generator = ErgodicMDPTransitionGenerator(labeling_function, replay_buffer)
-        dataset_generator = lambda: replay_buffer.as_dataset(
-            num_parallel_calls=num_parallel_call,
-            num_steps=2
-        ).map(
-            map_func=generator,
-            num_parallel_calls=num_parallel_call,
-            #  deterministic=False  # TF version >= 2.2.0
-        )
-        dataset = dataset_generator().batch(batch_size=batch_size, drop_remainder=True)
-        dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
-
         num_episodes = tf_metrics.NumberOfEpisodes()
         env_steps = tf_metrics.EnvironmentSteps()
         observers = [num_episodes, env_steps] if not parallelization else []
@@ -685,6 +676,20 @@ class VariationalMarkovDecisionProcess(Model):
         print("Initial collect steps...")
         initial_collect_driver.run()
         print("Start training.")
+
+        def dataset_generator():
+            generator = ErgodicMDPTransitionGenerator(labeling_function, replay_buffer)
+            return replay_buffer.as_dataset(
+                num_parallel_calls=num_parallel_call,
+                num_steps=2
+            ).map(
+                map_func=generator,
+                num_parallel_calls=num_parallel_call,
+                #  deterministic=False  # TF version >= 2.2.0
+            )
+
+        dataset = dataset_generator().batch(batch_size=batch_size, drop_remainder=True)
+        dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
 
         # aggressive training metrics
         best_loss = None
@@ -785,7 +790,7 @@ class VariationalMarkovDecisionProcess(Model):
             progressbar = Progbar(
                 target=dataset_size,
                 stateful_metrics=list(self.loss_metrics.keys()) + [
-                    'loss', 't_1', 't_2', 'regularizer_scale_factor', 'step'],
+                    'loss', 't_1', 't_2', 'entropy_regularizer_scale_factor', 'step'],
                 interval=0.1) if display_progressbar else None
             print("Epoch: {}/{}".format(epoch + 1, epochs))
 
@@ -843,7 +848,7 @@ class VariationalMarkovDecisionProcess(Model):
         if annealing_period != 0:
             metrics_key_values.append(('t_1', self.encoder_temperature))
             metrics_key_values.append(('t_2', self.prior_temperature))
-            metrics_key_values.append(('regularizer_scale_factor', self.regularizer_scale_factor))
+            metrics_key_values.append(('entropy_regularizer_scale_factor', self.entropy_regularizer_scale_factor))
             metrics_key_values.append(('kl_annealing_scale_factor', self.kl_scale_factor))
         if progressbar is not None:
             if dataset_size is not None and progressbar.target is not None and display_progressbar and \
@@ -956,7 +961,7 @@ def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
         model.transition_network.variables[-1].shape[0],
         encoder_temperature=model._encoder_temperature,
         prior_temperature=model._prior_temperature,
-        regularizer_scale_factor=model._regularizer_scale_factor,
+        entropy_regularizer_scale_factor=model._entropy_regularizer_scale_factor,
         kl_scale_factor=model._kl_scale_factor,
         pre_loaded_model=True)
 

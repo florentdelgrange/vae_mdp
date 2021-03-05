@@ -60,8 +60,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             prior_temperature=vae_mdp.prior_temperature.numpy(),
             encoder_temperature_decay_rate=vae_mdp.encoder_temperature_decay_rate.numpy(),
             prior_temperature_decay_rate=vae_mdp.prior_temperature_decay_rate.numpy(),
-            regularizer_scale_factor=vae_mdp.regularizer_scale_factor.numpy(),
-            regularizer_decay_rate=vae_mdp.regularizer_decay_rate.numpy(),
+            entropy_regularizer_scale_factor=vae_mdp.entropy_regularizer_scale_factor.numpy(),
+            entropy_regularizer_decay_rate=vae_mdp.entropy_regularizer_decay_rate.numpy(),
+            entropy_regularizer_scale_factor_min_value=vae_mdp.entropy_regularizer_scale_factor_min_value.numpy(),
             kl_scale_factor=vae_mdp.kl_scale_factor.numpy(),
             kl_annealing_growth_rate=vae_mdp.kl_growth_rate.numpy(),
             mixture_components=vae_mdp.mixture_components,
@@ -342,14 +343,14 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             'distortion': tf.keras.metrics.Mean(name='distortion'),
             'rate': tf.keras.metrics.Mean(name='rate'),
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
-            'cross_entropy_regularizer': tf.keras.metrics.Mean(name='cross_entropy_regularizer'),
+            'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
             # 'decoder_divergence': tf.keras.metrics.Mean(name='decoder_divergence'),
         }
         if self.full_optimization:
             self.loss_metrics.update({
                 'state_mse': tf.keras.metrics.MeanSquaredError(name='state_mse'),
                 'state_encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
-                'state_decoder_variance': tf.keras.metrics.Mean('decoder_variance'),
+                # 'state_decoder_variance': tf.keras.metrics.Mean('decoder_variance'),
                 'state_rate': tf.keras.metrics.Mean(name='state_rate'),
                 'action_rate': tf.keras.metrics.Mean(name='action_rate'),
                 't_1_state': tf.keras.metrics.Mean(name='state_encoder_temperature'),
@@ -553,7 +554,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         rate = log_q_latent_action - log_p_latent_action
         distortion = -1. * (log_p_action + log_p_rewards + log_p_transition)
 
-        cross_entropy_regularizer = -1. * self.entropy_regularizer(latent_state, action)
+        entropy_regularizer = -1. * self.entropy_regularizer(latent_state, action)
 
         # metrics
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
@@ -562,7 +563,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-        self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
+        self.loss_metrics['entropy_regularizer'](-1. * self.entropy_regularizer_scale_factor * entropy_regularizer)
         # if self.one_output_per_action:
         #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
 
@@ -578,7 +579,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             tf.print(log_p_transition, "log P(z' | z, â)", summarize=variational_mdp.debug_verbosity)
             tf.print(log_p_action, "log P(a | z, â)", summarize=variational_mdp.debug_verbosity)
 
-        return [distortion, rate, cross_entropy_regularizer]
+        return [distortion, rate, entropy_regularizer]
 
     def _full_optimization_call(self, inputs, training=None, mask=None, **kwargs):
         state, label, action, reward, next_state, next_label = inputs
@@ -622,7 +623,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         rate = state_rate + action_rate
         distortion = -1. * (log_p_state + log_p_action + log_p_rewards)
 
-        cross_entropy_regularizer = (
+        entropy_regularizer = (
                 -1. * self._action_regularizer_scaling * self.entropy_regularizer(latent_state, action) +
                 -1. * self.mean_binary_entropy(state)
         )
@@ -633,12 +634,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['state_mse'](next_state, state_distribution.sample())
         self.loss_metrics['state_rate'](state_rate)
         self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(next_state, next_label).entropy())
-        self.loss_metrics['state_decoder_variance'](state_distribution.variance())
+        #  self.loss_metrics['state_decoder_variance'](state_distribution.variance())
         self.loss_metrics['action_rate'](action_rate)
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-        self.loss_metrics['cross_entropy_regularizer'](cross_entropy_regularizer)
+        self.loss_metrics['entropy_regularizer'](-1. * self.entropy_regularizer_scale_factor * entropy_regularizer)
         # if self.one_output_per_action:
         #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
         self.loss_metrics['t_1_state'].reset_states()
@@ -646,7 +647,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['t_2_state'].reset_states()
         self.loss_metrics['t_2_state'](self._state_vae.prior_temperature)
 
-        return [distortion, rate, cross_entropy_regularizer]
+        return [distortion, rate, entropy_regularizer]
 
     @tf.function
     def entropy_regularizer(self, latent_state: tf.Tensor, action: tf.Tensor):
@@ -763,14 +764,14 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             def labeling_function(self, state: tf.Tensor):
                 label = tf.cast(self._labeling_function(state), dtype=tf.float32)
                 # take into account the reset label
-                label = tf.concat(
+                label = tf.cond(
+                    tf.rank(label) == 1,
+                    lambda: tf.expand_dims(label, axis=-1),
+                    lambda: label)
+                return tf.concat(
                     [label, tf.zeros(shape=tf.concat([tf.shape(label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
                                      dtype=tf.float32)],
                     axis=-1)
-                return tf.cond(
-                    tf.shape(label) == (self.batch_size,),
-                    lambda: tf.expand_dims(label, axis=-1),
-                    lambda: label)
 
             def _current_time_step(self):
                 if self._current_latent_state is None:
