@@ -217,6 +217,7 @@ class VariationalMarkovDecisionProcess(Model):
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
             'encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
+            'marginal_encoder_entropy': tf.keras.metrics.Mean(name='marginal_encoder_entropy')
             #  'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
         }
 
@@ -382,6 +383,11 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['state_mse'](self.state_scaler(next_state), state_distribution.sample())
             self.loss_metrics['reward_mse'](reward, reward_distribution.sample())
             self.loss_metrics['encoder_entropy'](self.binary_encode(next_state, next_label).entropy())
+            self.loss_metrics['marginal_encoder_entropy'](
+                -1. * (entropy_regularizer -
+                 (1 - self.entropy_regularizer_scale_factor_min_value) * self.entropy_regularizer(next_state))
+                / self.entropy_regularizer_scale_factor_min_value
+            )
             #  self.loss_metrics['decoder_variance'](state_distribution.variance())
             self.loss_metrics['distortion'](distortion)
             self.loss_metrics['rate'](rate)

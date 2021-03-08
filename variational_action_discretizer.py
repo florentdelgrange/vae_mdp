@@ -351,6 +351,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self.loss_metrics.update({
                 'state_mse': tf.keras.metrics.MeanSquaredError(name='state_mse'),
                 'state_encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
+                'marginal_encoder_entropy': tf.keras.metrics.Mean(name='marginal_encoder_entropy'),
                 # 'state_decoder_variance': tf.keras.metrics.Mean('decoder_variance'),
                 'state_rate': tf.keras.metrics.Mean(name='state_rate'),
                 'action_rate': tf.keras.metrics.Mean(name='action_rate'),
@@ -555,7 +556,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         rate = log_q_latent_action - log_p_latent_action
         distortion = -1. * (log_p_action + log_p_rewards + log_p_transition)
 
-        entropy_regularizer =  self.entropy_regularizer(
+        entropy_regularizer = self.entropy_regularizer(
             latent_state,
             action,
             state=state,
@@ -644,6 +645,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['state_mse'](next_state, state_distribution.sample())
         self.loss_metrics['state_rate'](state_rate)
         self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(next_state, next_label).entropy())
+        self.loss_metrics['marginal_encoder_entropy'](
+            -1. *
+            (self._state_vae.entropy_regularizer(state, enforce_latent_space_spreading=True, latent_states=latent_state)
+             - (1 - self.entropy_regularizer_scale_factor_min_value) * self._state_vae.entropy_regularizer(state))
+            / self.entropy_regularizer_scale_factor_min_value
+        )
         #  self.loss_metrics['state_decoder_variance'](state_distribution.variance())
         self.loss_metrics['action_rate'](action_rate)
         self.loss_metrics['distortion'](distortion)
