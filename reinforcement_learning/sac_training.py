@@ -42,7 +42,7 @@ flags.DEFINE_integer(
     'steps', help='Number of iterations', default=int(1.2e7)
 )
 flags.DEFINE_integer(
-    'num_parallel_env', help='Number of parallel environments', default=16
+    'num_parallel_env', help='Number of parallel environments', default=1
 )
 flags.DEFINE_boolean(
     'permissive_policy_saver',
@@ -64,6 +64,9 @@ FLAGS = flags.FLAGS
 
 
 class NumberOfSafetyViolations(tf_metric.TFStepMetric):
+    """
+    Experimental
+    """
     def __init__(self, labeling_function, name='NumberOfSafetyViolations'):
         super(NumberOfSafetyViolations, self).__init__(name=name, prefix='Metrics')
         self._n = common.create_variable(name='num_violations', initial_value=0., trainable=False, dtype=tf.float32)
