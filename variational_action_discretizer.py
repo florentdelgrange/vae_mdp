@@ -352,6 +352,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 'state_mse': tf.keras.metrics.MeanSquaredError(name='state_mse'),
                 'state_encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
                 'marginal_encoder_entropy': tf.keras.metrics.Mean(name='marginal_encoder_entropy'),
+                'action_encoder_entropy': tf.keras.metrics.Mean(name='action_encoder_entropy'),
                 # 'state_decoder_variance': tf.keras.metrics.Mean('decoder_variance'),
                 'state_rate': tf.keras.metrics.Mean(name='state_rate'),
                 'action_rate': tf.keras.metrics.Mean(name='action_rate'),
@@ -651,6 +652,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
              - (1 - self.entropy_regularizer_scale_factor_min_value) * self._state_vae.entropy_regularizer(state))
             / self.entropy_regularizer_scale_factor_min_value
         )
+        self.loss_metrics['action_encoder_entropy'](self.discrete_action_encoding(latent_state, action).entropy())
         #  self.loss_metrics['state_decoder_variance'](state_distribution.variance())
         self.loss_metrics['action_rate'](action_rate)
         self.loss_metrics['distortion'](distortion)
