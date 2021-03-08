@@ -87,6 +87,14 @@ flags.DEFINE_float(
     help="Minimum value that can take the scale factor of the entropy regularizer."
 )
 flags.DEFINE_float(
+    "marginal_entropy_regularizer_ratio",
+    default=0.,
+    lower_bound=0.,
+    upper_bound=0.5,
+    help="Indicates the ratio of the entropy regularizer focusing on enforcing a high marginal state encoder entropy"
+         "(experimental)."
+)
+flags.DEFINE_float(
     "kl_annealing_scale_factor",
     default=1.,
     help='Scale factor of the KL terms of the ELBO.'
@@ -219,6 +227,16 @@ flags.DEFINE_integer(
 )
 flags.DEFINE_float(
     'seed', help='set seed', default=42
+)
+flags.DEFINE_bool(
+    'logs',
+    default=True,
+    help="Enable logging training metrics to the logs directory."
+)
+flags.DEFINE_bool(
+    'checkpoint',
+    default=True,
+    help='Enable to save/load checkpoints to/from the save directory.'
 )
 FLAGS = flags.FLAGS
 
@@ -415,6 +433,7 @@ def main(argv):
             entropy_regularizer_scale_factor=params['entropy_regularizer_scale_factor'],
             entropy_regularizer_decay_rate=params['entropy_regularizer_decay_rate'],
             entropy_regularizer_scale_factor_min_value=params['entropy_regularizer_scale_factor_min_value'],
+            marginal_entropy_regularizer_ratio=params['marginal_entropy_regularizer_ratio'],
             kl_scale_factor=params['kl_annealing_scale_factor'],
             kl_annealing_growth_rate=params['kl_annealing_growth_rate'],
             multivariate_normal_full_covariance=params['full_covariance'],
@@ -459,9 +478,12 @@ def main(argv):
 
     step = tf.compat.v1.train.get_or_create_global_step()
     checkpoint_directory = os.path.join(params['save_dir'], 'saves', environment_name, 'training_checkpoints', vae_name)
-    print("checkpoint path:", checkpoint_directory)
-    checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
-    manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
+    if params['checkpoint']:
+        print("checkpoint path:", checkpoint_directory)
+        checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
+        manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
+    else:
+        checkpoint = manager = None
 
     if base_model_name != '':
         vae_name_list = vae_name.split(os.path.sep)
@@ -477,7 +499,7 @@ def main(argv):
                                         batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
                                         manager=manager, log_name=vae_name,
                                         start_annealing_step=params['start_annealing_step'],
-                                        logs=True,
+                                        logs=params['logs'],
                                         num_iterations=params['max_steps'],
                                         display_progressbar=params['display_progressbar'],
                                         save_directory=params['save_dir'],

@@ -53,6 +53,7 @@ class VariationalMarkovDecisionProcess(Model):
                  entropy_regularizer_scale_factor: float = 0.,
                  entropy_regularizer_decay_rate: float = 0.,
                  entropy_regularizer_scale_factor_min_value: float = 0.,
+                 marginal_entropy_regularizer_ratio: float = 0.,
                  kl_scale_factor: float = 1.,
                  kl_annealing_growth_rate: float = 0.,
                  mixture_components: int = 3,
@@ -90,6 +91,7 @@ class VariationalMarkovDecisionProcess(Model):
         self.scale_activation = multivariate_normal_raw_scale_diag_activation
         self.state_scaler = state_scaler
         self.entropy_regularizer_scale_factor_min_value = tf.constant(entropy_regularizer_scale_factor_min_value)
+        self.marginal_entropy_regularizer_ratio = marginal_entropy_regularizer_ratio
 
         if not (len(state_shape) == len(action_shape) == len(reward_shape) == len(label_shape)):
             if state_pre_processing_network is None:
@@ -370,7 +372,10 @@ class VariationalMarkovDecisionProcess(Model):
 
         distortion = -1. * (log_p_state + log_p_rewards)
         rate = tf.reduce_sum(log_q - log_p_prior, axis=1)
-        entropy_regularizer = self.entropy_regularizer(next_state)
+        entropy_regularizer = self.entropy_regularizer(
+            next_state,
+            enforce_latent_space_spreading=(self.marginal_entropy_regularizer_ratio > 0.),
+            latent_states=next_latent_state)
 
         if metrics:
             self.loss_metrics['ELBO'](-1 * (distortion + rate))
@@ -402,19 +407,34 @@ class VariationalMarkovDecisionProcess(Model):
         return [distortion, rate, entropy_regularizer]
 
     @tf.function
-    def entropy_regularizer(self, state: tf.Tensor, enforce_latent_space_spreading: bool = True):
+    def entropy_regularizer(
+            self, state: tf.Tensor,
+            enforce_latent_space_spreading: bool = False,
+            latent_states: Optional[tf.Tensor] = None
+    ):
         logits = self.encoder_network(state)
-        regularizer = -1. * tf.reduce_mean(tfd.Bernoulli(logits=logits).entropy(), axis=1)
+        regularizer = -1. * tf.reduce_mean(tfd.Bernoulli(logits=logits).entropy(), axis=0)
 
         if enforce_latent_space_spreading:
+            batch_size = tf.shape(logits)[0]
             marginal_encoder = tfd.MixtureSameFamily(
-                mixture_distribution=tfd.Categorical(logits=tf.ones(shape=tf.shape(state)[0])),
-                components_distribution=tfd.RelaxedBernoulli(logits=logits, temperature=self.encoder_temperature)
+                mixture_distribution=tfd.Categorical(logits=tf.ones(shape=batch_size)),
+                components_distribution=tfd.RelaxedBernoulli(
+                    logits=tf.transpose(logits), temperature=self.encoder_temperature),
+                reparameterize=(latent_states is None)
             )
-            latent_states = marginal_encoder.sample(sample_shape=tf.shape(state)[0])
-            regularizer += (tf.abs(self.entropy_regularizer_scale_factor_min_value) / self.entropy_regularizer *
-                            tf.reduce_mean(marginal_encoder.log_prob(latent_states)))
-        return regularizer
+            if latent_states is None:
+                latent_states = marginal_encoder.sample(batch_size)
+            latent_states = latent_states[..., :tf.shape(logits)[1]]
+            latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1.-1e-7)
+            # marginal_entropy_regularizer = -1. * tf.reduce_mean(
+            #     -1. * tf.reduce_sum(marginal_encoder.log_prob(latent_states), axis=1))
+            marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states), axis=0)
+            regularizer = ((1. - self.marginal_entropy_regularizer_ratio) * regularizer +
+                           self.marginal_entropy_regularizer_ratio *
+                           (tf.abs(self.entropy_regularizer_scale_factor) / self.entropy_regularizer_scale_factor)
+                           * marginal_entropy_regularizer)
+        return tf.reduce_mean(regularizer)
 
     def eval(self, inputs):
         """
@@ -981,6 +1001,7 @@ def eval_policy(eval_policy_driver, train_summary_writer, global_step):
     eval_policy_driver.observers.append(eval_avg_rewards)
     eval_policy_driver.run()
     eval_policy_driver.observers.remove(eval_avg_rewards)
-    with train_summary_writer.as_default():
-        tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
+    if train_summary_writer is not None:
+        with train_summary_writer.as_default():
+            tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
     print('eval policy', eval_avg_rewards.result().numpy())

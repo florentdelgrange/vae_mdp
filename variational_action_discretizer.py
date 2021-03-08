@@ -63,6 +63,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             entropy_regularizer_scale_factor=vae_mdp.entropy_regularizer_scale_factor.numpy(),
             entropy_regularizer_decay_rate=vae_mdp.entropy_regularizer_decay_rate.numpy(),
             entropy_regularizer_scale_factor_min_value=vae_mdp.entropy_regularizer_scale_factor_min_value.numpy(),
+            marginal_entropy_regularizer_ratio=vae_mdp.marginal_entropy_regularizer_ratio,
             kl_scale_factor=vae_mdp.kl_scale_factor.numpy(),
             kl_annealing_growth_rate=vae_mdp.kl_growth_rate.numpy(),
             mixture_components=vae_mdp.mixture_components,
@@ -554,7 +555,13 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         rate = log_q_latent_action - log_p_latent_action
         distortion = -1. * (log_p_action + log_p_rewards + log_p_transition)
 
-        entropy_regularizer = self.entropy_regularizer(latent_state, action)
+        entropy_regularizer =  self.entropy_regularizer(
+            latent_state,
+            action,
+            state=state,
+            enforce_deterministic_action_encoder=False,
+            enforce_latent_state_space_spreading=(self.marginal_entropy_regularizer_ratio > 0.)
+        )
 
         # metrics
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
@@ -621,9 +628,15 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         log_p_action = action_distribution.log_prob(action)
 
         rate = state_rate + action_rate
-        distortion = log_p_state + log_p_action + log_p_rewards
+        distortion = -1. * (log_p_state + log_p_action + log_p_rewards)
 
-        entropy_regularizer = self._action_regularizer_scaling * self.entropy_regularizer(state, latent_state, action)
+        entropy_regularizer = self.entropy_regularizer(
+            latent_state,
+            action,
+            state=state,
+            enforce_deterministic_action_encoder=False,
+            enforce_latent_state_space_spreading=(self.marginal_entropy_regularizer_ratio > 0.)
+        )
 
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
         self.loss_metrics['action_mse'](action, action_distribution.sample())
@@ -637,8 +650,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
         self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
-        # if self.one_output_per_action:
-        #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
         self.loss_metrics['t_1_state'].reset_states()
         self.loss_metrics['t_1_state'](self._state_vae.encoder_temperature)
         self.loss_metrics['t_2_state'].reset_states()
@@ -647,11 +658,25 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         return [distortion, rate, entropy_regularizer]
 
     @tf.function
-    def entropy_regularizer(self, latent_state: tf.Tensor, action: tf.Tensor, state: Optional[tf.Tensor] = None):
+    def entropy_regularizer(
+            self,
+            latent_state: tf.Tensor,
+            action: tf.Tensor,
+            state: Optional[tf.Tensor] = None,
+            enforce_deterministic_action_encoder: bool = False,
+            enforce_latent_state_space_spreading: bool = False
+    ):
         if state is not None:
-            return super().entropy_regularizer(state) - self.discrete_action_encoding(latent_state, action).entropy()
+            state_regularizer = super().entropy_regularizer(state, enforce_latent_state_space_spreading, latent_state)
         else:
-            return -1. * self.discrete_action_encoding(latent_state, action).entropy()
+            state_regularizer = 0.
+        if self.entropy_regularizer_scale_factor < 0. and not enforce_deterministic_action_encoder:
+            action_regularizer = 0.
+        else:
+            action_regularizer = -1. * self._action_regularizer_scaling * tf.reduce_mean(
+                self.discrete_action_encoding(latent_state, action).entropy(), axis=0)
+
+        return state_regularizer + action_regularizer
 
     def eval(self, inputs):
         state, label, action, reward, next_state, next_label = inputs
