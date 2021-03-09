@@ -7,22 +7,17 @@ from absl import app
 from absl import flags
 
 import PIL
-import imageio
 
 import tensorflow as tf
 from tensorflow.python.keras.engine import sequential
 from tensorflow.python.keras.utils.generic_utils import Progbar
 from tf_agents.agents.dqn import dqn_agent
 
-from tf_agents.agents.sac import sac_agent
-from tf_agents.agents.ddpg import critic_network
-
 from tf_agents.drivers import dynamic_step_driver
 from tf_agents.drivers import dynamic_episode_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment
 from tf_agents.metrics import tf_metrics, tf_metric
-from tf_agents.networks import actor_distribution_network
-from tf_agents.networks import normal_projection_network
+from tf_agents.networks import q_network
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.utils import common
 from tf_agents.policies import policy_saver
@@ -31,8 +26,6 @@ import tf_agents.trajectories.time_step as ts
 
 path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, path + '/../')
-from reinforcement_learning import labeling_functions
-from util.io import dataset_generator
 
 flags.DEFINE_string(
     'env_name', help='Name of the environment', default='CartPole-v0'
@@ -45,6 +38,12 @@ flags.DEFINE_integer(
 )
 flags.DEFINE_integer(
     'num_parallel_env', help='Number of parallel environments', default=1
+)
+flags.DEFINE_float(
+    'seed', help='set seed', default=42
+)
+flags.DEFINE_string(
+    'save_dir', help='Save directory location', default='.'
 )
 FLAGS = flags.FLAGS
 
@@ -138,7 +137,8 @@ class DQNLearner:
             kernel_initializer=tf.keras.initializers.RandomUniform(
                 minval=-0.03, maxval=0.03),
             bias_initializer=tf.keras.initializers.Constant(-0.2))
-        q_net = sequential.Sequential(dense_layers + [q_values_layer])
+        q_net = q_network.QNetwork(
+            self.tf_env.observation_spec(), self.tf_env.action_spec(), fc_layer_params=network_fc_layer_params)
 
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
