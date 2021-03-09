@@ -597,6 +597,7 @@ class VariationalMarkovDecisionProcess(Model):
             environment_suite,
             env_name: str,
             labeling_function: Callable,
+            discrete_action_space: bool = False,
             num_iterations: int = int(3e6),
             initial_collect_steps: int = int(1e4),
             collect_steps_per_iteration: Optional[int] = None,
@@ -663,12 +664,18 @@ class VariationalMarkovDecisionProcess(Model):
                 "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used'],
             interval=0.1) if display_progressbar else None
 
+        if discrete_action_space:
+            load_environment = lambda: tf_agents.environments.wrappers.OneHotActionWrapper(
+                environment_suite.load(env_name))
+        else:
+            load_environment = lambda: environment_suite.load(env_name)
+
         if parallelization:
             tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
-                [lambda: environment_suite.load(env_name)] * num_parallel_call))
+                [load_environment] * num_parallel_call))
             tf_env.reset()
         else:
-            py_env = environment_suite.load(env_name)
+            py_env = load_environment()
             py_env.reset()
             tf_env = tf_py_environment.TFPyEnvironment(py_env)
 

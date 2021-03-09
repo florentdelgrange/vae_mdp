@@ -68,13 +68,14 @@ def map_rl_trajectory_to_vae_input(trajectory, labeling_function):
     Maps a tf-agent trajectory of 2 time steps to a transition tuple of the form
     <state, state label, action, reward, next state, next state label>
     """
-
     state = trajectory.observation[0, ...]
     labels = tf.cast(labeling_function(trajectory.observation), tf.float32)
     if tf.rank(labels) == 1:
         labels = tf.expand_dims(labels, axis=-1)
     label = labels[0, ...]
     action = trajectory.action[0, ...]
+    if action.dtype != tf.float32:
+        action = tf.cast(action, dtype=tf.float32)
     reward = trajectory.reward[0, ...]
     if tf.rank(reward) == 0:
         reward = tf.expand_dims(reward, axis=-1)
