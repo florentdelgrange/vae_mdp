@@ -13,6 +13,7 @@ from tf_agents.trajectories import policy_step, trajectory
 from tf_agents.policies import tf_policy, actor_policy
 from tf_agents.environments import tf_environment, py_environment
 from tf_agents.trajectories import time_step as ts
+from tf_agents.trajectories.policy_step import PolicyStep
 
 import variational_mdp
 from variational_mdp import VariationalMarkovDecisionProcess
@@ -838,7 +839,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         return VariationalTFEnvironmentDiscretizer(self, tf_env, labeling_function, deterministic_embedding_functions)
 
-    def get_abstract_policy(self) -> tf_policy.Base:
+    def get_latent_policy(self) -> tf_policy.Base:
 
         action_spec = specs.BoundedTensorSpec(
             shape=(),
@@ -856,26 +857,18 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         )
         time_step_spec = ts.time_step_spec(observation_spec)
 
-        class RandomDiscreteActorNetwork(network.Network):
+        class LatentPolicy(tf_policy.Base):
 
-            def __init__(self, vae_mdp: VariationalActionDiscretizer):
-                super().__init__(observation_spec, state_spec=(), name='DiscreteActionVAEActorNetwork')
-                self._vae_mdp = vae_mdp
+            def __init__(self, time_step_spec, action_spec, discrete_latent_policy):
+                super().__init__(time_step_spec, action_spec)
+                self.discrete_latent_policy = discrete_latent_policy
 
-            def call(self, observations, step_type, network_state):
-                del step_type
+            def _distribution(self, time_step, policy_state):
+                one_hot_categorical_distribution = self.discrete_latent_policy(
+                    tf.cast(time_step.observation, dtype=tf.float32))
+                return PolicyStep(tfd.Categorical(logits=one_hot_categorical_distribution.logits_parameter()), (), ())
 
-                z = tf.cast(observations, dtype=tf.float32)
-                one_hot_sample = self._vae_mdp.discrete_latent_policy(z).sample()
-                action = tf.cast(tf.argmax(one_hot_sample, axis=1), tf.int32)
-
-                return action, network_state
-
-        return actor_policy.ActorPolicy(
-            time_step_spec=time_step_spec,
-            action_spec=action_spec,
-            actor_network=RandomDiscreteActorNetwork(vae_mdp=self)
-        )
+        return LatentPolicy(time_step_spec, action_spec, self.discrete_latent_policy)
 
     @property
     def inference_variables(self):
