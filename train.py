@@ -1,10 +1,13 @@
 import os
 
 import tensorflow as tf
+import tf_agents
 from absl import app
 from absl import flags
 from tensorflow.keras.layers import Dense
 from tensorflow.python.keras import Sequential
+from tf_agents.policies import policy_saver
+from tf_agents.trajectories import policy_step
 
 import reinforcement_learning
 import variational_action_discretizer
@@ -492,8 +495,17 @@ def main(argv):
 
     if dataset_path == '':
         policy = tf.compat.v2.saved_model.load(params['policy_path'])
+        spec_path = os.path.join(params['policy_path'], policy_saver.COLLECT_POLICY_SPEC)
+        policy_specs = tf_agents.specs.tensor_spec.from_pbtxt_file(spec_path)
+        collect_data_spec = policy_specs['collect_data_spec']
+        policy_state_spec = policy_specs['policy_state_spec']
+        policy_step_spec = policy_step.PolicyStep(
+            action=collect_data_spec.action,
+            state=policy_state_spec,
+            info=collect_data_spec.policy_info)
 
-        vae_mdp_model.train_from_policy(policy=policy, environment_suite=environment_suite,
+        vae_mdp_model.train_from_policy(policy=policy, policy_step_spec=policy_step_spec,
+                                        environment_suite=environment_suite,
                                         env_name=environment_name,
                                         labeling_function=reinforcement_learning.labeling_functions[environment_name],
                                         batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
@@ -508,7 +520,7 @@ def main(argv):
                                         eval_steps=int(1e3) if not params['do_not_eval'] else 0,
                                         get_policy_evaluation=(
                                             None if not params['action_discretizer'] else
-                                            vae_mdp_model.get_abstract_policy),
+                                            vae_mdp_model.get_latent_policy),
                                         wrap_eval_tf_env=(
                                             None if not params['action_discretizer'] else
                                             lambda tf_env: vae_mdp_model.wrap_tf_environment(

@@ -12,6 +12,8 @@ from tensorflow.keras.utils import Progbar
 
 import tf_agents.policies.tf_policy
 import tf_agents.agents.tf_agent
+from tf_agents import specs, trajectories
+from tf_agents.trajectories import time_step as ts
 from tf_agents.drivers import dynamic_step_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment, tf_environment
 from tf_agents.metrics import tf_metrics
@@ -385,7 +387,7 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['encoder_entropy'](self.binary_encode(next_state, next_label).entropy())
             self.loss_metrics['marginal_encoder_entropy'](
                 -1. * (entropy_regularizer -
-                 (1 - self.entropy_regularizer_scale_factor_min_value) * self.entropy_regularizer(next_state))
+                       (1 - self.entropy_regularizer_scale_factor_min_value) * self.entropy_regularizer(next_state))
                 / self.entropy_regularizer_scale_factor_min_value
             )
             #  self.loss_metrics['decoder_variance'](state_distribution.variance())
@@ -432,7 +434,7 @@ class VariationalMarkovDecisionProcess(Model):
             if latent_states is None:
                 latent_states = marginal_encoder.sample(batch_size)
             latent_states = latent_states[..., :tf.shape(logits)[1]]
-            latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1.-1e-7)
+            latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
             # marginal_entropy_regularizer = -1. * tf.reduce_mean(
             #     -1. * tf.reduce_sum(marginal_encoder.log_prob(latent_states), axis=1))
             marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states), axis=0)
@@ -594,6 +596,7 @@ class VariationalMarkovDecisionProcess(Model):
     def train_from_policy(
             self,
             policy: tf_agents.policies.tf_policy.Base,
+            policy_step_spec: policy_step.PolicyStep,
             environment_suite,
             env_name: str,
             labeling_function: Callable,
@@ -680,11 +683,6 @@ class VariationalMarkovDecisionProcess(Model):
             tf_env = tf_py_environment.TFPyEnvironment(py_env)
 
         # specs
-        action_spec = tf_env.action_spec()
-        policy_step_spec = policy_step.PolicyStep(
-            action=action_spec,
-            state=(),
-            info=())
         trajectory_spec = trajectory.from_transition(tf_env.time_step_spec(),
                                                      policy_step_spec,
                                                      tf_env.time_step_spec())
@@ -987,6 +985,90 @@ class VariationalMarkovDecisionProcess(Model):
         del dataset
 
         return eval_elbo
+
+    def wrap_tf_environment(
+            self,
+            tf_env: tf_environment.TFEnvironment,
+            labeling_function: Callable[[tf.Tensor], tf.Tensor],
+            deterministic_embedding_functions: bool = True
+    ) -> tf_environment.TFEnvironment:
+
+        class VariationalTFEnvironmentDiscretizer(tf_environment.TFEnvironment):
+
+            def __init__(
+                    self,
+                    vae_mdp: VariationalMarkovDecisionProcess,
+                    tf_env: tf_environment.TFEnvironment,
+                    labeling_function: Callable[[tf.Tensor], tf.Tensor],
+                    deterministic_state_embedding: bool = True
+            ):
+                action_spec = tf_env.action_spec()
+                observation_spec = specs.BoundedTensorSpec(
+                    shape=(vae_mdp.latent_state_size,),
+                    dtype=tf.int32,
+                    minimum=0,
+                    maximum=1,
+                    name='latent_observation'
+                )
+                time_step_spec = ts.time_step_spec(observation_spec)
+                super(VariationalTFEnvironmentDiscretizer, self).__init__(
+                    time_step_spec=time_step_spec,
+                    action_spec=action_spec,
+                    batch_size=tf_env.batch_size
+                )
+
+                self.embed_observation = vae_mdp.binary_encode
+                self.tf_env = tf_env
+                self._labeling_function = labeling_function
+                self.observation_shape, self.action_shape, self.reward_shape = [
+                    vae_mdp.state_shape,
+                    vae_mdp.action_shape,
+                    vae_mdp.reward_shape
+                ]
+                self._current_latent_state = None
+                if deterministic_state_embedding:
+                    self._get_embedding = lambda distribution: distribution.mode()
+                else:
+                    self._get_embedding = lambda distribution: distribution.sample()
+                self.deterministic_state_embedding = deterministic_state_embedding
+
+            def labeling_function(self, state: tf.Tensor):
+                label = tf.cast(self._labeling_function(state), dtype=tf.float32)
+                # take into account the reset label
+                label = tf.cond(
+                    tf.rank(label) == 1,
+                    lambda: tf.expand_dims(label, axis=-1),
+                    lambda: label)
+                return tf.concat(
+                    [label, tf.zeros(shape=tf.concat([tf.shape(label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
+                                     dtype=tf.float32)],
+                    axis=-1)
+
+            def _current_time_step(self):
+                if self._current_latent_state is None:
+                    return self.reset()
+                time_step = self.tf_env.current_time_step()
+                return trajectories.time_step.TimeStep(
+                    time_step.step_type, time_step.reward, time_step.discount, self._current_latent_state)
+
+            def _step(self, action):
+                time_step = self.tf_env.step(action)
+                label = self.labeling_function(time_step.observation)
+
+                latent_state = self._get_embedding(self.embed_observation(time_step.observation, label))
+                self._current_latent_state = latent_state
+                return self._current_time_step()
+
+            def _reset(self):
+                time_step = self.tf_env.reset()
+                label = self.labeling_function(time_step.observation)
+                self._current_latent_state = self._get_embedding(self.embed_observation(time_step.observation, label))
+                return self._current_time_step()
+
+            def render(self):
+                return self.tf_env.render()
+
+        return VariationalTFEnvironmentDiscretizer(self, tf_env, labeling_function, deterministic_embedding_functions)
 
 
 def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
