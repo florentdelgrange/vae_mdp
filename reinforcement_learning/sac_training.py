@@ -46,7 +46,7 @@ flags.DEFINE_integer(
 )
 flags.DEFINE_boolean(
     'permissive_policy_saver',
-    help='Set this flag to save a permissive variance policy of the current policy',
+    help="Set this flag to save a permissive variance policy of the current agent's policy",
     default=False
 )
 flags.DEFINE_multi_float(

@@ -20,7 +20,9 @@ from tf_agents.drivers import dynamic_episode_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment
 from tf_agents.metrics import tf_metrics, tf_metric
 from tf_agents.networks import q_network, categorical_q_network
+from tf_agents.policies.actor_policy import ActorPolicy
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
+from tf_agents.trajectories.policy_step import PolicyStep
 from tf_agents.utils import common
 from tf_agents.policies import policy_saver, categorical_q_policy, boltzmann_policy, q_policy
 import tf_agents.trajectories.time_step as ts
@@ -54,7 +56,7 @@ flags.DEFINE_boolean(
 flags.DEFINE_multi_float(
     'permissive_policy_temperature',
     help='Temperature of the support of permissive policies produced.',
-    default=[0.5, 1., 1.5, 2., 2.5, 3., 3.5, 4., 4.5, 5.]
+    default=[]
 )
 FLAGS = flags.FLAGS
 
@@ -216,7 +218,22 @@ class DQNLearner:
             q_network=self.q_network,
             emit_log_probability=True,
         )
-        policy = boltzmann_policy.BoltzmannPolicy(policy, temperature=temperature)
+
+        #  class QBoltzmann(boltzmann_policy.BoltzmannPolicy):
+
+        #      def __init__(self, policy, temperature):
+        #          super().__init__(policy, temperature)
+
+        #      def _action(self, time_step, policy_state=(), seed=None):
+        #          policy_step = self.distribution(time_step, policy_state)
+        #          distribution = policy_step.action
+        #          tf.print("distribution used: ", distribution.probs_parameter())
+        #          return PolicyStep(distribution.sample(), policy_step.state, policy_step.info)
+
+        #  policy = QBoltzmann(policy, temperature=temperature)
+
+        policy = boltzmann_policy.BoltzmannPolicy(policy, temperature)
+
         stochastic_policy_saver = policy_saver.PolicySaver(policy)
         stochastic_policy_saver.save(permissive_policy_dir)
 
@@ -236,6 +253,7 @@ class DQNLearner:
             metrics += ['num_episodes', 'env_steps']
 
         train_loss = 0.
+
         # load the checkpoint
 
         def update_progress_bar(num_steps=1):
