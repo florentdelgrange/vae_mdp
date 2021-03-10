@@ -92,7 +92,7 @@ class ErgodicMDPTransitionGenerator:
 
     def __init__(self, labeling_function, replay_buffer):
         self.labeling_function = labeling_function
-        self.cache_hit = False
+        self.cache_hit = tf.Variable(False, dtype=tf.bool, trainable=False)
 
         state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
             trajectory=next(iter(replay_buffer.as_dataset(
@@ -109,12 +109,12 @@ class ErgodicMDPTransitionGenerator:
         self.reset_action = tf.zeros(shape=tf.shape(action), dtype=tf.float32)
         self.reset_reward = tf.zeros(shape=tf.shape(reward), dtype=tf.float32)
 
-        self.cached_state = self.reset_state
-        self.cached_label = self.reset_state_label
+        self.cached_state = tf.Variable(self.reset_state, trainable=False)
+        self.cached_label = tf.Variable(self.reset_state_label, trainable=False)
 
     def __call__(self, trajectory, buffer_info=None):
         if self.cache_hit:
-            self.cache_hit = False
+            self.cache_hit.assign(False)
             return (self.reset_state,
                     self.reset_state_label,
                     self.reset_action,
@@ -130,9 +130,9 @@ class ErgodicMDPTransitionGenerator:
         new_next_state_label = tf.concat([next_state_label, self.reset_label - 1.], axis=-1)
         if trajectory.step_type[0] == ts.StepType.LAST \
                 and trajectory.next_step_type[0] == ts.StepType.FIRST:
-            self.cache_hit = True
-            self.cached_state = next_state
-            self.cached_label = new_next_state_label
+            self.cache_hit.assign(True)
+            self.cached_state.assign(next_state)
+            self.cached_label.assign(new_next_state_label)
             return state, new_state_label, action, reward, self.reset_state, self.reset_state_label
 
         else:
