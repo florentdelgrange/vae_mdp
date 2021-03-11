@@ -421,7 +421,7 @@ class VariationalMarkovDecisionProcess(Model):
             latent_states: Optional[tf.Tensor] = None
     ):
         logits = self.encoder_network(state)
-        regularizer = -1. * tf.reduce_mean(tfd.Bernoulli(logits=logits).entropy(), axis=0)
+        regularizer = -1. * tfd.Bernoulli(logits=logits).entropy()
 
         if enforce_latent_space_spreading:
             batch_size = tf.shape(logits)[0]
@@ -435,14 +435,14 @@ class VariationalMarkovDecisionProcess(Model):
                 latent_states = marginal_encoder.sample(batch_size)
             latent_states = latent_states[..., :tf.shape(logits)[1]]
             latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
-            # marginal_entropy_regularizer = -1. * tf.reduce_mean(
-            #     -1. * tf.reduce_sum(marginal_encoder.log_prob(latent_states), axis=1))
-            marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states), axis=0)
+            marginal_entropy_regularizer = -1. * tf.reduce_mean(
+                -1. * tf.reduce_sum(marginal_encoder.log_prob(latent_states), axis=1))
+            #  marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states), axis=0)
             regularizer = ((1. - self.marginal_entropy_regularizer_ratio) * regularizer +
                            self.marginal_entropy_regularizer_ratio *
                            (tf.abs(self.entropy_regularizer_scale_factor) / self.entropy_regularizer_scale_factor)
                            * marginal_entropy_regularizer)
-        return tf.reduce_mean(regularizer)
+        return tf.reduce_mean(regularizer, axis=0)
 
     def eval(self, inputs):
         """
