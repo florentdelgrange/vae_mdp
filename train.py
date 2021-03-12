@@ -64,6 +64,14 @@ flags.DEFINE_float(
     default=-1.,
     help="Temperature of the binary concrete relaxation prior distribution over latent states."
 )
+flags.DEFINE_bool(
+    "latent_policy",
+    default=False,
+    help="If set, VAEs for state discretization will learn a abstraction of the input policy conditioned on"
+         "latent states."
+         "Remark 1: only works for environment with discrete actions."
+         "Remark 2: Action discretizer VAEs always learn a latent policy."
+)
 flags.DEFINE_float(
     "encoder_temperature_decay_rate",
     default=1e-6,
@@ -338,7 +346,7 @@ def main(argv):
         vae_name += '_state_scaling={:g}'.format(params['state_scaling'])
 
     additional_parameters = [
-        'one_output_per_action', 'full_vae_optimization', 'relaxed_state_encoding', 'full_covariance'
+        'one_output_per_action', 'full_vae_optimization', 'relaxed_state_encoding', 'full_covariance', 'latent_policy'
     ]
     nb_additional_params = sum(
         map(lambda x: params[x], additional_parameters))
@@ -384,11 +392,11 @@ def main(argv):
             p_decode.add(Dense(units, activation=activation, name='{}decoder_{}'.format(name, i)))
 
         # Policy network body
-        discrete_policy = Sequential(name="{}policy_network_body".format(name))
+        latent_policy = Sequential(name="{}policy_network_body".format(name))
         for i, units in enumerate(params['discrete_policy_layers']):
-            discrete_policy.add(Dense(units, activation=activation, name='{}discrete_policy_{}'.format(name, i)))
+            latent_policy.add(Dense(units, activation=activation, name='{}discrete_policy_{}'.format(name, i)))
 
-        return q, p_t, p_r, p_decode, discrete_policy
+        return q, p_t, p_r, p_decode, latent_policy
 
     if params['env_suite'] != '':
         try:
@@ -415,18 +423,22 @@ def main(argv):
 
         state_shape, action_shape, reward_shape, label_shape = (
             shape if shape != () else (1,) for shape in (
-            environment.observation_spec().shape,
-            environment.action_spec().shape,
-            environment.time_step_spec().reward.shape,
-            tuple(reinforcement_learning.labeling_functions[environment_name](
-                environment.reset().observation).shape)
+                environment.observation_spec().shape,
+                environment.action_spec().shape,
+                environment.time_step_spec().reward.shape,
+                tuple(reinforcement_learning.labeling_functions[environment_name](
+                    environment.reset().observation).shape)
+            )
         )
-        )
+        if params['latent_policy']:
+            action_shape = (environment.action_spec().maximum + 1, )
+
     if params['load_vae'] == '':
-        q, p_t, p_r, p_decode, _ = generate_network_components(name='state')
+        q, p_t, p_r, p_decode, latent_policy = generate_network_components(name='state')
         vae_mdp_model = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
             encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
+            latent_policy_network=(latent_policy if params['latent_policy'] else None),
             latent_state_size=latent_state_size,
             mixture_components=mixture_components,
             encoder_temperature=relaxed_state_encoder_temperature,
@@ -454,12 +466,12 @@ def main(argv):
         if params['full_vae_optimization'] and params['load_vae'] != '':
             vae_mdp_model = variational_action_discretizer.load(params['load_vae'], full_optimization=True)
         else:
-            q, p_t, p_r, p_decode, discrete_policy = generate_network_components(name='action')
+            q, p_t, p_r, p_decode, latent_policy = generate_network_components(name='action')
             vae_mdp_model = variational_action_discretizer.VariationalActionDiscretizer(
                 vae_mdp=vae_mdp_model,
                 number_of_discrete_actions=params['number_of_discrete_actions'],
                 action_encoder_network=q, transition_network=p_t, reward_network=p_r, action_decoder_network=p_decode,
-                latent_policy_network=discrete_policy,
+                latent_policy_network=latent_policy,
                 encoder_temperature=params['encoder_temperature'],
                 prior_temperature=params['prior_temperature'],
                 encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
@@ -519,10 +531,10 @@ def main(argv):
                                         num_parallel_call=params['parallel_env'],
                                         eval_steps=int(1e3) if not params['do_not_eval'] else 0,
                                         get_policy_evaluation=(
-                                            None if not params['action_discretizer'] else
+                                            None if not (params['action_discretizer'] or params['latent_policy']) else
                                             vae_mdp_model.get_latent_policy),
                                         wrap_eval_tf_env=(
-                                            None if not params['action_discretizer'] else
+                                            None if not (params['action_discretizer'] or params['latent_policy']) else
                                             lambda tf_env: vae_mdp_model.wrap_tf_environment(
                                                 tf_env, reinforcement_learning.labeling_functions[environment_name]
                                             )

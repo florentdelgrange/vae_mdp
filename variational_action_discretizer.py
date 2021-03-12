@@ -381,15 +381,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
         return tfd.OneHotCategorical(logits=log_probs)
 
-    def relaxed_latent_policy(self, latent_state: tf.Tensor, temperature: float):
-        return tfd.ExpRelaxedOneHotCategorical(
-            temperature=temperature, logits=self.latent_policy_network(latent_state))
-
-    def discrete_latent_policy(self, latent_state: tf.Tensor):
-        relaxed_distribution = self.relaxed_latent_policy(latent_state, temperature=1e-5)
-        log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
-        return tfd.OneHotCategorical(logits=log_probs)
-
     def discrete_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, latent_action: tf.Tensor,
             relaxed_state_encoding: bool = False, log_latent_action: bool = False
@@ -504,6 +495,16 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         )
                     )
                 )
+
+    def relaxed_latent_policy(self, latent_state: tf.Tensor, temperature: float):
+        return tfd.ExpRelaxedOneHotCategorical(
+            temperature=temperature, logits=self.latent_policy_network(latent_state))
+
+    def discrete_latent_policy(self, latent_state: tf.Tensor):
+        relaxed_distribution = self.relaxed_latent_policy(latent_state, temperature=1e-5)
+        log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
+        return tfd.OneHotCategorical(logits=log_probs)
+
 
     def call(self, inputs, training=None, mask=None, **kwargs):
         if self.full_optimization:
@@ -838,37 +839,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 return self.tf_env.render()
 
         return VariationalTFEnvironmentDiscretizer(self, tf_env, labeling_function, deterministic_embedding_functions)
-
-    def get_latent_policy(self) -> tf_policy.Base:
-
-        action_spec = specs.BoundedTensorSpec(
-            shape=(),
-            dtype=tf.int32,
-            minimum=0,
-            maximum=self.number_of_discrete_actions - 1,
-            name='action'
-        )
-        observation_spec = specs.BoundedTensorSpec(
-            shape=(self.latent_state_size,),
-            dtype=tf.int32,
-            minimum=0,
-            maximum=1,
-            name='observation'
-        )
-        time_step_spec = ts.time_step_spec(observation_spec)
-
-        class LatentPolicy(tf_policy.Base):
-
-            def __init__(self, time_step_spec, action_spec, discrete_latent_policy):
-                super().__init__(time_step_spec, action_spec)
-                self.discrete_latent_policy = discrete_latent_policy
-
-            def _distribution(self, time_step, policy_state):
-                one_hot_categorical_distribution = self.discrete_latent_policy(
-                    tf.cast(time_step.observation, dtype=tf.float32))
-                return PolicyStep(tfd.Categorical(logits=one_hot_categorical_distribution.logits_parameter()), (), ())
-
-        return LatentPolicy(time_step_spec, action_spec, self.discrete_latent_policy)
 
     @property
     def inference_variables(self):

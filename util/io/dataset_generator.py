@@ -63,7 +63,8 @@ def gather_rl_observations(
 
 
 @tf.function
-def map_rl_trajectory_to_vae_input(trajectory, labeling_function):
+def map_rl_trajectory_to_vae_input(
+        trajectory, labeling_function, discrete_action: bool = False, num_discrete_actions: Optional[int] = 0):
     """
     Maps a tf-agent trajectory of 2 time steps to a transition tuple of the form
     <state, state label, action, reward, next state, next state label>
@@ -74,8 +75,8 @@ def map_rl_trajectory_to_vae_input(trajectory, labeling_function):
         labels = tf.expand_dims(labels, axis=-1)
     label = labels[0, ...]
     action = trajectory.action[0, ...]
-    if action.dtype != tf.float32:
-        action = tf.cast(action, dtype=tf.float32)
+    if discrete_action:
+        action = tf.one_hot(indices=action, depth=num_discrete_actions, dtype=tf.float32)
     reward = trajectory.reward[0, ...]
     if tf.rank(reward) == 0:
         reward = tf.expand_dims(reward, axis=-1)
@@ -90,8 +91,11 @@ class ErgodicMDPTransitionGenerator:
     Generates a dataset from 2-steps transitions contained in a replay buffer.
     """
 
-    def __init__(self, labeling_function, replay_buffer):
+    def __init__(self, labeling_function, replay_buffer, discrete_action: bool = False, num_discrete_actions=0):
         self.labeling_function = labeling_function
+        self.discrete_action = discrete_action
+        self.num_discrete_actions = num_discrete_actions
+        assert not self.discrete_action or num_discrete_actions > 0
         self.cache_hit = tf.Variable(False, dtype=tf.bool, trainable=False)
 
         state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
@@ -99,6 +103,8 @@ class ErgodicMDPTransitionGenerator:
                 num_parallel_calls=tf.data.experimental.AUTOTUNE,
                 num_steps=2)))[0],
             labeling_function=self.labeling_function,
+            discrete_action=discrete_action,
+            num_discrete_actions=num_discrete_actions
         )
         self.reset_label = tf.ones(
             shape=tf.concat([tf.shape(state_label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
@@ -125,6 +131,8 @@ class ErgodicMDPTransitionGenerator:
         state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
             trajectory=trajectory,
             labeling_function=self.labeling_function,
+            discrete_action=self.discrete_action,
+            num_discrete_actions=self.num_discrete_actions
         )
         new_state_label = tf.concat([state_label, self.reset_label - 1.], axis=-1)
         new_next_state_label = tf.concat([next_state_label, self.reset_label - 1.], axis=-1)

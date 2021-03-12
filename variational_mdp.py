@@ -13,12 +13,14 @@ from tensorflow.keras.utils import Progbar
 import tf_agents.policies.tf_policy
 import tf_agents.agents.tf_agent
 from tf_agents import specs, trajectories
+from tf_agents.policies import tf_policy
 from tf_agents.trajectories import time_step as ts
 from tf_agents.drivers import dynamic_step_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment, tf_environment
 from tf_agents.metrics import tf_metrics
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.trajectories import policy_step, trajectory
+from tf_agents.trajectories.policy_step import PolicyStep
 from tf_agents.utils import common
 
 from util.io.dataset_generator import map_rl_trajectory_to_vae_input, ErgodicMDPTransitionGenerator
@@ -47,6 +49,7 @@ class VariationalMarkovDecisionProcess(Model):
                  transition_network: Model,
                  reward_network: Model,
                  decoder_network: Model,
+                 latent_policy_network: Optional[Model] = None,
                  latent_state_size: int = 16,
                  encoder_temperature: float = 2. / 3,
                  prior_temperature: float = 1. / 2,
@@ -95,6 +98,8 @@ class VariationalMarkovDecisionProcess(Model):
         self.entropy_regularizer_scale_factor_min_value = tf.constant(entropy_regularizer_scale_factor_min_value)
         self.marginal_entropy_regularizer_ratio = marginal_entropy_regularizer_ratio
 
+        self.number_of_discrete_actions = -1  # only used if a latent policy network is provided
+
         if not (len(state_shape) == len(action_shape) == len(reward_shape) == len(label_shape)):
             if state_pre_processing_network is None:
                 raise ValueError("states, actions, rewards and label dimensions should be the same. "
@@ -109,7 +114,6 @@ class VariationalMarkovDecisionProcess(Model):
 
         input_state = Input(shape=state_shape, name="state")
         action = Input(shape=action_shape, name="action")
-        reward = Input(shape=reward_shape, name="reward")
         input_next_state = Input(shape=state_shape, name="next_state")
 
         state, next_state = input_state, input_next_state
@@ -204,11 +208,31 @@ class VariationalMarkovDecisionProcess(Model):
                 inputs=next_latent_state,
                 outputs=[decoder_output_mean, decoder_raw_output, decoder_prior],
                 name='reconstruction_network')
+
+            if latent_policy_network is not None:
+                self.latent_policy_network = latent_policy_network(latent_state)
+                # we assume actions to be discrete and given in one hot when using a latent policy network
+                assert len(self.action_shape) == 1
+                self.number_of_discrete_actions = self.action_shape[0]
+                self.latent_policy_network = Dense(
+                    units=self.action_shape[0],
+                    activation=None,
+                    name='latent_policy_one_hot_logits'
+                )(self.latent_policy_network)
+                self.latent_policy_network = Model(
+                    inputs=latent_state,
+                    outputs=self.latent_policy_network,
+                    name='latent_policy_network'
+                )
+            else:
+                self.latent_policy_network = None
+
         else:
             self.encoder_network = encoder_network
             self.transition_network = transition_network
             self.reward_network = reward_network
             self.reconstruction_network = decoder_network
+            self.latent_policy_network = latent_policy_network
 
         self.loss_metrics = {
             'ELBO': tf.keras.metrics.Mean(name='ELBO'),
@@ -332,6 +356,9 @@ class VariationalMarkovDecisionProcess(Model):
             scale_diag=self.scale_activation(reward_raw_covariance),
         )
 
+    def discrete_latent_policy(self, latent_state: tf.Tensor):
+        return tfd.OneHotCategorical(logits=self.latent_policy_network(latent_state))
+
     def anneal(self):
         for var, decay_rate in [
             (self.encoder_temperature, self.encoder_temperature_decay_rate),
@@ -369,11 +396,18 @@ class VariationalMarkovDecisionProcess(Model):
         reward_distribution = self.reward_probability_distribution(latent_state, action, next_latent_state)
         log_p_rewards = reward_distribution.log_prob(reward)
 
+        if self.latent_policy_network is not None:
+            # log π(a | z)
+            latent_policy_distribution = self.discrete_latent_policy(latent_state)
+            log_pi_action = latent_policy_distribution.log_prob(action)
+        else:
+            log_pi_action = 0
+
         # Reconstruction log P(s' | z')
         state_distribution = self.decode(next_latent_state)
         log_p_state = state_distribution.log_prob(self.state_scaler(next_state))
 
-        distortion = -1. * (log_p_state + log_p_rewards)
+        distortion = -1. * (log_p_state + log_p_rewards + log_pi_action)
         rate = tf.reduce_sum(log_q - log_p_prior, axis=1)
         entropy_regularizer = self.entropy_regularizer(
             next_state,
@@ -385,11 +419,6 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['state_mse'](self.state_scaler(next_state), state_distribution.sample())
             self.loss_metrics['reward_mse'](reward, reward_distribution.sample())
             self.loss_metrics['encoder_entropy'](self.binary_encode(next_state, next_label).entropy())
-            self.loss_metrics['marginal_encoder_entropy'](
-                -1. * (entropy_regularizer -
-                       (1 - self.entropy_regularizer_scale_factor_min_value) * self.entropy_regularizer(next_state))
-                / self.entropy_regularizer_scale_factor_min_value
-            )
             #  self.loss_metrics['decoder_variance'](state_distribution.variance())
             self.loss_metrics['distortion'](distortion)
             self.loss_metrics['rate'](rate)
@@ -427,13 +456,13 @@ class VariationalMarkovDecisionProcess(Model):
             batch_size = tf.shape(logits)[0]
             marginal_encoder = tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(logits=tf.ones(shape=batch_size)),
-                components_distribution=tfd.RelaxedBernoulli(
-                    logits=tf.transpose(logits), temperature=self.encoder_temperature),
+                components_distribution=tfd.RelaxedBernoulli(logits=tf.transpose(logits), temperature=1e-5),
                 reparameterize=(latent_states is None)
             )
             if latent_states is None:
                 latent_states = marginal_encoder.sample(batch_size)
-            latent_states = latent_states[..., :tf.shape(logits)[1]]
+            else:
+                latent_states = latent_states[..., :tf.shape(logits)[1]]
             latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
             marginal_entropy_regularizer = -1. * tf.reduce_mean(
                 -1. * tf.reduce_sum(marginal_encoder.log_prob(latent_states), axis=1))
@@ -442,7 +471,11 @@ class VariationalMarkovDecisionProcess(Model):
                            self.marginal_entropy_regularizer_ratio *
                            (tf.abs(self.entropy_regularizer_scale_factor) / self.entropy_regularizer_scale_factor)
                            * marginal_entropy_regularizer)
-        return tf.reduce_mean(regularizer, axis=0)
+
+            if 'marginal_encoder_entropy' in self.loss_metrics:
+                self.loss_metrics['marginal_encoder_entropy'](-1. * marginal_entropy_regularizer)
+
+        return tf.reduce_mean(regularizer)
 
     def eval(self, inputs):
         """
@@ -460,12 +493,18 @@ class VariationalMarkovDecisionProcess(Model):
 
         reward_distribution = self.reward_probability_distribution(latent_state, action, next_latent_state)
         log_p_rewards = reward_distribution.log_prob(reward)
+        if self.latent_policy_network is not None:
+            # log π(a | z)
+            latent_policy_distribution = self.discrete_latent_policy(latent_state)
+            log_pi_action = latent_policy_distribution.log_prob(action)
+        else:
+            log_pi_action = 0
 
         state_distribution = self.decode(next_latent_state)
         log_p_reconstruction = state_distribution.log_prob(self.state_scaler(next_state))
 
         return (
-            tf.reduce_mean(log_p_reconstruction + log_p_rewards - rate),
+            tf.reduce_mean(log_p_reconstruction + log_p_rewards + log_pi_action - rate),
             tf.concat([tf.cast(latent_state, tf.int32), tf.cast(next_latent_state, tf.int32)], axis=0),
             None
         )
@@ -667,11 +706,8 @@ class VariationalMarkovDecisionProcess(Model):
                 "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used'],
             interval=0.1) if display_progressbar else None
 
-        if discrete_action_space:
-            load_environment = lambda: tf_agents.environments.wrappers.OneHotActionWrapper(
-                environment_suite.load(env_name))
-        else:
-            load_environment = lambda: environment_suite.load(env_name)
+        discrete_action_space = discrete_action_space or (self.latent_policy_network is not None)
+        load_environment = lambda: environment_suite.load(env_name)
 
         if parallelization:
             tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
@@ -709,8 +745,7 @@ class VariationalMarkovDecisionProcess(Model):
             eval_env = wrap_eval_tf_env(eval_env)
             eval_env.reset()
             policy_evaluation_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
-                eval_env, get_policy_evaluation(), num_episodes=policy_evaluation_num_episodes
-            )
+                eval_env, get_policy_evaluation(), num_episodes=policy_evaluation_num_episodes)
 
         driver.run = common.function(driver.run)
 
@@ -719,7 +754,11 @@ class VariationalMarkovDecisionProcess(Model):
         print("Start training.")
 
         def dataset_generator():
-            generator = ErgodicMDPTransitionGenerator(labeling_function, replay_buffer)
+            generator = ErgodicMDPTransitionGenerator(
+                labeling_function,
+                replay_buffer,
+                discrete_action=discrete_action_space,
+                num_discrete_actions=self.action_shape[0])
             return replay_buffer.as_dataset(
                 num_parallel_calls=num_parallel_call,
                 num_steps=2
@@ -1070,6 +1109,38 @@ class VariationalMarkovDecisionProcess(Model):
 
         return VariationalTFEnvironmentDiscretizer(self, tf_env, labeling_function, deterministic_embedding_functions)
 
+    def get_latent_policy(self) -> tf_policy.Base:
+
+        assert self.latent_policy_network is not None
+        action_spec = specs.BoundedTensorSpec(
+            shape=(),
+            dtype=tf.int32,
+            minimum=0,
+            maximum=self.number_of_discrete_actions - 1,
+            name='action'
+        )
+        observation_spec = specs.BoundedTensorSpec(
+            shape=(self.latent_state_size,),
+            dtype=tf.int32,
+            minimum=0,
+            maximum=1,
+            name='observation'
+        )
+        time_step_spec = ts.time_step_spec(observation_spec)
+
+        class LatentPolicy(tf_policy.Base):
+
+            def __init__(self, time_step_spec, action_spec, discrete_latent_policy):
+                super().__init__(time_step_spec, action_spec)
+                self.discrete_latent_policy = discrete_latent_policy
+
+            def _distribution(self, time_step, policy_state):
+                one_hot_categorical_distribution = self.discrete_latent_policy(
+                    tf.cast(time_step.observation, dtype=tf.float32))
+                return PolicyStep(tfd.Categorical(logits=one_hot_categorical_distribution.logits_parameter()), (), ())
+
+        return LatentPolicy(time_step_spec, action_spec, self.discrete_latent_policy)
+
 
 def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
     model = tf.saved_model.load(tf_model_path)
@@ -1079,11 +1150,12 @@ def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
         tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
         tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
         tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
-        model.encoder_network,
-        model.transition_network,
-        model.reward_network,
-        model.reconstruction_network,
-        model.transition_network.variables[-1].shape[0],
+        encoder_network=model.encoder_network,
+        transition_network=model.transition_network,
+        reward_network=model.reward_network,
+        decoder_network=model.reconstruction_network,
+        latent_policy_network=model.latent_policy_network,
+        latent_state_size=model.transition_network.variables[-1].shape[0],
         encoder_temperature=model._encoder_temperature,
         prior_temperature=model._prior_temperature,
         entropy_regularizer_scale_factor=model._entropy_regularizer_scale_factor,
