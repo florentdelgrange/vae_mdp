@@ -459,7 +459,7 @@ def main(argv):
                 vae_mdp=vae_mdp_model,
                 number_of_discrete_actions=params['number_of_discrete_actions'],
                 action_encoder_network=q, transition_network=p_t, reward_network=p_r, action_decoder_network=p_decode,
-                simplified_policy_network=discrete_policy,
+                latent_policy_network=discrete_policy,
                 encoder_temperature=params['encoder_temperature'],
                 prior_temperature=params['prior_temperature'],
                 encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],

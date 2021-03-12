@@ -33,7 +33,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             action_decoder_network: Model,
             transition_network: Model,
             reward_network: Model,
-            simplified_policy_network: Model,
+            latent_policy_network: Model,
             branching_action_networks: bool = False,
             pre_processing_network: Model = Sequential(
                 [Dense(units=256, activation=tf.nn.leaky_relu),
@@ -122,7 +122,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 name="action_encoder")
 
             # prior over actions
-            self.latent_policy_network = simplified_policy_network(latent_state)
+            self.latent_policy_network = latent_policy_network(latent_state)
             self.latent_policy_network = Dense(
                 units=self.number_of_discrete_actions,
                 activation=None,
@@ -315,7 +315,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         else:
             self.action_encoder = action_encoder_network
-            self.latent_policy_network = simplified_policy_network
+            self.latent_policy_network = latent_policy_network
             self.action_transition_network = transition_network
             self.action_reward_network = reward_network
             self.action_decoder = action_decoder_network
@@ -908,7 +908,7 @@ def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActi
         action_decoder_network=model.action_decoder,
         transition_network=model.action_transition_network,
         reward_network=model.action_reward_network,
-        simplified_policy_network=model.latent_policy_network,
+        latent_policy_network=model.latent_policy_network,
         one_output_per_action=model.action_decoder.variables[0].shape[0] == state_vae.latent_state_size,
         encoder_temperature=model._encoder_temperature,
         prior_temperature=model._prior_temperature,
