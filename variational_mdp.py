@@ -157,10 +157,9 @@ class VariationalMarkovDecisionProcess(Model):
                 inputs=[latent_state, action], outputs=transition_output_layer, name="transition_network")
 
             # Reward network
-            next_latent_state = Input(shape=(latent_state_size,), name="next_latent_state")
             action_layer_2 = action if not action_pre_processing_network else action_pre_processing_network(action)
             reward_network_input = Concatenate(name="reward_network_input")(
-                [latent_state, action_layer_2, next_latent_state])
+                [latent_state, action_layer_2])
             reward_1 = reward_network(reward_network_input)
             reward_mean = Dense(units=np.prod(reward_shape), activation=None, name='reward_mean_0')(reward_1)
             reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
@@ -171,12 +170,13 @@ class VariationalMarkovDecisionProcess(Model):
             )(reward_1)
             reward_raw_covar = Reshape(reward_shape, name='reward_raw_diag_covariance')(reward_raw_covar)
             self.reward_network = Model(
-                inputs=[latent_state, action, next_latent_state],
+                inputs=[latent_state, action],
                 outputs=[reward_mean, reward_raw_covar],
                 name='reward_network')
 
             # Reconstruction network
             # inputs are latent binary states, outputs are given in parameter
+            next_latent_state = Input(shape=(latent_state_size,), name="next_latent_state")
             decoder = decoder_network(next_latent_state)
             if state_post_processing_network is not None:
                 decoder = state_post_processing_network(decoder)
@@ -343,14 +343,11 @@ class VariationalMarkovDecisionProcess(Model):
         logits = self.transition_network([latent_state, action])
         return tfd.Bernoulli(logits=logits, name='discrete_state_transition_distribution')
 
-    def reward_probability_distribution(
-            self, latent_state, action, next_latent_state
-    ) -> tfd.Distribution:
+    def reward_probability_distribution(self, latent_state, action) -> tfd.Distribution:
         """
-        Retrieves a probability distribution P(r|z, a, z') over rewards obtained when action a is chosen and the latent
-        transition z -> z' occurs. Note that rewards are scaled according to the reward scale factor.
+        Retrieves a probability distribution P(r|z, a) over rewards obtained when action a is chosen in z.
         """
-        [reward_mean, reward_raw_covariance] = self.reward_network([latent_state, action, next_latent_state])
+        [reward_mean, reward_raw_covariance] = self.reward_network([latent_state, action])
         return tfd.MultivariateNormalDiag(
             loc=reward_mean,
             scale_diag=self.scale_activation(reward_raw_covariance),
@@ -393,7 +390,7 @@ class VariationalMarkovDecisionProcess(Model):
         next_latent_state = tf.sigmoid(next_logistic_latent_state)
 
         # log P(r | z, a_1, z')
-        reward_distribution = self.reward_probability_distribution(latent_state, action, next_latent_state)
+        reward_distribution = self.reward_probability_distribution(latent_state, action)
         log_p_rewards = reward_distribution.log_prob(reward)
 
         if self.latent_policy_network is not None:
@@ -491,7 +488,7 @@ class VariationalMarkovDecisionProcess(Model):
         transition_distribution = self.discrete_latent_transition_probability_distribution(next_latent_state, action)
         rate = tf.reduce_sum(next_latent_distribution.kl_divergence(transition_distribution), axis=1)
 
-        reward_distribution = self.reward_probability_distribution(latent_state, action, next_latent_state)
+        reward_distribution = self.reward_probability_distribution(latent_state, action)
         log_p_rewards = reward_distribution.log_prob(reward)
         if self.latent_policy_network is not None:
             # log π(a | z)
