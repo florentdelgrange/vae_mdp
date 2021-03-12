@@ -321,7 +321,7 @@ class VariationalMarkovDecisionProcess(Model):
                 )
 
     def relaxed_latent_transition_probability_distribution(
-            self, latent_state: tf.Tensor, action: tf.Tensor, temperature: float
+            self, latent_state: tf.Tensor, action: Optional[tf.Tensor] = None, temperature: float = 1e-5
     ) -> tfd.Distribution:
         """
         Retrieves a Binary Concrete probability distribution P(z'|z, a) over successor latent states, given a latent
@@ -330,18 +330,43 @@ class VariationalMarkovDecisionProcess(Model):
               z ~ BinaryConcrete(loc=alpha, temperature) = sigmoid(z_logistic)
               with z_logistic ~ Logistic(loc=log alpha / temperature, scale=1. / temperature))
         """
-        logits = self.transition_network([latent_state, action])
-        return tfd.Logistic(loc=logits / temperature, scale=1. / temperature)
+        if action is not None:
+            logits = self.transition_network([latent_state, action])
+            return tfd.Logistic(loc=logits / temperature, scale=1. / temperature)
+        else:
+            return tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
+                components_distribution=tfd.Logistic(
+                    loc=tf.stack([
+                        self.transition_network(latent_state, action)
+                        for action in tf.one_hot(
+                            tf.range(self.number_of_discrete_actions), self.number_of_discrete_actions)
+                    ]) / temperature,
+                    scale=1. / temperature
+                )
+            )
 
     def discrete_latent_transition_probability_distribution(
-            self, latent_state: tf.Tensor, action: tf.Tensor
+            self, latent_state: tf.Tensor, action: Optional[tf.Tensor] = None
     ) -> tfd.Distribution:
         """
         Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states, given a binary latent
         state z and an action a.
         """
-        logits = self.transition_network([latent_state, action])
-        return tfd.Bernoulli(logits=logits, name='discrete_state_transition_distribution')
+        if action is not None:
+            logits = self.transition_network([latent_state, action])
+            return tfd.Bernoulli(logits=logits, name='discrete_state_transition_distribution')
+        else:
+            return tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
+                components_distribution=tfd.Bernoulli(
+                    logits=tf.stack([
+                        self.transition_network(latent_state, action)
+                        for action in tf.one_hot(
+                            tf.range(self.number_of_discrete_actions), self.number_of_discrete_actions)
+                    ])
+                )
+            )
 
     def reward_probability_distribution(self, latent_state, action) -> tfd.Distribution:
         """
@@ -383,7 +408,7 @@ class VariationalMarkovDecisionProcess(Model):
         log_q = next_latent_distribution.log_prob(next_logistic_latent_state)
 
         log_p_prior = self.relaxed_latent_transition_probability_distribution(
-            latent_state, action, self.prior_temperature
+            latent_state, action if self.latent_policy_network is not None else None, self.prior_temperature
         ).log_prob(next_logistic_latent_state)
 
         # retrieve binary concrete sample
@@ -485,8 +510,15 @@ class VariationalMarkovDecisionProcess(Model):
         latent_state = tf.cast(latent_distribution.sample(), tf.float32)
         next_latent_state = tf.cast(next_latent_distribution.sample(), tf.float32)
 
-        transition_distribution = self.discrete_latent_transition_probability_distribution(next_latent_state, action)
-        rate = tf.reduce_sum(next_latent_distribution.kl_divergence(transition_distribution), axis=1)
+        transition_distribution = self.discrete_latent_transition_probability_distribution(
+            latent_state, action if self.latent_policy_network is None else None)
+        if self.latent_policy_network is None:
+            rate = tf.reduce_sum(next_latent_distribution.kl_divergence(transition_distribution), axis=1)
+        else:
+            rate = tf.reduce_sum(
+                next_latent_distribution.log_prob(next_latent_state) -
+                transition_distribution.log_prob(next_latent_state),
+                axis=1)
 
         reward_distribution = self.reward_probability_distribution(latent_state, action)
         log_p_rewards = reward_distribution.log_prob(reward)
