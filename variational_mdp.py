@@ -157,9 +157,10 @@ class VariationalMarkovDecisionProcess(Model):
                 inputs=[latent_state, action], outputs=transition_output_layer, name="transition_network")
 
             # Reward network
+            next_latent_state = Input(shape=(latent_state_size,), name="next_latent_state")
             action_layer_2 = action if not action_pre_processing_network else action_pre_processing_network(action)
             reward_network_input = Concatenate(name="reward_network_input")(
-                [latent_state, action_layer_2])
+                [latent_state, action_layer_2, next_latent_state])
             reward_1 = reward_network(reward_network_input)
             reward_mean = Dense(units=np.prod(reward_shape), activation=None, name='reward_mean_0')(reward_1)
             reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
@@ -170,13 +171,12 @@ class VariationalMarkovDecisionProcess(Model):
             )(reward_1)
             reward_raw_covar = Reshape(reward_shape, name='reward_raw_diag_covariance')(reward_raw_covar)
             self.reward_network = Model(
-                inputs=[latent_state, action],
+                inputs=[latent_state, action, next_latent_state],
                 outputs=[reward_mean, reward_raw_covar],
                 name='reward_network')
 
             # Reconstruction network
             # inputs are latent binary states, outputs are given in parameter
-            next_latent_state = Input(shape=(latent_state_size,), name="next_latent_state")
             decoder = decoder_network(next_latent_state)
             if state_post_processing_network is not None:
                 decoder = state_post_processing_network(decoder)
@@ -320,6 +320,24 @@ class VariationalMarkovDecisionProcess(Model):
                     ),
                 )
 
+    def _get_mixture_transition_logits(self, latent_state: tf.Tensor):
+        def generate_next_latent_state_logits(latent_state):
+            # stack the latent state n times on the zero-axis, where n is the number of actions
+            latent_state = tf.tile(tf.expand_dims(latent_state, axis=0), (self.number_of_discrete_actions, 1))
+            action = tf.one_hot(
+                tf.range(self.number_of_discrete_actions), self.number_of_discrete_actions, dtype=tf.float32)
+            # next latent state logits of shape [latent state size, number of actions]
+            next_latent_state_logits = self.transition_network([latent_state, action])
+            return tf.transpose(next_latent_state_logits)
+
+        # axis 1: batch, axis 2: one hot actions;
+        action_logits = self.latent_policy_network(latent_state)
+        # tile of action logits with shape [batch size, latent state size, number of actions]
+        # repeat each action n times along the first axis, where n is the latent state size
+        action_logits = tf.tile(tf.expand_dims(action_logits, axis=1), (1, self.latent_state_size, 1))
+        logits = tf.map_fn(generate_next_latent_state_logits, latent_state, dtype=tf.float32)
+        return action_logits, logits
+
     def relaxed_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, action: Optional[tf.Tensor] = None, temperature: float = 1e-5
     ) -> tfd.Distribution:
@@ -334,26 +352,11 @@ class VariationalMarkovDecisionProcess(Model):
             logits = self.transition_network([latent_state, action])
             return tfd.Logistic(loc=logits / temperature, scale=1. / temperature)
         else:
-            def generate_next_latent_state_logits(latent_state):
-                # stack the latent state n times on the zero-axis, where n is the number of actions
-                latent_state = tf.tile(tf.expand_dims(latent_state, axis=0), (self.number_of_discrete_actions, 1))
-                action = tf.one_hot(
-                    tf.range(self.number_of_discrete_actions), self.number_of_discrete_actions, dtype=tf.float32)
-                # next latent state logits of shape [latent state size, number of actions]
-                next_latent_state_logits = self.transition_network([latent_state, action])
-                return tf.transpose(next_latent_state_logits)
-
-            # axis 1: batch, axis 2: one hot actions;
-            action_logits = self.latent_policy_network(latent_state)
-            # tile of action logits with shape [batch size, latent state size, number of actions]
-            # repeat each action n times along the first axis, where n is the latent state size
-            action_logits = tf.tile(tf.expand_dims(action_logits, axis=1), (1, self.latent_state_size, 1))
-            logits = tf.map_fn(generate_next_latent_state_logits, latent_state, dtype=tf.float32)
-
+            action_logits, next_state_logits = self._get_mixture_transition_logits(latent_state)
             return tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(logits=action_logits),
                 components_distribution=tfd.Logistic(
-                    loc=logits / temperature,
+                    loc=next_state_logits / temperature,
                     scale=1. / temperature
                 )
             )
@@ -369,23 +372,18 @@ class VariationalMarkovDecisionProcess(Model):
             logits = self.transition_network([latent_state, action])
             return tfd.Bernoulli(logits=logits, name='discrete_state_transition_distribution')
         else:
+            action_logits, next_state_logits = self._get_mixture_transition_logits(latent_state)
             return tfd.MixtureSameFamily(
-                mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
-                components_distribution=tfd.Bernoulli(
-                    logits=tf.stack([
-                        self.transition_network([latent_state, action])
-                        for action in tf.one_hot(
-                            tf.range(self.number_of_discrete_actions), self.number_of_discrete_actions)
-                    ])
-                ),
-                name='induced_markov_chain_discrete_transition_distribution'
+                mixture_distribution=tfd.Categorical(logits=action_logits),
+                components_distribution=tfd.Bernoulli(logits=next_state_logits)
             )
 
-    def reward_probability_distribution(self, latent_state, action) -> tfd.Distribution:
+    def reward_probability_distribution(
+            self, latent_state: tf.Tensor, action: tf.Tensor, next_latent_state: tf.Tensor) -> tfd.Distribution:
         """
-        Retrieves a probability distribution P(r|z, a) over rewards obtained when action a is chosen in z.
+        Retrieves a probability distribution P(r|z, a, z') over rewards obtained when action a is chosen in z.
         """
-        [reward_mean, reward_raw_covariance] = self.reward_network([latent_state, action])
+        [reward_mean, reward_raw_covariance] = self.reward_network([latent_state, action, next_latent_state])
         return tfd.MultivariateNormalDiag(
             loc=reward_mean,
             scale_diag=self.scale_activation(reward_raw_covariance),
@@ -428,7 +426,7 @@ class VariationalMarkovDecisionProcess(Model):
         next_latent_state = tf.sigmoid(next_logistic_latent_state)
 
         # log P(r | z, a_1, z')
-        reward_distribution = self.reward_probability_distribution(latent_state, action)
+        reward_distribution = self.reward_probability_distribution(latent_state, action, next_latent_state)
         log_p_rewards = reward_distribution.log_prob(reward)
 
         if self.latent_policy_network is not None:
@@ -519,7 +517,7 @@ class VariationalMarkovDecisionProcess(Model):
         state, label, action, reward, next_state, next_label = inputs
 
         latent_distribution = self.binary_encode(state, label)
-        next_latent_distribution = self.binary_encode(state, next_label)
+        next_latent_distribution = self.binary_encode(next_state, next_label)
         latent_state = tf.cast(latent_distribution.sample(), tf.float32)
         next_latent_state = tf.cast(next_latent_distribution.sample(), tf.float32)
 
@@ -533,7 +531,7 @@ class VariationalMarkovDecisionProcess(Model):
                 transition_distribution.log_prob(next_latent_state),
                 axis=1)
 
-        reward_distribution = self.reward_probability_distribution(latent_state, action)
+        reward_distribution = self.reward_probability_distribution(latent_state, action, next_latent_state)
         log_p_rewards = reward_distribution.log_prob(reward)
         if self.latent_policy_network is not None:
             # log π(a | z)
@@ -802,11 +800,11 @@ class VariationalMarkovDecisionProcess(Model):
                 discrete_action=discrete_action_space,
                 num_discrete_actions=self.action_shape[0])
             return replay_buffer.as_dataset(
-                num_parallel_calls=num_parallel_call,
+                num_parallel_calls=tf.data.experimental.AUTOTUNE,
                 num_steps=2
             ).map(
                 map_func=generator,
-                num_parallel_calls=num_parallel_call,
+                num_parallel_calls=tf.data.experimental.AUTOTUNE,
                 #  deterministic=False  # TF version >= 2.2.0
             )
 
