@@ -320,7 +320,6 @@ class VariationalMarkovDecisionProcess(Model):
                     ),
                 )
 
-    @tf.function
     def relaxed_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, action: Optional[tf.Tensor] = None, temperature: float = 1e-5
     ) -> tfd.Distribution:
@@ -335,17 +334,24 @@ class VariationalMarkovDecisionProcess(Model):
             logits = self.transition_network([latent_state, action])
             return tfd.Logistic(loc=logits / temperature, scale=1. / temperature)
         else:
-            def generate_logits(action):
-                action = tf.one_hot(action, self.number_of_discrete_actions)
-                # action = tf.expand_dims(action, axis=0)
-                # action = tf.repeat(action, tf.shape(latent_state)[0])
-                # action = tf.reshape(action, shape=(tf.shape(latent_state)[0], self.number_of_discrete_actions))
-                return self.transition_network([latent_state, action])
+            def generate_next_latent_state_logits(latent_state):
+                # stack the latent state n times on the zero-axis, where n is the number of actions
+                latent_state = tf.tile(tf.expand_dims(latent_state, axis=0), (self.number_of_discrete_actions, 1))
+                action = tf.one_hot(
+                    tf.range(self.number_of_discrete_actions), self.number_of_discrete_actions, dtype=tf.float32)
+                # next latent state logits of shape [latent state size, number of actions]
+                next_latent_state_logits = self.transition_network([latent_state, action])
+                return tf.transpose(next_latent_state_logits)
 
-            logits = tf.map_fn(generate_logits, tf.range(self.number_of_discrete_actions))
+            # axis 1: batch, axis 2: one hot actions;
+            action_logits = self.latent_policy_network(latent_state)
+            # tile of action logits with shape [batch size, latent state size, number of actions]
+            # repeat each action n times along the first axis, where n is the latent state size
+            action_logits = tf.tile(tf.expand_dims(action_logits, axis=1), (1, self.latent_state_size, 1))
+            logits = tf.map_fn(generate_next_latent_state_logits, latent_state, dtype=tf.float32)
 
             return tfd.MixtureSameFamily(
-                mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
+                mixture_distribution=tfd.Categorical(logits=action_logits),
                 components_distribution=tfd.Logistic(
                     loc=logits / temperature,
                     scale=1. / temperature
