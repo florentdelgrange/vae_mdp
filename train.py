@@ -307,7 +307,7 @@ def main(argv):
 
     vae_name = ''
     if not params['action_discretizer'] or params['full_vae_optimization']:
-        vae_name = 'vae_LS{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
+        vae_name = 'vae_LS{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}_seed={}'.format(
             latent_state_size,
             mixture_components,
             params['entropy_regularizer_scale_factor'],
@@ -318,7 +318,8 @@ def main(argv):
             relaxed_state_encoder_temperature,
             relaxed_state_prior_temperature,
             params['encoder_temperature_decay_rate'],
-            params['prior_temperature_decay_rate'])
+            params['prior_temperature_decay_rate'],
+            params['seed'])
     if params['action_discretizer']:
         if vae_name != '':
             base_model_name = vae_name
