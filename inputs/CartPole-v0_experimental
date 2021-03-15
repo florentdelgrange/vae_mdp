@@ -11,9 +11,9 @@
 --kl_annealing_growth_rate
 1e-6
 --display_progressbar
---latent_policy
 --mixture_components
 3
+--latent_policy
 --policy_path
 reinforcement_learning/saves/CartPole-v0/policy/permissive_policy_temperature=1e+06
 --environment
@@ -21,7 +21,7 @@ CartPole-v0
 --env_suite
 suite_gym
 --parallel_env
-4
+16
 --entropy_regularizer_scale_factor
 20
 --entropy_regularizer_decay_rate
@@ -29,7 +29,7 @@ suite_gym
 --entropy_regularizer_scale_factor_min_value
 -10
 --marginal_entropy_regularizer_ratio
-1e-4
+2e-4
 --start_annealing_step
 7500
 --logs=True
