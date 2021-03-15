@@ -119,7 +119,7 @@ class ErgodicMDPTransitionGenerator:
         self.cached_label = tf.Variable(self.reset_state_label, trainable=False)
 
     def __call__(self, trajectory, buffer_info=None):
-        if self.cache_hit:
+        def cache_hit():
             self.cache_hit.assign(False)
             return (self.reset_state,
                     self.reset_state_label,
@@ -128,23 +128,28 @@ class ErgodicMDPTransitionGenerator:
                     self.cached_state,
                     self.cached_label)
 
-        state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
-            trajectory=trajectory,
-            labeling_function=self.labeling_function,
-            discrete_action=self.discrete_action,
-            num_discrete_actions=self.num_discrete_actions
-        )
-        new_state_label = tf.concat([state_label, self.reset_label - 1.], axis=-1)
-        new_next_state_label = tf.concat([next_state_label, self.reset_label - 1.], axis=-1)
-        if trajectory.step_type[0] == ts.StepType.LAST \
-                and trajectory.next_step_type[0] == ts.StepType.FIRST:
-            self.cache_hit.assign(True)
-            self.cached_state.assign(next_state)
-            self.cached_label.assign(new_next_state_label)
-            return state, new_state_label, action, reward, self.reset_state, self.reset_state_label
+        def process_transition():
+            state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
+                trajectory=trajectory,
+                labeling_function=self.labeling_function,
+                discrete_action=self.discrete_action,
+                num_discrete_actions=self.num_discrete_actions)
+            new_state_label = tf.concat([state_label, self.reset_label - 1.], axis=-1)
+            new_next_state_label = tf.concat([next_state_label, self.reset_label - 1.], axis=-1)
 
-        else:
-            return state, new_state_label, action, reward, next_state, new_next_state_label
+            def last_transition():
+                self.cache_hit.assign(True)
+                self.cached_state.assign(next_state)
+                self.cached_label.assign(new_next_state_label)
+                return state, new_state_label, action, reward, self.reset_state, self.reset_state_label
+
+            return tf.cond(
+                tf.logical_and(trajectory.step_type[0] == ts.StepType.LAST,
+                               trajectory.next_step_type[0] == ts.StepType.FIRST),
+                last_transition,
+                lambda: (state, new_state_label, action, reward, next_state, new_next_state_label))
+
+        return tf.cond(self.cache_hit, cache_hit, process_transition)
 
 
 class DictionaryDatasetGenerator:
