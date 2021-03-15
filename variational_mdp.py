@@ -759,7 +759,7 @@ class VariationalMarkovDecisionProcess(Model):
                 "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used'],
             interval=0.1) if display_progressbar else None
 
-        discrete_action_space = discrete_action_space or (self.latent_policy_network is not None)
+        discrete_action_space = discrete_action_space and (self.latent_policy_network is not None)
         load_environment = lambda: environment_suite.load(env_name)
 
         if parallelization:

@@ -307,7 +307,7 @@ def main(argv):
 
     vae_name = ''
     if not params['action_discretizer'] or params['full_vae_optimization']:
-        vae_name = 'vae_LS{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}_seed={}'.format(
+        vae_name = 'vae_LS{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}_seed={:d}'.format(
             latent_state_size,
             mixture_components,
             params['entropy_regularizer_scale_factor'],
@@ -542,7 +542,9 @@ def main(argv):
                                         ),
                                         annealing_period=params['annealing_period'],
                                         aggressive_training=params['aggressive_training'],
-                                        initial_collect_steps=params['initial_collect_steps'])
+                                        initial_collect_steps=params['initial_collect_steps'],
+                                        discrete_action_space=(
+                                                not params['action_discretizer'] and params['latent_policy']))
     else:
         vae_mdp_model.train_from_dataset(dataset_generator=generate_dataset,
                                          batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
