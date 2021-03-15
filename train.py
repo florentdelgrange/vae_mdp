@@ -319,7 +319,7 @@ def main(argv):
             relaxed_state_prior_temperature,
             params['encoder_temperature_decay_rate'],
             params['prior_temperature_decay_rate'],
-            params['seed'])
+            int(params['seed']))
     if params['action_discretizer']:
         if vae_name != '':
             base_model_name = vae_name
