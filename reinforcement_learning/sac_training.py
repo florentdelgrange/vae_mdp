@@ -257,10 +257,10 @@ class SACLearner:
         self.num_episodes = tf_metrics.NumberOfEpisodes()
         self.env_steps = tf_metrics.EnvironmentSteps()
         self.avg_return = tf_metrics.AverageReturnMetric(batch_size=self.tf_env.batch_size)
-        self.safety_violations = NumberOfSafetyViolations(self.labeling_function)
+        #  self.safety_violations = NumberOfSafetyViolations(self.labeling_function)
 
         observers = [self.num_episodes, self.env_steps] if not parallelization else []
-        observers += [self.avg_return, self.safety_violations, self.replay_buffer.add_batch]
+        observers += [self.avg_return, self.replay_buffer.add_batch]
         # A driver executes the agent's exploration loop and allows the observers to collect exploration information
         self.driver = dynamic_step_driver.DynamicStepDriver(
             self.tf_env, self.collect_policy, observers=observers, num_steps=collect_steps_per_iteration)
@@ -311,7 +311,7 @@ class SACLearner:
         self.driver.run = common.function(self.driver.run)
 
         metrics = [
-            'avg_safety_violations_per_episode',
+            # 'avg_safety_violations_per_episode',
             'eval_avg_returns',
             'avg_eval_episode_length',
             'eval_safety_violations',
@@ -340,7 +340,7 @@ class SACLearner:
                 log_values = [
                     ('loss', train_loss.loss),
                     ('replay_buffer_frames', self.replay_buffer.num_frames()),
-                    ('avg_safety_violations_per_episode', self.safety_violations.average()),
+                    # ('avg_safety_violations_per_episode', self.safety_violations.average()),
                     ('training_avg_returns', self.avg_return.result()),
                 ]
                 if not self.parallelization:
@@ -398,24 +398,24 @@ class SACLearner:
         avg_eval_return = tf_metrics.AverageReturnMetric()
         avg_eval_episode_length = tf_metrics.AverageEpisodeLengthMetric()
         saved_policy = tf.compat.v2.saved_model.load(self.stochastic_policy_dir)
-        num_safety_violations = NumberOfSafetyViolations(labeling_function=self.labeling_function)
+        #  num_safety_violations = NumberOfSafetyViolations(labeling_function=self.labeling_function)
         if self.eval_video:
             self.evaluate_policy_video(saved_policy,
-                                       observers=[avg_eval_return, avg_eval_episode_length, num_safety_violations],
+                                       observers=[avg_eval_return, avg_eval_episode_length], #, num_safety_violations],
                                        step=str(step))
         else:
             self.eval_env.reset()
             dynamic_episode_driver.DynamicEpisodeDriver(
                 self.eval_env,
                 saved_policy,
-                [avg_eval_return, avg_eval_episode_length, num_safety_violations],
+                [avg_eval_return, avg_eval_episode_length],  #, num_safety_violations],
                 num_episodes=self.num_eval_episodes
             ).run()
 
         log_values = [
             ('eval_avg_returns', avg_eval_return.result()),
             ('avg_eval_episode_length', avg_eval_episode_length.result()),
-            ('eval_safety_violations', num_safety_violations.average())
+            #  "('eval_safety_violations', num_safety_violations.average())
         ]
         if progressbar is not None:
             progressbar.add(0, log_values)
@@ -426,9 +426,9 @@ class SACLearner:
         with self.train_summary_writer.as_default():
             tf.summary.scalar('Average returns', avg_eval_return.result(), step=step)
             tf.summary.scalar('Average episode length', avg_eval_episode_length.result(), step=step)
-            tf.summary.scalar('Number of safety violations for {} episodes'.format(self.num_eval_episodes),
-                              num_safety_violations.result(),
-                              step=step)
+            #  tf.summary.scalar('Number of safety violations for {} episodes'.format(self.num_eval_episodes),
+            #                    num_safety_violations.result(),
+            #                    step=step)
 
     def save_observations(self, batch_size: int = 128000):
         observations_dataset = self.replay_buffer.as_dataset(
