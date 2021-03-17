@@ -6,7 +6,6 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow.keras import Model
-from tensorflow.keras.models import clone_model
 from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense, Lambda
 from tensorflow.keras.utils import Progbar
 
@@ -23,7 +22,7 @@ from tf_agents.trajectories import policy_step, trajectory
 from tf_agents.trajectories.policy_step import PolicyStep
 from tf_agents.utils import common
 
-from util.io.dataset_generator import map_rl_trajectory_to_vae_input, ErgodicMDPTransitionGenerator
+from util.io.dataset_generator import ErgodicMDPTransitionGenerator
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -168,25 +167,25 @@ class VariationalMarkovDecisionProcess(Model):
             # Transition network
             # inputs are binary concrete random variables, outputs are locations of logistic distributions
             if self.number_of_discrete_actions != -1:
-                transition_network_input = Concatenate(name="transition_network_input")([latent_state, action])
-            else:
                 transition_network_input = latent_state
+            else:
+                transition_network_input = Concatenate(name="transition_network_input")([latent_state, action])
+
             transition = transition_network(transition_network_input)
-            _action = Lambda(lambda x: tf.expand_dims(x, -1), name='action_expand_dims')(action)
             if self.number_of_discrete_actions != -1:
-                transition_output = []
-                for a in range(self.number_of_discrete_actions):
-                    transition_output.append(
-                        Dense(units=latent_state_size,
-                              activation=None,
-                              name='latent_transition_distribution_logits_action_{:d}'.format(a)
-                              )(transition))
-                transition_output_layer = Lambda(
-                    lambda x: tf.stack(x, axis=1), name='transition_logits_stack')(transition_output)
-                _action_tile = Lambda(
-                    lambda x: tf.tile(x, (1, 1, self.latent_state_size)), name='action_tile_latent_state')(_action)
+                transition_output_layer = Dense(
+                    units=latent_state_size * self.number_of_discrete_actions,
+                    activation=None,
+                    name='transition_raw_output_layer'
+                )(transition)
+                transition_output_layer = Reshape(
+                    target_shape=(self.number_of_discrete_actions, latent_state_size),
+                    name='transition_output_layer_reshape'
+                )(transition_output_layer)
+                _action = tf.keras.layers.RepeatVector(self.latent_state_size, name='repeat_action')(action)
+                _action = tf.keras.layers.Permute(dims=(2, 1), name='permute_state_dim_with_action_dim')(_action)
                 transition_output_layer = tf.keras.layers.Multiply(name="multiply_action_transition")(
-                    [_action_tile, transition_output_layer])
+                    [_action, transition_output_layer])
                 transition_output_layer = Lambda(
                     lambda x: tf.reduce_sum(x, axis=1), name='transition_logits_action_mask_reduce_sum'
                 )(transition_output_layer)
@@ -200,20 +199,18 @@ class VariationalMarkovDecisionProcess(Model):
             next_latent_state = Input(shape=(latent_state_size,), name="next_latent_state")
             if self.number_of_discrete_actions != -1:
                 reward_network_input = Concatenate(name="reward_network_input")(
-                    [latent_state, action, next_latent_state])
+                    [latent_state, next_latent_state])
             else:
                 reward_network_input = Concatenate(name="reward_network_input")(
-                    [latent_state, next_latent_state])
+                    [latent_state, action, next_latent_state])
             reward_1 = reward_network(reward_network_input)
+            _action = Lambda(lambda x: tf.expand_dims(x, -1), name='action_expand_dims')(action)
             if self.number_of_discrete_actions != -1:
-                reward_mean_output = []
-                for a in range(self.number_of_discrete_actions):
-                    reward_mean_output.append(
-                        Dense(
-                            units=np.prod(reward_shape), activation=None, name='reward_mean_0_action{:d}'.format(a)
-                        )(reward_1))
-                reward_mean = Lambda(
-                    lambda x: tf.stack(x, axis=1), name='reward_mean_stack_action')(reward_mean_output)
+                reward_mean = Dense(
+                    units=np.prod(reward_shape) * self.number_of_discrete_actions,
+                    activation=None,
+                    name='reward_mean_raw_output')(reward_1)
+                reward_mean = Reshape(target_shape=((self.number_of_discrete_actions, ) + reward_shape))(reward_mean)
                 _action_tile = Lambda(
                     lambda x: tf.tile(x, (1, 1, np.prod(reward_shape))), name='action_tile_reward_mean'
                 )(_action)
@@ -226,16 +223,12 @@ class VariationalMarkovDecisionProcess(Model):
             reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
 
             if self.number_of_discrete_actions != -1:
-                reward_raw_covar_output = []
-                for a in range(self.number_of_discrete_actions):
-                    reward_raw_covar_output.append(
-                        Dense(
-                            units=np.prod(reward_shape),
-                            activation=None,
-                            name='reward_raw_diag_covariance_0_action{:d}'.format(a)
-                        )(reward_1))
-                reward_raw_covar = Lambda(
-                    lambda x: tf.stack(x, axis=1), name='reward_raw_covar_stack')(reward_raw_covar_output)
+                reward_raw_covar = Dense(
+                    units=np.prod(reward_shape) * self.number_of_discrete_actions,
+                    activation=None,
+                    name='reward_covar_raw_output')(reward_1)
+                reward_raw_covar = Reshape(
+                    target_shape=(self.number_of_discrete_actions, ) + reward_shape)(reward_raw_covar)
                 _action_tile = Lambda(
                     lambda x: tf.tile(x, (1, 1, np.prod(reward_shape))), name='action_tile_reward_covar'
                 )(_action)
