@@ -119,7 +119,7 @@ class SACLearner:
                  parallelization: bool = True,
                  num_parallel_environments: int = 4,
                  batch_size: int = 256,
-                 labeling_function: Callable = labeling_functions['HumanoidBulletEnv-v0'],
+                 # labeling_function: Callable = labeling_functions['HumanoidBulletEnv-v0'],
                  eval_video: bool = False,
                  debug: bool = False,
                  save_directory_location: str = '.',
@@ -132,7 +132,7 @@ class SACLearner:
             collect_steps_per_iteration = max(1, collect_steps_per_iteration // num_parallel_environments)
 
         self.env_name = env_name
-        self.labeling_function = labeling_function
+        # self.labeling_function = labeling_function
         self.num_iterations = num_iterations
 
         self.initial_collect_steps = initial_collect_steps
@@ -437,7 +437,7 @@ class SACLearner:
             num_steps=3)
         dataset_generator.gather_rl_observations(
             iter(observations_dataset),
-            self.labeling_function,
+            #  self.labeling_function,
             dataset_path=os.path.join(self.save_directory_location,
                                       'dataset/reinforcement_learning')
         )
