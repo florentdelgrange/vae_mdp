@@ -185,7 +185,8 @@ class VariationalMarkovDecisionProcess(Model):
                     lambda x: tf.stack(x, axis=1), name='transition_logits_stack')(transition_output)
                 _action_tile = Lambda(
                     lambda x: tf.tile(x, (1, 1, self.latent_state_size)), name='action_tile_latent_state')(_action)
-                transition_output_layer = tf.keras.layers.Multiply()([_action_tile, transition_output_layer])
+                transition_output_layer = tf.keras.layers.Multiply(name="multiply_action_transition")(
+                    [_action_tile, transition_output_layer])
                 transition_output_layer = Lambda(
                     lambda x: tf.reduce_sum(x, axis=1), name='transition_logits_action_mask_reduce_sum'
                 )(transition_output_layer)
@@ -194,7 +195,6 @@ class VariationalMarkovDecisionProcess(Model):
                     units=latent_state_size, activation=None, name='latent_transition_distribution_logits')(transition)
             self.transition_network = Model(
                 inputs=[latent_state, action], outputs=transition_output_layer, name="transition_network")
-            # self.transition_network.summary()
 
             # Reward network
             next_latent_state = Input(shape=(latent_state_size,), name="next_latent_state")
@@ -215,7 +215,7 @@ class VariationalMarkovDecisionProcess(Model):
                 reward_mean = Lambda(
                     lambda x: tf.stack(x, axis=1), name='reward_mean_stack_action')(reward_mean_output)
                 _action_tile = Lambda(
-                    lambda x: tf.tile(x, (1, 1, np.prod(reward_shape)), name='action_tile_reward_mean')
+                    lambda x: tf.tile(x, (1, 1, np.prod(reward_shape))), name='action_tile_reward_mean'
                 )(_action)
                 reward_mean = tf.keras.layers.Multiply(name="multiply_action_reward_stack")([_action_tile, reward_mean])
                 reward_mean = Lambda(
@@ -237,7 +237,7 @@ class VariationalMarkovDecisionProcess(Model):
                 reward_raw_covar = Lambda(
                     lambda x: tf.stack(x, axis=1), name='reward_raw_covar_stack')(reward_raw_covar_output)
                 _action_tile = Lambda(
-                    lambda x: tf.tile(x, (1, 1, np.prod(reward_shape)), name='action_tile_reward_covar')
+                    lambda x: tf.tile(x, (1, 1, np.prod(reward_shape))), name='action_tile_reward_covar'
                 )(_action)
                 reward_raw_covar = tf.keras.layers.Multiply(
                     name='multiply_action_raw_covar_stack')([_action_tile, reward_raw_covar])
@@ -256,7 +256,6 @@ class VariationalMarkovDecisionProcess(Model):
                 inputs=[latent_state, action, next_latent_state],
                 outputs=[reward_mean, reward_raw_covar],
                 name='reward_network')
-            self.reward_network.summary()
 
             # Reconstruction network
             # inputs are latent binary states, outputs are given in parameter
