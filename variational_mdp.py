@@ -559,7 +559,8 @@ class VariationalMarkovDecisionProcess(Model):
             batch_size = tf.shape(logits)[0]
             marginal_encoder = tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(logits=tf.ones(shape=batch_size)),
-                components_distribution=tfd.RelaxedBernoulli(logits=tf.transpose(logits), temperature=1e-5),
+                components_distribution=tfd.RelaxedBernoulli(
+                    logits=tf.transpose(logits), temperature=self.encoder_temperature),
                 reparameterize=(latent_states is None)
             )
             if latent_states is None:
@@ -567,8 +568,8 @@ class VariationalMarkovDecisionProcess(Model):
             else:
                 latent_states = latent_states[..., :tf.shape(logits)[1]]
             latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
-            marginal_entropy_regularizer = -1. * tf.reduce_mean(
-                -1. * tf.reduce_sum(marginal_encoder.log_prob(latent_states), axis=1))
+            marginal_entropy_regularizer = tf.reduce_mean(
+                tf.reduce_sum(marginal_encoder.log_prob(latent_states), axis=1))
             #  marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states), axis=0)
             regularizer = ((1. - self.marginal_entropy_regularizer_ratio) * regularizer +
                            self.marginal_entropy_regularizer_ratio *
