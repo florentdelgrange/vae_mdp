@@ -6,9 +6,12 @@ from absl import app
 from absl import flags
 from tensorflow.keras.layers import Dense
 from tensorflow.python.keras import Sequential
+from tf_agents.environments import tf_py_environment
 from tf_agents.policies import policy_saver
+from tf_agents.specs import tensor_spec
 from tf_agents.trajectories import policy_step
 
+import policies
 import reinforcement_learning
 import variational_action_discretizer
 import variational_mdp
@@ -249,6 +252,16 @@ flags.DEFINE_bool(
     default=True,
     help='Enable to save/load checkpoints to/from the save directory.'
 )
+flags.DEFINE_float(
+    'epsilon_greedy',
+    default=0.,
+    help='Epsilon value used for training the model via epsilon-greedy with the input policy.'
+)
+flags.DEFINE_bool(
+    'decompose_training',
+    default=False,
+    help='Decompose the VAE training in two phases: 1) state space abstraction, 2) action space + policy abstraction.'
+)
 FLAGS = flags.FLAGS
 
 
@@ -343,11 +356,18 @@ def main(argv):
         )
     if params['max_state_decoder_variance'] > 0:
         vae_name += '_max_state_decoder_variance={:g}'.format(params['max_state_decoder_variance'])
+    if params['epsilon_greedy'] > 0:
+        vae_name += '_epsilon_greedy={:g}'.format(params['epsilon_greedy'])
     if params['state_scaling'] != 1.:
         vae_name += '_state_scaling={:g}'.format(params['state_scaling'])
 
     additional_parameters = [
-        'one_output_per_action', 'full_vae_optimization', 'relaxed_state_encoding', 'full_covariance', 'latent_policy'
+        'one_output_per_action',
+        'full_vae_optimization',
+        'relaxed_state_encoding',
+        'full_covariance',
+        'latent_policy',
+        'decompose_training'
     ]
     nb_additional_params = sum(
         map(lambda x: params[x], additional_parameters))
@@ -355,17 +375,7 @@ def main(argv):
         vae_name += ('_params={}' + '-{}' * (nb_additional_params - 1)).format(
             *filter(lambda x: params[x], additional_parameters))
 
-    cycle_length = batch_size // 2
-    block_length = batch_size // cycle_length
     activation = getattr(tf.nn, params["activation"])
-
-    def generate_dataset():
-        return dataset_generator.create_dataset(
-            hdf5_files_path=dataset_path,
-            cycle_length=cycle_length,
-            block_length=block_length)
-
-    dataset_size = -1
 
     def generate_network_components(name=''):
 
@@ -409,66 +419,59 @@ def main(argv):
     else:
         environment_suite = None
 
-    if params['dataset_path'] != '':
-        dummy_dataset = generate_dataset()
-        dataset_size = dataset_generator.get_num_samples(dataset_path, batch_size=batch_size, drop_remainder=True)
+    environment = environment_suite.load(environment_name)
 
-        state_shape, action_shape, reward_shape, _, label_shape = [
-            tuple(spec.shape.as_list()[1:]) for spec in dummy_dataset.element_spec
-        ]
+    state_shape, action_shape, reward_shape, label_shape = (
+        shape if shape != () else (1,) for shape in (
+        environment.observation_spec().shape,
+        environment.action_spec().shape,
+        environment.time_step_spec().reward.shape,
+        tuple(reinforcement_learning.labeling_functions[environment_name](
+            environment.reset().observation).shape)
+        )
+    )
+    time_step_spec = tensor_spec.from_spec(environment.time_step_spec())
+    action_spec = tensor_spec.from_spec(environment.action_spec())
+    if params['latent_policy']:
+        action_shape = (environment.action_spec().maximum + 1,)
 
-        del dummy_dataset
-
-    else:
-        environment = environment_suite.load(environment_name)
-
-        state_shape, action_shape, reward_shape, label_shape = (
-            shape if shape != () else (1,) for shape in (
-                environment.observation_spec().shape,
-                environment.action_spec().shape,
-                environment.time_step_spec().reward.shape,
-                tuple(reinforcement_learning.labeling_functions[environment_name](
-                    environment.reset().observation).shape)
+    def build_vae_model():
+        if params['load_vae'] == '':
+            q, p_t, p_r, p_decode, latent_policy = generate_network_components(name='state')
+            return variational_mdp.VariationalMarkovDecisionProcess(
+                state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
+                encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
+                latent_policy_network=(latent_policy if params['latent_policy'] else None),
+                latent_state_size=latent_state_size,
+                mixture_components=mixture_components,
+                encoder_temperature=relaxed_state_encoder_temperature,
+                prior_temperature=relaxed_state_prior_temperature,
+                encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
+                prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
+                entropy_regularizer_scale_factor=params['entropy_regularizer_scale_factor'],
+                entropy_regularizer_decay_rate=params['entropy_regularizer_decay_rate'],
+                entropy_regularizer_scale_factor_min_value=params['entropy_regularizer_scale_factor_min_value'],
+                marginal_entropy_regularizer_ratio=params['marginal_entropy_regularizer_ratio'],
+                kl_scale_factor=params['kl_annealing_scale_factor'],
+                kl_annealing_growth_rate=params['kl_annealing_growth_rate'],
+                multivariate_normal_full_covariance=params['full_covariance'],
+                max_decoder_variance=(
+                    None if params['max_state_decoder_variance'] == 0. else params['max_state_decoder_variance']
+                ),
+                state_scaler=lambda x: x * params['state_scaling'],
             )
-        )
-        if params['latent_policy']:
-            action_shape = (environment.action_spec().maximum + 1, )
+        else:
+            vae = variational_mdp.load(params['load_vae'])
+            vae.encoder_temperature = relaxed_state_encoder_temperature
+            vae.prior_temperature = relaxed_state_prior_temperature
+            return vae
 
-    if params['load_vae'] == '':
-        q, p_t, p_r, p_decode, latent_policy = generate_network_components(name='state')
-        vae_mdp_model = variational_mdp.VariationalMarkovDecisionProcess(
-            state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
-            encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
-            latent_policy_network=(latent_policy if params['latent_policy'] else None),
-            latent_state_size=latent_state_size,
-            mixture_components=mixture_components,
-            encoder_temperature=relaxed_state_encoder_temperature,
-            prior_temperature=relaxed_state_prior_temperature,
-            encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
-            prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
-            entropy_regularizer_scale_factor=params['entropy_regularizer_scale_factor'],
-            entropy_regularizer_decay_rate=params['entropy_regularizer_decay_rate'],
-            entropy_regularizer_scale_factor_min_value=params['entropy_regularizer_scale_factor_min_value'],
-            marginal_entropy_regularizer_ratio=params['marginal_entropy_regularizer_ratio'],
-            kl_scale_factor=params['kl_annealing_scale_factor'],
-            kl_annealing_growth_rate=params['kl_annealing_growth_rate'],
-            multivariate_normal_full_covariance=params['full_covariance'],
-            max_decoder_variance=(
-                None if params['max_state_decoder_variance'] == 0. else params['max_state_decoder_variance']
-            ),
-            state_scaler=lambda x: x * params['state_scaling'],
-        )
-    else:
-        vae_mdp_model = variational_mdp.load(params['load_vae'])
-        vae_mdp_model.encoder_temperature = relaxed_state_encoder_temperature
-        vae_mdp_model.prior_temperature = relaxed_state_prior_temperature
-
-    if params['action_discretizer']:
+    def build_action_discretizer_vae_model(vae_mdp_model, full_optimization=True):
         if params['full_vae_optimization'] and params['load_vae'] != '':
-            vae_mdp_model = variational_action_discretizer.load(params['load_vae'], full_optimization=True)
+            vae = variational_action_discretizer.load(params['load_vae'], full_optimization=True)
         else:
             q, p_t, p_r, p_decode, latent_policy = generate_network_components(name='action')
-            vae_mdp_model = variational_action_discretizer.VariationalActionDiscretizer(
+            vae = variational_action_discretizer.VariationalActionDiscretizer(
                 vae_mdp=vae_mdp_model,
                 number_of_discrete_actions=params['number_of_discrete_actions'],
                 action_encoder_network=q, transition_network=p_t, reward_network=p_r, action_decoder_network=p_decode,
@@ -479,63 +482,73 @@ def main(argv):
                 prior_temperature_decay_rate=params['prior_temperature_decay_rate'],
                 one_output_per_action=params['one_output_per_action'],
                 relaxed_state_encoding=params['relaxed_state_encoding'],
-                full_optimization=params['full_vae_optimization'],
+                full_optimization=full_optimization,
                 reconstruction_mixture_components=(
                     mixture_components if params['action_mixture_components'] == 0
                     else params['action_mixture_components']
                 ),
             )
-        vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
-        vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
-        vae_mdp_model.regularizer_scale_factor = params['entropy_regularizer_scale_factor']
-        vae_mdp_model.regularizer_decay_rate = params['entropy_regularizer_decay_rate']
+            vae.kl_scale_factor = params['kl_annealing_scale_factor']
+            vae.kl_growth_rate = params['kl_annealing_growth_rate']
+            vae.regularizer_scale_factor = params['entropy_regularizer_scale_factor']
+            vae.regularizer_decay_rate = params['entropy_regularizer_decay_rate']
+        return vae
+
+    models = [build_vae_model()]
+    if params['action_discretizer']:
+        if not params['decompose_training']:
+            models[0] = build_action_discretizer_vae_model(models[0], full_optimization=params['full_optimization'])
+        else:
+            models.append(build_action_discretizer_vae_model(models[0], full_optimization=False))
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
-
     step = tf.compat.v1.train.get_or_create_global_step()
-    checkpoint_directory = os.path.join(params['save_dir'], 'saves', environment_name, 'training_checkpoints', vae_name)
-    if params['checkpoint']:
-        print("checkpoint path:", checkpoint_directory)
-        checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
-        manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
-    else:
-        checkpoint = manager = None
 
-    if base_model_name != '':
-        vae_name_list = vae_name.split(os.path.sep)
-        vae_name_list[0] = '_'.join(base_model_name.split(os.path.sep))
-        vae_name = os.path.join(*vae_name_list)
+    for phase, vae_mdp_model in enumerate(models):
+        if len(models) > 1:
+            checkpoint_directory = os.path.join(
+                params['save_dir'], 'saves', environment_name, 'training_checkpoints', 'phase_{:d}'.format(phase),
+                vae_name)
+        else:
+            checkpoint_directory = os.path.join(
+                params['save_dir'], 'saves', environment_name, 'training_checkpoints', vae_name)
+        if params['checkpoint']:
+            print("checkpoint path:", checkpoint_directory)
+            checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
+            manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
+        else:
+            checkpoint = manager = None
 
-    if dataset_path == '':
-        policy = tf.compat.v2.saved_model.load(params['policy_path'])
-        spec_path = os.path.join(params['policy_path'], policy_saver.COLLECT_POLICY_SPEC)
-        policy_specs = tf_agents.specs.tensor_spec.from_pbtxt_file(spec_path)
-        collect_data_spec = policy_specs['collect_data_spec']
-        policy_state_spec = policy_specs['policy_state_spec']
-        policy_step_spec = policy_step.PolicyStep(
-            action=collect_data_spec.action,
-            state=policy_state_spec,
-            info=collect_data_spec.policy_info)
+        if base_model_name != '':
+            vae_name_list = vae_name.split(os.path.sep)
+            vae_name_list[0] = '_'.join(base_model_name.split(os.path.sep))
+            vae_name = os.path.join(*vae_name_list)
 
-        vae_mdp_model.train_from_policy(policy=policy, policy_step_spec=policy_step_spec,
+        policy = policies.SavedTFPolicy(params['policy_path'], time_step_spec, action_spec)
+
+        vae_mdp_model.train_from_policy(policy=policy,
                                         environment_suite=environment_suite,
                                         env_name=environment_name,
                                         labeling_function=reinforcement_learning.labeling_functions[environment_name],
+                                        epsilon_greedy=params['epsilon_greedy'] if phase == 0 else 0.,
                                         batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
                                         manager=manager, log_name=vae_name,
                                         start_annealing_step=params['start_annealing_step'],
                                         logs=params['logs'],
-                                        num_iterations=params['max_steps'],
+                                        num_iterations=(
+                                            params['max_steps'] if not params['decompose_training'] or phase == 1
+                                            else params['max_steps'] // 2),
                                         display_progressbar=params['display_progressbar'],
                                         save_directory=params['save_dir'],
                                         parallelization=params['parallel_env'] > 1,
                                         num_parallel_call=params['parallel_env'],
                                         eval_steps=int(1e3) if not params['do_not_eval'] else 0,
                                         get_policy_evaluation=(
-                                            None if not (params['action_discretizer'] or params['latent_policy']) else
-                                            vae_mdp_model.get_latent_policy),
+                                            None if not (params['action_discretizer'] or params['latent_policy'])
+                                            or (phase == 0 and len(models) > 1) else vae_mdp_model.get_latent_policy),
                                         wrap_eval_tf_env=(
-                                            None if not (params['action_discretizer'] or params['latent_policy']) else
+                                            None if not (params['action_discretizer'] or params['latent_policy'])
+                                            or (phase == 0 and len(models) > 1) else
                                             lambda tf_env: vae_mdp_model.wrap_tf_environment(
                                                 tf_env, reinforcement_learning.labeling_functions[environment_name]
                                             )
@@ -545,16 +558,6 @@ def main(argv):
                                         initial_collect_steps=params['initial_collect_steps'],
                                         discrete_action_space=(
                                                 not params['action_discretizer'] and params['latent_policy']))
-    else:
-        vae_mdp_model.train_from_dataset(dataset_generator=generate_dataset,
-                                         batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
-                                         manager=manager, dataset_size=dataset_size,
-                                         annealing_period=params['annealing_period'],
-                                         start_annealing_step=params['start_annealing_step'],
-                                         log_name=vae_name, logs=True, max_steps=params['max_steps'],
-                                         display_progressbar=params['display_progressbar'],
-                                         save_directory=params['save_dir'],
-                                         eval_ratio=int(1e3) if not params['do_not_eval'] else 0, )
 
     return 0
 
