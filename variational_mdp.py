@@ -210,7 +210,7 @@ class VariationalMarkovDecisionProcess(Model):
                     units=np.prod(reward_shape) * self.number_of_discrete_actions,
                     activation=None,
                     name='reward_mean_raw_output')(reward_1)
-                reward_mean = Reshape(target_shape=((self.number_of_discrete_actions, ) + reward_shape))(reward_mean)
+                reward_mean = Reshape(target_shape=((self.number_of_discrete_actions,) + reward_shape))(reward_mean)
                 _action_tile = Lambda(
                     lambda x: tf.tile(x, (1, 1, np.prod(reward_shape))), name='action_tile_reward_mean'
                 )(_action)
@@ -228,7 +228,7 @@ class VariationalMarkovDecisionProcess(Model):
                     activation=None,
                     name='reward_covar_raw_output')(reward_1)
                 reward_raw_covar = Reshape(
-                    target_shape=(self.number_of_discrete_actions, ) + reward_shape)(reward_raw_covar)
+                    target_shape=(self.number_of_discrete_actions,) + reward_shape)(reward_raw_covar)
                 _action_tile = Lambda(
                     lambda x: tf.tile(x, (1, 1, np.prod(reward_shape))), name='action_tile_reward_covar'
                 )(_action)
@@ -398,7 +398,7 @@ class VariationalMarkovDecisionProcess(Model):
         return action_logits, logits
 
     def relaxed_latent_transition_probability_distribution(
-            self, latent_state: tf.Tensor, action: Optional[tf.Tensor] = None, temperature: float = 1e-5
+            self, latent_state: tf.Tensor, action: Optional[tf.Tensor], temperature: float = 1e-5
     ) -> tfd.Distribution:
         """
         Retrieves a Binary Concrete probability distribution P(z'|z, a) over successor latent states, given a latent
@@ -560,7 +560,7 @@ class VariationalMarkovDecisionProcess(Model):
             marginal_encoder = tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(logits=tf.ones(shape=batch_size)),
                 components_distribution=tfd.RelaxedBernoulli(
-                    logits=tf.transpose(logits), temperature=self.encoder_temperature),
+                    logits=tf.transpose(logits), temperature=1e-5),  # temperature=self.encoder_temperature),
                 reparameterize=(latent_states is None)
             )
             if latent_states is None:
@@ -746,10 +746,11 @@ class VariationalMarkovDecisionProcess(Model):
     def train_from_policy(
             self,
             policy: tf_agents.policies.tf_policy.Base,
-            policy_step_spec: policy_step.PolicyStep,
             environment_suite,
             env_name: str,
             labeling_function: Callable,
+            epsilon_greedy: Optional[float] = 0.,
+            epsilon_greedy_decay_rate: Optional[float] = -1.,
             discrete_action_space: bool = False,
             num_iterations: int = int(3e6),
             initial_collect_steps: int = int(1e4),
@@ -829,9 +830,22 @@ class VariationalMarkovDecisionProcess(Model):
             py_env.reset()
             tf_env = tf_py_environment.TFPyEnvironment(py_env)
 
+        if epsilon_greedy > 0.:
+            epsilon_greedy = tf.Variable(epsilon_greedy, trainable=False, dtype=tf.float32)
+
+            if epsilon_greedy_decay_rate == -1:
+                epsilon_greedy_decay_rate = \
+                    1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy)) / num_iterations)
+
+            def _epsilon():
+                epsilon_greedy.assign(epsilon_greedy * (1 - epsilon_greedy_decay_rate))
+                return epsilon_greedy
+
+            policy = tf_agents.policies.epsilon_greedy_policy.EpsilonGreedyPolicy(policy, _epsilon)
+
         # specs
         trajectory_spec = trajectory.from_transition(tf_env.time_step_spec(),
-                                                     policy_step_spec,
+                                                     policy.policy_step_spec,
                                                      tf_env.time_step_spec())
 
         replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
@@ -895,6 +909,15 @@ class VariationalMarkovDecisionProcess(Model):
             # Collect a few steps and save them to the replay buffer.
             driver.run()
 
+            additional_training_metrics = {
+                    "num_episodes": num_episodes.result(),
+                    "env_steps": env_steps.result(),
+                    "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
+                    "replay_buffer_frames": replay_buffer.num_frames(),
+                }
+            if epsilon_greedy > 0.:
+                additional_training_metrics['epsilon_greedy'] = epsilon_greedy
+
             loss = self.training_step(
                 dataset_batch=next(dataset_iterator), batch_size=batch_size, optimizer=optimizer,
                 annealing_period=annealing_period, global_step=global_step,
@@ -904,14 +927,10 @@ class VariationalMarkovDecisionProcess(Model):
                 eval_ratio=eval_steps * batch_size / replay_buffer.num_frames(),
                 save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
                 log_interval=log_interval, manager=manager, logs=logs, start_annealing_step=start_annealing_step,
-                additional_metrics={
-                    "num_episodes": num_episodes.result(),
-                    "env_steps": env_steps.result(),
-                    "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
-                    "replay_buffer_frames": replay_buffer.num_frames()},
+                additional_metrics=additional_training_metrics,
                 eval_policy_driver=policy_evaluation_driver,
                 aggressive_training=aggressive_training and global_step.numpy() < aggressive_training_steps,
-                aggressive_update=aggressive_inference_optimization
+                aggressive_update=aggressive_inference_optimization,
             )
 
             if aggressive_training and global_step.numpy() < aggressive_training_steps:
