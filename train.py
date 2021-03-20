@@ -319,7 +319,7 @@ def main(argv):
         params['policy_path'] = params['policy_path'][:-1]
 
     vae_name = ''
-    if not params['action_discretizer'] or params['full_vae_optimization']:
+    if not params['action_discretizer'] or params['full_vae_optimization'] or params['decompose_training']:
         vae_name = 'vae_LS{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}_seed={:d}'.format(
             latent_state_size,
             mixture_components,
@@ -505,10 +505,11 @@ def main(argv):
     step = tf.compat.v1.train.get_or_create_global_step()
 
     for phase, vae_mdp_model in enumerate(models):
-        if len(models) > 1:
+        if params['decompose_training']:
+            name = base_model_name if phase == 0 else vae_mdp_model
             checkpoint_directory = os.path.join(
                 params['save_dir'], 'saves', environment_name, 'training_checkpoints', 'phase_{:d}'.format(phase),
-                vae_name)
+                name)
         else:
             checkpoint_directory = os.path.join(
                 params['save_dir'], 'saves', environment_name, 'training_checkpoints', vae_name)
