@@ -504,14 +504,8 @@ def main(argv):
     step = tf.compat.v1.train.get_or_create_global_step()
 
     for phase, vae_mdp_model in enumerate(models):
-        if params['decompose_training']:
-            name = base_model_name if phase == 0 else vae_name
-            checkpoint_directory = os.path.join(
-                params['save_dir'], 'saves', environment_name, 'training_checkpoints', 'phase_{:d}'.format(phase),
-                name)
-        else:
-            checkpoint_directory = os.path.join(
-                params['save_dir'], 'saves', environment_name, 'training_checkpoints', vae_name)
+        checkpoint_directory = os.path.join(
+            params['save_dir'], 'saves', environment_name, 'training_checkpoints', vae_name)
         if params['checkpoint']:
             print("checkpoint path:", checkpoint_directory)
             checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=vae_mdp_model, step=step)
