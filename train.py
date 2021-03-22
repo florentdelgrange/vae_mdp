@@ -458,6 +458,7 @@ def main(argv):
                     None if params['max_state_decoder_variance'] == 0. else params['max_state_decoder_variance']
                 ),
                 state_scaler=lambda x: x * params['state_scaling'],
+                full_optimization=params['full_optimization']
             )
         else:
             vae = variational_mdp.load(params['load_vae'])
@@ -499,6 +500,9 @@ def main(argv):
             models[0] = build_action_discretizer_vae_model(models[0], full_optimization=params['full_optimization'])
         else:
             models.append(build_action_discretizer_vae_model(models[0], full_optimization=False))
+    else:
+        if params['decompose_training']:
+            models.append(models[0])
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
     step = tf.compat.v1.train.get_or_create_global_step()
@@ -512,6 +516,9 @@ def main(argv):
             manager = tf.train.CheckpointManager(checkpoint=checkpoint, directory=checkpoint_directory, max_to_keep=1)
         else:
             checkpoint = manager = None
+
+        if phase == 1 and not params['action_discretizer'] and params['latent_policy']:
+            vae_mdp_model.latent_policy_training_phase = True
 
         if base_model_name != '':
             vae_name_list = vae_name.split(os.path.sep)

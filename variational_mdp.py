@@ -69,7 +69,9 @@ class VariationalMarkovDecisionProcess(Model):
                  state_post_processing_network: Model = None,
                  state_scaler: Callable[[tf.Tensor], tf.Tensor] = lambda x: x,
                  pre_loaded_model: bool = False,
-                 reset_state_label: bool = True):
+                 reset_state_label: bool = True,
+                 latent_policy_training_phase: bool = False,
+                 full_optimization: bool = False):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
 
@@ -82,6 +84,8 @@ class VariationalMarkovDecisionProcess(Model):
         self.full_covariance = multivariate_normal_full_covariance
         self.induced_markov_chain_transition_function = (
                 induced_markov_chain_transition_function and latent_policy_network is not None)
+        self.latent_policy_training_phase = latent_policy_training_phase
+        self.full_optimization = full_optimization
 
         self.encoder_temperature = encoder_temperature
         self.prior_temperature = prior_temperature
@@ -467,6 +471,9 @@ class VariationalMarkovDecisionProcess(Model):
                 (1. - self._decay_kl_scale_factor))
 
     def call(self, inputs, training=None, mask=None, metrics=True):
+        if self.latent_policy_training_phase:
+            return self.latent_policy_training(inputs)
+
         state, label, action, reward, next_state, next_label = inputs
 
         # Logistic samples
@@ -491,7 +498,7 @@ class VariationalMarkovDecisionProcess(Model):
         reward_distribution = self.reward_probability_distribution(latent_state, action, next_latent_state)
         log_p_rewards = reward_distribution.log_prob(reward)
 
-        if self.latent_policy_network is not None:
+        if self.latent_policy_network is not None and self.full_optimization:
             # log π(a | z)
             latent_policy_distribution = self.discrete_latent_policy(latent_state)
             log_pi_action = latent_policy_distribution.log_prob(action)
@@ -582,6 +589,17 @@ class VariationalMarkovDecisionProcess(Model):
                 self.loss_metrics['marginal_encoder_entropy'](-1. * marginal_entropy_regularizer)
 
         return tf.reduce_mean(regularizer)
+
+    def latent_policy_training(self, inputs):
+        state, label, action, _, _, _ = inputs
+        latent_distribution = self.binary_encode(state, label)
+        latent_state = tf.cast(latent_distribution.sample(), dtype=tf.float32)
+        latent_policy_distribution = self.discrete_latent_policy(latent_state)
+
+        if 'action_mse' in self.loss_metrics:
+            self.loss_metrics['action_mse'](action, latent_policy_distribution.sample())
+
+        return -1. * latent_policy_distribution.log_prob(action), 0., 0.
 
     def eval(self, inputs):
         """
@@ -743,6 +761,10 @@ class VariationalMarkovDecisionProcess(Model):
     @tf.function
     def inference_update(self, x, optimizer):
         return self._compute_apply_gradients(x, optimizer, self.inference_variables)
+
+    @tf.function
+    def latent_policy_update(self, x, optimizer):
+        return self._compute_apply_gradients(x, optimizer, self.latent_policy_network.trainable_variables)
 
     @tf.function
     def generator_update(self, x, optimizer):
