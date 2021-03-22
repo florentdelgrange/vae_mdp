@@ -519,7 +519,6 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['ELBO'](-1 * (distortion + rate))
             self.loss_metrics['state_mse'](self.state_scaler(next_state), state_distribution.sample())
             self.loss_metrics['reward_mse'](reward, reward_distribution.sample())
-            self.loss_metrics['encoder_entropy'](self.binary_encode(next_state, next_label).entropy())
             #  self.loss_metrics['decoder_variance'](state_distribution.variance())
             self.loss_metrics['distortion'](distortion)
             self.loss_metrics['rate'](rate)
@@ -554,6 +553,9 @@ class VariationalMarkovDecisionProcess(Model):
     ):
         logits = self.encoder_network(state)
         regularizer = -1. * tfd.Bernoulli(logits=logits).entropy()
+
+        if 'encoder_entropy' in self.loss_metrics:
+            self.loss_metrics['encoder_entropy'](-1. * regularizer)
 
         if enforce_latent_space_spreading:
             batch_size = tf.shape(logits)[0]
@@ -837,11 +839,13 @@ class VariationalMarkovDecisionProcess(Model):
             epsilon_greedy = tf.Variable(epsilon_greedy, trainable=False, dtype=tf.float32)
 
             if epsilon_greedy_decay_rate == -1:
-                epsilon_greedy_decay_rate = \
-                    1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy)) / (3. * num_iterations / 5.))
+                epsilon_greedy_decay_rate = 1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy))
+                                                        / (3. * (num_iterations - start_annealing_step) / 5.))
 
+            @tf.function
             def _epsilon():
-                epsilon_greedy.assign(epsilon_greedy * (1 - epsilon_greedy_decay_rate))
+                if tf.greater(global_step, start_annealing_step):
+                    epsilon_greedy.assign(epsilon_greedy * (1 - epsilon_greedy_decay_rate))
                 return epsilon_greedy
 
             policy = tf_agents.policies.epsilon_greedy_policy.EpsilonGreedyPolicy(policy, _epsilon)
@@ -913,11 +917,11 @@ class VariationalMarkovDecisionProcess(Model):
             driver.run()
 
             additional_training_metrics = {
-                    "num_episodes": num_episodes.result(),
-                    "env_steps": env_steps.result(),
-                    "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
-                    "replay_buffer_frames": replay_buffer.num_frames(),
-                }
+                "num_episodes": num_episodes.result(),
+                "env_steps": env_steps.result(),
+                "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
+                "replay_buffer_frames": replay_buffer.num_frames(),
+            }
             if epsilon_greedy > 0.:
                 additional_training_metrics['epsilon_greedy'] = epsilon_greedy
 
@@ -955,81 +959,6 @@ class VariationalMarkovDecisionProcess(Model):
                     best_loss = None
                     prev_loss = None
                     inference_update_steps = 0
-
-    def train_from_dataset(
-            self,
-            dataset_generator: Optional[Callable[[], tf.data.Dataset]] = None,
-            epochs: int = 16,
-            batch_size: int = 128,
-            optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
-            checkpoint: Optional[tf.train.Checkpoint] = None,
-            manager: Optional[tf.train.CheckpointManager] = None,
-            log_interval: int = 80,
-            save_model_interval: int = int(1e4),
-            dataset_size: Optional[int] = None,
-            log_name: str = 'vae',
-            annealing_period: int = 0,
-            start_annealing_step: int = 0,
-            logs: bool = True,
-            display_progressbar: bool = True,
-            eval_ratio: float = 5e-3,
-            max_steps: int = int(1e6),
-            save_directory='.'):
-        assert 0 < eval_ratio < 1
-
-        # Load checkpoint
-        if checkpoint is not None and manager is not None:
-            checkpoint.restore(manager.latest_checkpoint)
-            if manager.latest_checkpoint:
-                print("Restored from {}".format(manager.latest_checkpoint))
-            else:
-                print("Initializing from scratch.")
-
-        # initialize logs
-        import datetime
-        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        train_log_dir = os.path.join('logs/gradient_tape', log_name, current_time)
-        if not os.path.exists(train_log_dir) and logs:
-            os.makedirs(train_log_dir)
-        train_summary_writer = tf.summary.create_file_writer(train_log_dir) if logs else None
-
-        # Load step
-        global_step = checkpoint.save_counter if checkpoint else tf.Variable(0)
-        start_step = global_step.numpy()
-        print("Step: {}".format(global_step.numpy()))
-
-        # start training
-        for epoch in range(epochs):
-            progressbar = Progbar(
-                target=dataset_size,
-                stateful_metrics=list(self.loss_metrics.keys()) + [
-                    'loss', 't_1', 't_2', 'entropy_regularizer_scale_factor', 'step'],
-                interval=0.1) if display_progressbar else None
-            print("Epoch: {}/{}".format(epoch + 1, epochs))
-
-            dataset = dataset_generator()
-
-            for x in dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE):
-                self.training_step(dataset_batch=x, batch_size=batch_size, optimizer=optimizer,
-                                   annealing_period=annealing_period, global_step=global_step,
-                                   dataset_size=dataset_size,
-                                   display_progressbar=display_progressbar, start_step=start_step, epoch=epoch,
-                                   progressbar=progressbar, dataset_generator=dataset_generator,
-                                   save_model_interval=save_model_interval, eval_ratio=eval_ratio,
-                                   save_directory=save_directory,
-                                   log_name=log_name, train_summary_writer=train_summary_writer,
-                                   log_interval=log_interval,
-                                   manager=manager, logs=logs, start_annealing_step=start_annealing_step, )
-
-            # reset metrics
-            self.reset_metrics()
-
-            # retrieve the real dataset size
-            if epoch == 0:
-                dataset_size = (global_step.numpy() - start_step) * batch_size
-
-            if global_step.numpy() > max_steps:
-                return
 
     def training_step(
             self, dataset_batch, batch_size, optimizer, annealing_period, global_step, dataset_size,
