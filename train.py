@@ -296,7 +296,6 @@ def main(argv):
     if relaxed_state_prior_temperature < 0:
         relaxed_state_prior_temperature = params['prior_temperature']
 
-    dataset_path = params['dataset_path']
     environment_name = params['environment']
 
     batch_size = params['batch_size']
@@ -506,7 +505,7 @@ def main(argv):
 
     for phase, vae_mdp_model in enumerate(models):
         if params['decompose_training']:
-            name = base_model_name if phase == 0 else vae_mdp_model
+            name = base_model_name if phase == 0 else vae_name
             checkpoint_directory = os.path.join(
                 params['save_dir'], 'saves', environment_name, 'training_checkpoints', 'phase_{:d}'.format(phase),
                 name)
