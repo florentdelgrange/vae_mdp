@@ -542,13 +542,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         rate = log_q_latent_action - log_p_latent_action
         distortion = -1. * (log_p_action + log_p_rewards + log_p_transition)
 
-        entropy_regularizer = self.entropy_regularizer(
-            latent_state,
-            action,
-            state=state,
-            enforce_deterministic_action_encoder=False,
-            enforce_latent_state_space_spreading=(self.marginal_entropy_regularizer_ratio > 0.)
-        )
+        entropy_regularizer = self.entropy_regularizer(latent_state, action)
 
         # metrics
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
