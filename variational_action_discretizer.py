@@ -126,12 +126,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self.latent_policy_network = Dense(
                 units=self.number_of_discrete_actions,
                 activation=None,
-                name='simplified_policy_exp_one_hot_logits'
+                name='latent_policy_exp_one_hot_logits'
             )(self.latent_policy_network)
             self.latent_policy_network = Model(
                 inputs=latent_state,
                 outputs=self.latent_policy_network,
-                name='simplified_policy_network'
+                name='latent_policy_network'
             )
 
             # discrete actions transition network
@@ -238,6 +238,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 action_decoder = action_decoder_network(action_decoder)
                 action_decoder_mean = Dense(
                     units=self.mixture_components * np.prod(self.action_shape),
+                    name='action_decoder_mean_raw_output',
                     activation=None
                 )(action_decoder)
                 action_decoder_mean = Reshape(
@@ -246,11 +247,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 )(action_decoder_mean)
                 action_decoder_raw_covariance = Dense(
                     units=self.mixture_components * np.prod(self.action_shape),
+                    name='action_decoder_raw_covariance_output',
                     activation=None
                 )(action_decoder)
                 action_decoder_raw_covariance = Reshape(
                     target_shape=action_shape,
-                    name='action_decoder_raw_diag_covariance'
+                    name='action_decoder_diag_covariance'
                 )(action_decoder_raw_covariance)
                 action_decoder_mixture_categorical_logits = Dense(
                     units=self.mixture_components,
