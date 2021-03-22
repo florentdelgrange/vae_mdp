@@ -458,7 +458,7 @@ def main(argv):
                     None if params['max_state_decoder_variance'] == 0. else params['max_state_decoder_variance']
                 ),
                 state_scaler=lambda x: x * params['state_scaling'],
-                full_optimization=params['full_optimization']
+                full_optimization=params['full_vae_optimization']
             )
         else:
             vae = variational_mdp.load(params['load_vae'])

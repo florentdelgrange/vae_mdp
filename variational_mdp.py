@@ -531,8 +531,6 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['rate'](rate)
             self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
             self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
-            if self.latent_policy_network is not None:
-                self.loss_metrics['action_mse'](action, latent_policy_distribution.sample())
 
         if debug:
             tf.print(latent_state, "sampled z")
@@ -592,7 +590,9 @@ class VariationalMarkovDecisionProcess(Model):
 
     def latent_policy_training(self, inputs):
         state, label, action, _, _, _ = inputs
-        latent_distribution = self.binary_encode(state, label)
+        # latent_distribution = self.binary_encode(state, label)
+        # latent_state = tf.cast(latent_distribution.sample(), dtype=tf.float32)
+        latent_distribution = self.relaxed_encoding(state, label, temperature=1e-5)
         latent_state = tf.cast(latent_distribution.sample(), dtype=tf.float32)
         latent_policy_distribution = self.discrete_latent_policy(latent_state)
 
@@ -996,6 +996,8 @@ class VariationalMarkovDecisionProcess(Model):
             gradients = self.compute_apply_gradients(dataset_batch, optimizer)
         elif aggressive_update:
             gradients = self.inference_update(dataset_batch, optimizer)
+        elif self.latent_policy_training_phase:
+            gradients = self.latent_policy_update(dataset_batch, optimizer)
         else:
             gradients = self.generator_update(dataset_batch, optimizer)
         loss = gradients
