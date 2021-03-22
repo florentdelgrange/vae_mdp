@@ -257,7 +257,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     activation=None,
                     name='action_decoder_mixture_categorical_logits'
                 )(action_decoder)
-                self.action_decoder = Model(
+                self.action_decoder_network = Model(
                     inputs=[latent_state, latent_action],
                     outputs=[
                         action_decoder_mean,
@@ -304,7 +304,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     list(covariance for mean, covariance, component_logits in action_decoder_outputs))
                 action_decoder_mixture_categorical_logits = Lambda(lambda outputs: tf.stack(outputs, axis=1))(
                     list(component_logits for mean, covariance, component_logits in action_decoder_outputs))
-                self.action_decoder = Model(
+                self.action_decoder_network = Model(
                     inputs=latent_state,
                     outputs=[
                         action_decoder_mean,
@@ -318,25 +318,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self.latent_policy_network = latent_policy_network
             self.action_transition_network = transition_network
             self.action_reward_network = reward_network
-            self.action_decoder = action_decoder_network
-
-        try:
-            state_layers = (self.encoder_network.layers,
-                            self.transition_network.layers,
-                            self.reward_network.layers,
-                            self.reconstruction_network.layers)
-        except AttributeError:  # tensorflow backward compatibility
-            state_layers = (self.encoder_network.keras_api.layers,
-                            self.transition_network.keras_api.layers,
-                            self.reward_network.keras_api.layers,
-                            self.reconstruction_network.keras_api.layers)
-
-        if not self.full_optimization:
-            # freeze all latent states related layers
-            for layers in state_layers:
-                for layer in layers:
-                    layer.trainable = False
-                    assert not layer.trainable
+            self.action_decoder_network = action_decoder_network
 
         self.loss_metrics = {
             'ELBO': tf.keras.metrics.Mean(name='ELBO'),
@@ -454,7 +436,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             if log_latent_action:
                 latent_action = tf.exp(latent_action)
 
-            [action_mean, action_raw_covariance, cat_logits] = self.action_decoder([latent_state, latent_action])
+            [action_mean, action_raw_covariance, cat_logits] = self.action_decoder_network([latent_state, latent_action])
             if self.mixture_components == 1:
                 return tfd.MultivariateNormalDiag(
                     loc=action_mean,
@@ -474,7 +456,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             else:
                 action_categorical = tfd.Categorical(probs=latent_action)
 
-            [action_mean, action_raw_covariance, cat_logits] = self.action_decoder(latent_state)
+            [action_mean, action_raw_covariance, cat_logits] = self.action_decoder_network(latent_state)
 
             if self.mixture_components == 1:
                 return tfd.MixtureSameFamily(
@@ -724,7 +706,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             tf.cast(tf.argmax(latent_action, axis=1), tf.int32)
         )
 
-    def mean_latent_bits_used(self, inputs, eps=1e-3):
+    def mean_latent_bits_used(self, inputs, eps=1e-3, deterministic=True):
         state, label, action, reward, next_state, next_label = inputs
         latent_state = tf.cast(self.binary_encode(state, label).sample(), tf.float32)
         mean = tf.reduce_mean(self.discrete_action_encoding(latent_state, action).probs_parameter(), axis=0)
@@ -732,7 +714,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         mean_bits_used = tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
 
         mbu = {'mean_action_bits_used': mean_bits_used}
-        mbu.update(self._state_vae.mean_latent_bits_used(inputs, eps))
+        mbu.update(self._state_vae.mean_latent_bits_used(inputs, eps, deterministic))
         return mbu
 
     def get_state_vae(self) -> VariationalMarkovDecisionProcess:
@@ -847,6 +829,26 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             variables += network.trainable_variables
         return variables
 
+    @property
+    def action_discretizer_variables(self):
+        variables = []
+        for network in [
+            self.action_encoder,
+            self.action_transition_network,
+            self.latent_policy_network,
+            self.action_reward_network,
+            self.action_decoder_network
+        ]:
+            variables += network.trainable_variables
+        return variables
+
+    @tf.function
+    def compute_apply_gradients(self, x, optimizer):
+        if self.full_optimization:
+            return self._compute_apply_gradients(x, optimizer, self.trainable_variables)
+        else:
+            return self._compute_apply_gradients(x, optimizer, self.action_discretizer_variables)
+
 
 def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActionDiscretizer:
     model = tf.saved_model.load(tf_model_path)
@@ -868,14 +870,14 @@ def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActi
         vae_mdp=state_vae,
         number_of_discrete_actions=model.action_encoder.variables[-1].shape[0],
         action_encoder_network=model.action_encoder,
-        action_decoder_network=model.action_decoder,
+        action_decoder_network=model.action_decoder_network,
         transition_network=model.action_transition_network,
         reward_network=model.action_reward_network,
         latent_policy_network=model.latent_policy_network,
-        one_output_per_action=model.action_decoder.variables[0].shape[0] == state_vae.latent_state_size,
+        one_output_per_action=model.action_decoder_network.variables[0].shape[0] == state_vae.latent_state_size,
         encoder_temperature=model._encoder_temperature,
         prior_temperature=model._prior_temperature,
-        reconstruction_mixture_components=model.action_decoder.variables[-1].shape[0],
+        reconstruction_mixture_components=model.action_decoder_network.variables[-1].shape[0],
         pre_loaded_model=True,
         full_optimization=full_optimization
     )
