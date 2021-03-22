@@ -620,14 +620,17 @@ class VariationalMarkovDecisionProcess(Model):
             None
         )
 
-    def mean_latent_bits_used(self, inputs, eps=1e-3):
+    def mean_latent_bits_used(self, inputs, eps=1e-3, deterministic=True):
         """
         Compute the mean number of bits used to represent the latent space of the vae_mdp for the given dataset batch.
         This allows monitoring if the latent space is effectively used by the VAE or if posterior collapse happens.
         """
         mean_bits_used = 0
-        s, l, a, r, s_prime, l_prime = inputs
-        mean = tf.reduce_mean(self.binary_encode(s, l).mean(), axis=0)
+        s, l, _, _, _, _ = inputs
+        if deterministic:
+            mean = tf.reduce_mean(tf.cast(self.binary_encode(s, l).mode(), dtype=tf.float32), axis=0)
+        else:
+            mean = tf.reduce_mean(self.binary_encode(s, l).mean(), axis=0)
         check = lambda x: 1 if 1 - eps > x > eps else 0
         mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
         return {'mean_state_bits_used': mean_bits_used}
@@ -835,7 +838,7 @@ class VariationalMarkovDecisionProcess(Model):
 
             if epsilon_greedy_decay_rate == -1:
                 epsilon_greedy_decay_rate = \
-                    1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy)) / num_iterations)
+                    1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy)) / (3. * num_iterations / 5.))
 
             def _epsilon():
                 epsilon_greedy.assign(epsilon_greedy * (1 - epsilon_greedy_decay_rate))
