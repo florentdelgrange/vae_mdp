@@ -358,13 +358,13 @@ class VariationalMarkovDecisionProcess(Model):
         if self.mixture_components == 1:
             if self.full_covariance:
                 return tfd.MultivariateNormalTriL(
-                    loc=reconstruction_mean[0],
-                    scale_tril=reconstruction_raw_covariance[0],
+                    loc=reconstruction_mean[:, 0, ...],
+                    scale_tril=reconstruction_raw_covariance[:, 0, ...],
                 )
             else:
                 return tfd.MultivariateNormalDiag(
-                    loc=reconstruction_mean[0],
-                    scale_diag=reconstruction_raw_covariance[0]
+                    loc=reconstruction_mean[:, 0, ...],
+                    scale_diag=reconstruction_raw_covariance[:, 0, ...]
                 )
         else:
             if self.full_covariance:
@@ -875,7 +875,9 @@ class VariationalMarkovDecisionProcess(Model):
                 epsilon_greedy_decay_rate = 1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy))
                                                         / (3. * (num_iterations - start_annealing_step) / 5.))
             epsilon_greedy.assign(
-                epsilon_greedy * tf.pow(1. - epsilon_greedy_decay_rate, tf.cast(global_step, dtype=tf.float32)))
+                epsilon_greedy * tf.pow(1. - epsilon_greedy_decay_rate,
+                                        tf.math.maximum(0.,
+                                                        tf.cast(global_step, dtype=tf.float32) - start_annealing_step)))
 
             @tf.function
             def _epsilon():
