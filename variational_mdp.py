@@ -304,11 +304,12 @@ class VariationalMarkovDecisionProcess(Model):
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
             'encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
-            'marginal_encoder_entropy': tf.keras.metrics.Mean(name='marginal_encoder_entropy')
             #  'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
         }
         if self.latent_policy_network is not None:
             self.loss_metrics['action_mse'] = tf.keras.metrics.Mean(name='action_mse')
+        if self.marginal_entropy_regularizer_ratio > 0:
+            self.loss_metrics['marginal_encoder_entropy'] = tf.keras.metrics.Mean(name='marginal_encoder_entropy')
 
     def reset_metrics(self):
         for value in self.loss_metrics.values():
@@ -498,11 +499,12 @@ class VariationalMarkovDecisionProcess(Model):
         reward_distribution = self.reward_probability_distribution(latent_state, action, next_latent_state)
         log_p_rewards = reward_distribution.log_prob(reward)
 
-        if self.latent_policy_network is not None and self.full_optimization:
+        if self.latent_policy_network is not None and (self.full_optimization or self.latent_policy_training_phase):
             # log π(a | z)
             latent_policy_distribution = self.discrete_latent_policy(latent_state)
             log_pi_action = latent_policy_distribution.log_prob(action)
         else:
+            latent_policy_distribution = None
             log_pi_action = 0
 
         # Reconstruction log P(s' | z')
@@ -519,7 +521,8 @@ class VariationalMarkovDecisionProcess(Model):
 
         entropy_regularizer = self.entropy_regularizer(
             next_state,
-            enforce_latent_space_spreading=(self.marginal_entropy_regularizer_ratio > 0.),
+            enforce_latent_space_spreading=(
+                    self.marginal_entropy_regularizer_ratio > 0. and not self.latent_policy_training_phase),
             latent_states=next_latent_state)
 
         if metrics:
@@ -531,6 +534,9 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['rate'](rate)
             self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
             self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
+
+        if 'action_mse' in self.loss_metrics and latent_policy_distribution is not None:
+            self.loss_metrics['action_mse'](action, latent_policy_distribution.sample())
 
         if debug:
             tf.print(latent_state, "sampled z")
@@ -589,17 +595,22 @@ class VariationalMarkovDecisionProcess(Model):
         return tf.reduce_mean(regularizer)
 
     def latent_policy_training(self, inputs):
-        state, label, action, _, _, _ = inputs
-        # latent_distribution = self.binary_encode(state, label)
-        # latent_state = tf.cast(latent_distribution.sample(), dtype=tf.float32)
-        latent_distribution = self.relaxed_encoding(state, label, temperature=1e-5)
-        latent_state = tf.cast(latent_distribution.sample(), dtype=tf.float32)
+        state, label, action, _, next_state, next_label = inputs
+        latent_distribution = self.relaxed_encoding(state, label, temperature=self.encoder_temperature)
+        next_latent_distribution = self.relaxed_encoding(next_state, next_label, temperature=self.encoder_temperature)
+        latent_state = latent_distribution.sample()
+        next_latent_state = next_latent_distribution.sample()
+
         latent_policy_distribution = self.discrete_latent_policy(latent_state)
+        latent_markov_chain_transition_distribution = self.relaxed_latent_transition_probability_distribution(
+            latent_state, action=None, temperature=self.prior_temperature)
 
         if 'action_mse' in self.loss_metrics:
             self.loss_metrics['action_mse'](action, latent_policy_distribution.sample())
 
-        return -1. * latent_policy_distribution.log_prob(action), 0., 0.
+        return [-1. * latent_policy_distribution.log_prob(action),
+                -1. * tf.reduce_sum(latent_markov_chain_transition_distribution.log_prob(next_latent_state), axis=1),
+                0.]
 
     def eval(self, inputs):
         """
@@ -863,6 +874,8 @@ class VariationalMarkovDecisionProcess(Model):
             if epsilon_greedy_decay_rate == -1:
                 epsilon_greedy_decay_rate = 1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy))
                                                         / (3. * (num_iterations - start_annealing_step) / 5.))
+            epsilon_greedy.assign(
+                epsilon_greedy * tf.pow(1. - epsilon_greedy_decay_rate, tf.cast(global_step, dtype=tf.float32)))
 
             @tf.function
             def _epsilon():
@@ -992,12 +1005,12 @@ class VariationalMarkovDecisionProcess(Model):
     ):
         if additional_metrics is None:
             additional_metrics = {}
-        if not aggressive_training:
+        if not aggressive_training and not self.latent_policy_training_phase:
             gradients = self.compute_apply_gradients(dataset_batch, optimizer)
+        elif not aggressive_training and self.latent_policy_training_phase:
+            gradients = self.latent_policy_update(dataset_batch, optimizer)
         elif aggressive_update:
             gradients = self.inference_update(dataset_batch, optimizer)
-        elif self.latent_policy_training_phase:
-            gradients = self.latent_policy_update(dataset_batch, optimizer)
         else:
             gradients = self.generator_update(dataset_batch, optimizer)
         loss = gradients
