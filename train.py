@@ -460,7 +460,7 @@ def main(argv):
                     None if params['max_state_decoder_variance'] == 0. else params['max_state_decoder_variance']
                 ),
                 state_scaler=lambda x: x * params['state_scaling'],
-                full_optimization=params['full_vae_optimization']
+                full_optimization=not params['decompose_training']
             )
         else:
             vae = variational_mdp.load(params['load_vae'])
@@ -521,16 +521,16 @@ def main(argv):
 
         if phase == 1 and not params['action_discretizer'] and params['latent_policy']:
             vae_mdp_model.latent_policy_training_phase = True
-        if phase == 1 and params['action_discretizer']:
-            vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
-            vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
-            vae_mdp_model.regularizer_scale_factor = params['entropy_regularizer_scale_factor']
-            vae_mdp_model.regularizer_decay_rate = params['entropy_regularizer_decay_rate']
+        #  if phase == 1 and (params['action_discretizer'] or params['latent_policy']):
+        #      vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
+        #      vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
+        #      vae_mdp_model.regularizer_scale_factor = params['entropy_regularizer_scale_factor']
+        #      vae_mdp_model.regularizer_decay_rate = params['entropy_regularizer_decay_rate']
 
-        if base_model_name != '':
-            vae_name_list = vae_name.split(os.path.sep)
-            vae_name_list[0] = '_'.join(base_model_name.split(os.path.sep))
-            vae_name = os.path.join(*vae_name_list)
+        #  if base_model_name != '':
+        #      vae_name_list = vae_name.split(os.path.sep)
+        #      vae_name_list[0] = '_'.join(base_model_name.split(os.path.sep))
+        #      vae_name = os.path.join(*vae_name_list)
 
         policy = policies.SavedTFPolicy(params['policy_path'], time_step_spec, action_spec)
 
@@ -541,7 +541,10 @@ def main(argv):
                                         epsilon_greedy=params['epsilon_greedy'] if phase == 0 else 0.,
                                         batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
                                         manager=manager, log_name=vae_name,
-                                        start_annealing_step=params['start_annealing_step'],
+                                        start_annealing_step=(
+                                            params['start_annealing_step'] + params['max_steps'] // 2
+                                            if phase == 1 and params['action_discretizer'] else
+                                            params['start_annealing_step']),
                                         logs=params['logs'],
                                         num_iterations=(
                                             params['max_steps'] if not params['decompose_training'] or phase == 1
