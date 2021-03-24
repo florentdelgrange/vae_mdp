@@ -1,12 +1,12 @@
 import os
 import threading
-from typing import Tuple, Optional, List, Callable, Dict, Union
+from typing import Tuple, Optional, List, Callable, Dict
 import numpy as np
 
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow.keras import Model
-from tensorflow.keras.layers import Input, Concatenate, TimeDistributed, Reshape, Dense, Lambda
+from tensorflow.keras.layers import Input, Concatenate, Reshape, Dense, Lambda
 from tensorflow.keras.utils import Progbar
 
 import tf_agents.policies.tf_policy
@@ -18,7 +18,7 @@ from tf_agents.drivers import dynamic_step_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment, tf_environment
 from tf_agents.metrics import tf_metrics
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
-from tf_agents.trajectories import policy_step, trajectory
+from tf_agents.trajectories import trajectory
 from tf_agents.trajectories.policy_step import PolicyStep
 from tf_agents.utils import common
 
@@ -65,8 +65,6 @@ class VariationalMarkovDecisionProcess(Model):
                  max_decoder_variance: Optional[float] = None,
                  multivariate_normal_raw_scale_diag_activation: Callable[[tf.Tensor], tf.Tensor] = tf.nn.softplus,
                  multivariate_normal_full_covariance: bool = False,
-                 state_pre_processing_network: Model = None,
-                 state_post_processing_network: Model = None,
                  state_scaler: Callable[[tf.Tensor], tf.Tensor] = lambda x: x,
                  pre_loaded_model: bool = False,
                  reset_state_label: bool = True,
@@ -105,31 +103,11 @@ class VariationalMarkovDecisionProcess(Model):
 
         self.number_of_discrete_actions = -1  # only used if a latent policy network is provided
 
-        if not (len(state_shape) == len(action_shape) == len(reward_shape) == len(label_shape)):
-            if state_pre_processing_network is None:
-                raise ValueError("states, actions, rewards and label dimensions should be the same. "
-                                 "Please provide a state_pre_processing_network and state_post_processing_network"
-                                 " if states have different dimensions.")
-            if not (len(tuple(filter(lambda dim: dim is not None, state_pre_processing_network.output.shape))) ==
-                    len(action_shape) == len(reward_shape) == len(label_shape) and
-                    state_shape == tuple(filter(lambda dim: dim is not None, state_pre_processing_network.input.shape))
-                    == tuple(filter(lambda dim: dim is not None, state_post_processing_network.output.shape))):
-                raise ValueError("Please provide state_pre_processing_network and state_post_processing_network"
-                                 " with correct input and output shapes.")
-
         input_state = Input(shape=state_shape, name="state")
         action = Input(shape=action_shape, name="action")
         input_next_state = Input(shape=state_shape, name="next_state")
 
         state, next_state = input_state, input_next_state
-        if state_pre_processing_network is not None:
-            # the concatenate axis is 0 to stack the inputs afterwards
-            concatenate_inputs = Concatenate(axis=0)([input_state, input_next_state])
-            stack_inputs = Reshape((2,) + state_shape)(concatenate_inputs)
-            # Apply the same pre-processing to both state inputs
-            apply_pre_processing = TimeDistributed(
-                state_pre_processing_network, input_shape=(2,) + state_shape)(stack_inputs)
-            state, next_state = apply_pre_processing[:, 0], apply_pre_processing[:, 1]
 
         scaler = Lambda(self.state_scaler, name='state_scaler')
         state = scaler(state)
@@ -257,8 +235,6 @@ class VariationalMarkovDecisionProcess(Model):
             # Reconstruction network
             # inputs are latent binary states, outputs are given in parameter
             decoder = decoder_network(next_latent_state)
-            if state_post_processing_network is not None:
-                decoder = state_post_processing_network(decoder)
             # 1 mean per dimension, nb Normal Gaussian
             decoder_output_mean = Dense(
                 units=mixture_components * np.prod(state_shape), activation=None, name='GMM_means_0')(decoder)
@@ -565,8 +541,9 @@ class VariationalMarkovDecisionProcess(Model):
         logits = self.encoder_network(state)
         regularizer = -1. * tfd.Bernoulli(logits=logits).entropy()
 
-        if 'encoder_entropy' in self.loss_metrics:
-            self.loss_metrics['encoder_entropy'](-1. * regularizer)
+        for metric_label in ('encoder_entropy', 'state_encoder_entropy'):
+            if metric_label in self.loss_metrics:
+                self.loss_metrics[metric_label](-1. * regularizer)
 
         if enforce_latent_space_spreading:
             batch_size = tf.shape(logits)[0]
