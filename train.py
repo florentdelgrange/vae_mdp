@@ -357,6 +357,8 @@ def main(argv):
         vae_name += '_max_state_decoder_variance={:g}'.format(params['max_state_decoder_variance'])
     if params['epsilon_greedy'] > 0:
         vae_name += '_epsilon_greedy={:g}'.format(params['epsilon_greedy'])
+    if params['marginal_entropy_regularizer_ratio'] > 0:
+        vae_name += '_marginal_state_entropy_ratio={:g}'.format(params['marginal_entropy_regularizer_ratio'])
     if params['state_scaling'] != 1.:
         vae_name += '_state_scaling={:g}'.format(params['state_scaling'])
 
@@ -366,7 +368,7 @@ def main(argv):
         'relaxed_state_encoding',
         'full_covariance',
         'latent_policy',
-        'decompose_training'
+        'decompose_training',
     ]
     nb_additional_params = sum(
         map(lambda x: params[x], additional_parameters))
@@ -497,7 +499,7 @@ def main(argv):
     models = [build_vae_model()]
     if params['action_discretizer']:
         if not params['decompose_training']:
-            models[0] = build_action_discretizer_vae_model(models[0], full_optimization=params['full_optimization'])
+            models[0] = build_action_discretizer_vae_model(models[0], full_optimization=params['full_vae_optimization'])
         else:
             models.append(build_action_discretizer_vae_model(models[0], full_optimization=False))
     else:
@@ -519,6 +521,11 @@ def main(argv):
 
         if phase == 1 and not params['action_discretizer'] and params['latent_policy']:
             vae_mdp_model.latent_policy_training_phase = True
+        if phase == 1 and params['action_discretizer']:
+            vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
+            vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
+            vae_mdp_model.regularizer_scale_factor = params['entropy_regularizer_scale_factor']
+            vae_mdp_model.regularizer_decay_rate = params['entropy_regularizer_decay_rate']
 
         if base_model_name != '':
             vae_name_list = vae_name.split(os.path.sep)
