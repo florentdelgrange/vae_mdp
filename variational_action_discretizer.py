@@ -7,13 +7,8 @@ from tensorflow.keras import Model
 from tensorflow.keras.models import Sequential, model_from_json
 from tensorflow.keras.layers import Input, Concatenate, Reshape, Dense, Lambda
 from tf_agents import trajectories, specs
-from tf_agents.networks import network
-from tf_agents.specs import tensor_spec, array_spec
-from tf_agents.trajectories import policy_step, trajectory
-from tf_agents.policies import tf_policy, actor_policy
-from tf_agents.environments import tf_environment, py_environment
+from tf_agents.environments import tf_environment
 from tf_agents.trajectories import time_step as ts
-from tf_agents.trajectories.policy_step import PolicyStep
 
 import variational_mdp
 from variational_mdp import VariationalMarkovDecisionProcess
@@ -330,13 +325,13 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             'rate': tf.keras.metrics.Mean(name='rate'),
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
+            'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs')
             # 'decoder_divergence': tf.keras.metrics.Mean(name='decoder_divergence'),
         }
         if self.full_optimization:
             self.loss_metrics.update({
                 'state_mse': tf.keras.metrics.MeanSquaredError(name='state_mse'),
                 'state_encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
-                'marginal_encoder_entropy': tf.keras.metrics.Mean(name='marginal_encoder_entropy'),
                 'action_encoder_entropy': tf.keras.metrics.Mean(name='action_encoder_entropy'),
                 # 'state_decoder_variance': tf.keras.metrics.Mean('decoder_variance'),
                 'state_rate': tf.keras.metrics.Mean(name='state_rate'),
@@ -344,6 +339,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 't_1_state': tf.keras.metrics.Mean(name='state_encoder_temperature'),
                 't_2_state': tf.keras.metrics.Mean(name='state_prior_temperature')
             })
+
+        if self.marginal_entropy_regularizer_ratio > 0:
+            self.loss_metrics['marginal_encoder_entropy'] = tf.keras.metrics.Mean(name='marginal_encoder_entropy')
 
     def anneal(self):
         super().anneal()
@@ -624,7 +622,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['reward_mse'](reward, reward_distribution.sample())
         self.loss_metrics['state_mse'](next_state, state_distribution.sample())
         self.loss_metrics['state_rate'](state_rate)
-        self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(next_state, next_label).entropy())
+        # self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(next_state, next_label).entropy())
         self.loss_metrics['action_encoder_entropy'](self.discrete_action_encoding(latent_state, action).entropy())
         #  self.loss_metrics['state_decoder_variance'](state_distribution.variance())
         self.loss_metrics['action_rate'](action_rate)
@@ -636,6 +634,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['t_1_state'](self._state_vae.encoder_temperature)
         self.loss_metrics['t_2_state'].reset_states()
         self.loss_metrics['t_2_state'](self._state_vae.prior_temperature)
+        self.loss_metrics['transition_log_probs'](tf.reduce_sum(log_p_next_latent_state, axis=1))
 
         return [distortion, rate, entropy_regularizer]
 
