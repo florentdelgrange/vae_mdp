@@ -39,7 +39,8 @@ flags.DEFINE_bool(
 )
 flags.DEFINE_string(
     "activation",
-    default="leaky_relu",
+    # default="leaky_relu",
+    default="relu",
     help="Activation function for all hidden layers.")
 flags.DEFINE_integer("latent_size", default=17, help='Number of bits used for the discrete latent state space.')
 flags.DEFINE_float(
@@ -161,7 +162,7 @@ flags.DEFINE_bool(
 )
 flags.DEFINE_bool(
     'relaxed_state_encoding',
-    default=False,
+    default=True,
     help='Use a relaxed encoding of states to optimize the action discretizer part of the VAE.'
 )
 flags.DEFINE_integer(
@@ -429,7 +430,7 @@ def main(argv):
         environment.time_step_spec().reward.shape,
         tuple(reinforcement_learning.labeling_functions[environment_name](
             environment.reset().observation).shape)
-        )
+    )
     )
     time_step_spec = tensor_spec.from_spec(environment.time_step_spec())
     action_spec = tensor_spec.from_spec(environment.action_spec())
@@ -492,8 +493,8 @@ def main(argv):
             )
             vae.kl_scale_factor = params['kl_annealing_scale_factor']
             vae.kl_growth_rate = params['kl_annealing_growth_rate']
-            vae.regularizer_scale_factor = params['entropy_regularizer_scale_factor']
-            vae.regularizer_decay_rate = params['entropy_regularizer_decay_rate']
+            vae.entropy_regularizer_scale_factor = params['entropy_regularizer_scale_factor']
+            vae.entropy_regularizer_decay_rate = params['entropy_regularizer_decay_rate']
         return vae
 
     models = [build_vae_model()]
@@ -521,11 +522,6 @@ def main(argv):
 
         if phase == 1 and not params['action_discretizer'] and params['latent_policy']:
             vae_mdp_model.latent_policy_training_phase = True
-        #  if phase == 1 and (params['action_discretizer'] or params['latent_policy']):
-        #      vae_mdp_model.kl_scale_factor = params['kl_annealing_scale_factor']
-        #      vae_mdp_model.kl_growth_rate = params['kl_annealing_growth_rate']
-        #      vae_mdp_model.regularizer_scale_factor = params['entropy_regularizer_scale_factor']
-        #      vae_mdp_model.regularizer_decay_rate = params['entropy_regularizer_decay_rate']
 
         #  if base_model_name != '':
         #      vae_name_list = vae_name.split(os.path.sep)
@@ -545,6 +541,12 @@ def main(argv):
                                             params['start_annealing_step'] + params['max_steps'] // 2
                                             if phase == 1 and params['action_discretizer'] else
                                             params['start_annealing_step']),
+                                        reset_kl_scale_factor=(
+                                            params['kl_annealing_scale_factor'] if phase == 1 and
+                                            (params['action_discretizer'] or params['latent_policy']) else None),
+                                        reset_entropy_regularizer=(
+                                            params['entropy_regularizer_scale_factor'] if phase == 1 and
+                                            (params['action_discretizer'] or params['latent_policy']) else None),
                                         logs=params['logs'],
                                         num_iterations=(
                                             params['max_steps'] if not params['decompose_training'] or phase == 1
@@ -556,10 +558,11 @@ def main(argv):
                                         eval_steps=int(1e3) if not params['do_not_eval'] else 0,
                                         get_policy_evaluation=(
                                             None if not (params['action_discretizer'] or params['latent_policy'])
-                                            or (phase == 0 and len(models) > 1) else vae_mdp_model.get_latent_policy),
+                                                    or (phase == 0 and len(
+                                                models) > 1) else vae_mdp_model.get_latent_policy),
                                         wrap_eval_tf_env=(
                                             None if not (params['action_discretizer'] or params['latent_policy'])
-                                            or (phase == 0 and len(models) > 1) else
+                                                    or (phase == 0 and len(models) > 1) else
                                             lambda tf_env: vae_mdp_model.wrap_tf_environment(
                                                 tf_env, reinforcement_learning.labeling_functions[environment_name]
                                             )
