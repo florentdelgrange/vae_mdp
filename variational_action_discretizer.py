@@ -325,7 +325,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             'rate': tf.keras.metrics.Mean(name='rate'),
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
-            'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs')
+            'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs'),
+            'predicted_next_state_mse': tf.keras.metrics.Mean(name='predicted_next_state_mse')
             # 'decoder_divergence': tf.keras.metrics.Mean(name='decoder_divergence'),
         }
         if self.full_optimization:
@@ -578,7 +579,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         p_action_prior = self.relaxed_latent_policy(latent_state, self.prior_temperature)
         latent_action = q_action.sample()
 
-        log_q_next_latent_state = q_next_state.log_prob(logistic_next_latent_state)
         log_q_action = q_action.log_prob(latent_action)
         log_p_action_prior = p_action_prior.log_prob(latent_action)
 
@@ -590,6 +590,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             latent_state, latent_action, relaxed_state_encoding=True, log_latent_action=True)
         log_p_next_latent_state = transition_probability_distribution.log_prob(logistic_next_latent_state)
 
+        # state encoder rate
+        log_q_next_latent_state = q_next_state.log_prob(logistic_next_latent_state)
         state_rate = tf.reduce_sum(log_q_next_latent_state - log_p_next_latent_state, axis=1)
         next_latent_state = tf.sigmoid(logistic_next_latent_state)
 
@@ -635,6 +637,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['t_2_state'].reset_states()
         self.loss_metrics['t_2_state'](self._state_vae.prior_temperature)
         self.loss_metrics['transition_log_probs'](tf.reduce_sum(log_p_next_latent_state, axis=1))
+        self.loss_metrics['predicted_next_state_mse'](
+            next_state, self.decode(tf.sigmoid(transition_probability_distribution.sample())).sample())
 
         return [distortion, rate, entropy_regularizer]
 
