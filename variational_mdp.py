@@ -85,6 +85,11 @@ class VariationalMarkovDecisionProcess(Model):
         self.latent_policy_training_phase = latent_policy_training_phase
         self.full_optimization = full_optimization
 
+        self._entropy_regularizer_scale_factor = None
+        self._kl_scale_factor = None
+        self._initial_kl_scale_factor = None
+        self._decay_kl_scale_factor = None
+
         self.encoder_temperature = encoder_temperature
         self.prior_temperature = prior_temperature
         self.entropy_regularizer_scale_factor = (
@@ -280,7 +285,8 @@ class VariationalMarkovDecisionProcess(Model):
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
             'encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
-            'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs')
+            'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs'),
+            'predicted_next_state_mse': tf.keras.metrics.Mean(name='predicted_next_state_mse')
             #  'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
         }
         if self.latent_policy_network is not None:
@@ -489,10 +495,8 @@ class VariationalMarkovDecisionProcess(Model):
         state_distribution = self.decode(next_latent_state)
         log_p_state = state_distribution.log_prob(self.state_scaler(next_state))
 
-        distortion = -1. * (log_p_state + log_p_rewards)
+        distortion = -1. * (log_p_state + log_p_rewards + log_pi_action)
         rate = tf.reduce_sum(log_q - log_p_prior, axis=1)
-
-        rate -= log_pi_action
 
         entropy_regularizer = self.entropy_regularizer(
             next_state,
@@ -510,6 +514,10 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
             self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
             self.loss_metrics['transition_log_probs'](tf.reduce_sum(log_p_prior, axis=1))
+            self.loss_metrics['predicted_next_state_mse'](
+                next_state, self.decode(tf.sigmoid(self.relaxed_latent_transition_probability_distribution(
+                    latent_state, action, self.prior_temperature
+                ).sample())).sample())
 
         if 'action_mse' in self.loss_metrics and latent_policy_distribution is not None:
             self.loss_metrics['action_mse'](action, latent_policy_distribution.sample())
@@ -681,7 +689,10 @@ class VariationalMarkovDecisionProcess(Model):
 
     @entropy_regularizer_scale_factor.setter
     def entropy_regularizer_scale_factor(self, value):
-        self._entropy_regularizer_scale_factor = tf.Variable(value, dtype=tf.float32, trainable=False)
+        if self._entropy_regularizer_scale_factor is None:
+            self._entropy_regularizer_scale_factor = tf.Variable(value, dtype=tf.float32, trainable=False)
+        else:
+            self._entropy_regularizer_scale_factor.assign(value)
 
     @property
     def entropy_regularizer_decay_rate(self):
@@ -697,7 +708,10 @@ class VariationalMarkovDecisionProcess(Model):
 
     @kl_scale_factor.setter
     def kl_scale_factor(self, value):
-        self._kl_scale_factor = tf.Variable(value, dtype=tf.float32, trainable=False)
+        if self._kl_scale_factor is None:
+            self._kl_scale_factor = tf.Variable(value, dtype=tf.float32, trainable=False)
+        else:
+            self._kl_scale_factor.assign(value)
 
     @property
     def kl_growth_rate(self):
@@ -705,8 +719,14 @@ class VariationalMarkovDecisionProcess(Model):
 
     @kl_growth_rate.setter
     def kl_growth_rate(self, value):
-        self._initial_kl_scale_factor = tf.Variable(self.kl_scale_factor, dtype=tf.float32, trainable=False)
-        self._decay_kl_scale_factor = tf.Variable(1., dtype=tf.float32, trainable=False)
+        if self._initial_kl_scale_factor is None:
+            self._initial_kl_scale_factor = tf.Variable(self.kl_scale_factor, dtype=tf.float32, trainable=False)
+        else:
+            self._initial_kl_scale_factor.assign(self.kl_scale_factor)
+        if self._decay_kl_scale_factor is None:
+            self._decay_kl_scale_factor = tf.Variable(1., dtype=tf.float32, trainable=False)
+        else:
+            self._decay_kl_scale_factor.assign(1.)
         self._kl_growth_rate = tf.constant(value, dtype=tf.float32)
 
     @property
@@ -783,6 +803,8 @@ class VariationalMarkovDecisionProcess(Model):
             log_name: str = 'vae_training',
             annealing_period: int = 0,
             start_annealing_step: int = 0,
+            reset_kl_scale_factor: Optional[float] = None,
+            reset_entropy_regularizer: Optional[float] = None,
             logs: bool = True,
             display_progressbar: bool = True,
             save_directory='.',
@@ -823,7 +845,13 @@ class VariationalMarkovDecisionProcess(Model):
         # Load step
         global_step = checkpoint.save_counter if checkpoint else tf.Variable(0)
         start_step = global_step.numpy()
-        print("Step: {}".format(global_step.numpy()))
+        print("Step: {}".format(start_step))
+
+        if start_step < start_annealing_step:
+            if reset_kl_scale_factor is not None:
+                self.kl_scale_factor = reset_kl_scale_factor
+            if reset_entropy_regularizer is not None:
+                self.entropy_regularizer_scale_factor = reset_entropy_regularizer
 
         progressbar = Progbar(
             target=None,
@@ -1073,12 +1101,13 @@ class VariationalMarkovDecisionProcess(Model):
             del eval_set
 
             if eval_policy_driver is not None:
-                eval_policy_thread = threading.Thread(
-                    target=eval_policy,
-                    args=(eval_policy_driver, train_summary_writer, global_step),
-                    daemon=True,
-                    name='eval')
-                eval_policy_thread.start()
+                eval_policy(eval_policy_driver, train_summary_writer, global_step)
+                #  eval_policy_thread = threading.Thread(
+                #      target=eval_policy,
+                #      args=(eval_policy_driver, train_summary_writer, global_step),
+                #      daemon=True,
+                #      name='eval')
+                #  eval_policy_thread.start()
 
             if train_summary_writer is not None:
                 with train_summary_writer.as_default():
@@ -1224,25 +1253,42 @@ class VariationalMarkovDecisionProcess(Model):
         return LatentPolicy(time_step_spec, action_spec, self.discrete_latent_policy)
 
 
-def load(tf_model_path: str) -> VariationalMarkovDecisionProcess:
+def load(tf_model_path: str, discrete_action=False) -> VariationalMarkovDecisionProcess:
     model = tf.saved_model.load(tf_model_path)
-    assert model.transition_network.variables[-1].name == 'transition_logistic_locations/bias:0'
-    return VariationalMarkovDecisionProcess(
-        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
-        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
-        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
-        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
-        encoder_network=model.encoder_network,
-        transition_network=model.transition_network,
-        reward_network=model.reward_network,
-        decoder_network=model.reconstruction_network,
-        latent_policy_network=model.latent_policy_network,
-        latent_state_size=model.transition_network.variables[-1].shape[0],
-        encoder_temperature=model._encoder_temperature,
-        prior_temperature=model._prior_temperature,
-        entropy_regularizer_scale_factor=model._entropy_regularizer_scale_factor,
-        kl_scale_factor=model._kl_scale_factor,
-        pre_loaded_model=True)
+    if discrete_action:
+        return VariationalMarkovDecisionProcess(
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
+            encoder_network=model.encoder_network,
+            transition_network=model.transition_network,
+            reward_network=model.reward_network,
+            decoder_network=model.reconstruction_network,
+            latent_policy_network=model.latent_policy_network,
+            latent_state_size=model.reconstruction_network.variables[0].shape[0],
+            encoder_temperature=model._encoder_temperature,
+            prior_temperature=model._prior_temperature,
+            entropy_regularizer_scale_factor=model._entropy_regularizer_scale_factor,
+            kl_scale_factor=model._kl_scale_factor,
+            pre_loaded_model=True)
+    else:
+        assert model.transition_network.variables[-1].name == 'transition_logistic_locations/bias:0'
+        return VariationalMarkovDecisionProcess(
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[1:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[1:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[1:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[1:],
+            encoder_network=model.encoder_network,
+            transition_network=model.transition_network,
+            reward_network=model.reward_network,
+            decoder_network=model.reconstruction_network,
+            latent_state_size=model.transition_network.variables[-1].shape[0],
+            encoder_temperature=model._encoder_temperature,
+            prior_temperature=model._prior_temperature,
+            entropy_regularizer_scale_factor=model._entropy_regularizer_scale_factor,
+            kl_scale_factor=model._kl_scale_factor,
+            pre_loaded_model=True)
 
 
 def eval_policy(eval_policy_driver, train_summary_writer, global_step):
