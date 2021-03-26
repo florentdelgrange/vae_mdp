@@ -27,6 +27,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             action_encoder_network: Model,
             action_decoder_network: Model,
             transition_network: Model,
+            label_transition_network: Model,
             reward_network: Model,
             latent_policy_network: Model,
             branching_action_networks: bool = False,
@@ -49,7 +50,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         super().__init__(
             state_shape=vae_mdp.state_shape, action_shape=vae_mdp.action_shape, reward_shape=vae_mdp.reward_shape,
             label_shape=vae_mdp.label_shape, encoder_network=vae_mdp.encoder_network,
-            transition_network=vae_mdp.transition_network, reward_network=vae_mdp.reward_network,
+            transition_network=vae_mdp.transition_network, label_transition_network=label_transition_network,
+            reward_network=vae_mdp.reward_network,
             decoder_network=vae_mdp.reconstruction_network,
             latent_state_size=vae_mdp.latent_state_size,
             encoder_temperature=vae_mdp.encoder_temperature.numpy(),

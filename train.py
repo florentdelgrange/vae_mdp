@@ -191,6 +191,11 @@ flags.DEFINE_multi_integer(
     help='Number of units to use for each layer of the transition network.'
 )
 flags.DEFINE_multi_integer(
+    "label_transition_layers",
+    default=[256, 256],
+    help='Number of units to use for each layer of the label transition network.'
+)
+flags.DEFINE_multi_integer(
     "reward_layers",
     default=[256, 256],
     help='Number of units to use for each layer of the reward network.'
@@ -394,6 +399,11 @@ def main(argv):
         for i, units in enumerate(params['transition_layers']):
             p_t.add(Dense(units, activation=activation, name='{}transition_{}'.format(name, i)))
 
+        # Label transition network
+        p_l_t = Sequential(name="{}label_transition_network_body".format(name))
+        for i, units in enumerate(params['label_transition_layers']):
+            p_t.add(Dense(units, activation=activation, name='{}label_transition_{}'.format(name, i)))
+
         # Reward network body
         p_r = Sequential(name="{}reward_network_body".format(name))
         for i, units in enumerate(params['reward_layers']):
@@ -409,7 +419,7 @@ def main(argv):
         for i, units in enumerate(params['discrete_policy_layers']):
             latent_policy.add(Dense(units, activation=activation, name='{}discrete_policy_{}'.format(name, i)))
 
-        return q, p_t, p_r, p_decode, latent_policy
+        return q, p_t, p_l_t, p_r, p_decode, latent_policy
 
     if params['env_suite'] != '':
         try:
@@ -430,19 +440,21 @@ def main(argv):
         environment.time_step_spec().reward.shape,
         tuple(reinforcement_learning.labeling_functions[environment_name](
             environment.reset().observation).shape)
-    )
+        )
     )
     time_step_spec = tensor_spec.from_spec(environment.time_step_spec())
     action_spec = tensor_spec.from_spec(environment.action_spec())
     if params['latent_policy']:
+        # one hot encoding
         action_shape = (environment.action_spec().maximum + 1,)
 
     def build_vae_model():
         if params['load_vae'] == '':
-            q, p_t, p_r, p_decode, latent_policy = generate_network_components(name='state')
+            q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(name='state')
             return variational_mdp.VariationalMarkovDecisionProcess(
                 state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
-                encoder_network=q, transition_network=p_t, reward_network=p_r, decoder_network=p_decode,
+                encoder_network=q, transition_network=p_t, label_transition_network=p_l_t,
+                reward_network=p_r, decoder_network=p_decode,
                 latent_policy_network=(latent_policy if params['latent_policy'] else None),
                 latent_state_size=latent_state_size,
                 mixture_components=mixture_components,
@@ -461,7 +473,7 @@ def main(argv):
                     None if params['max_state_decoder_variance'] == 0. else params['max_state_decoder_variance']
                 ),
                 state_scaler=lambda x: x * params['state_scaling'],
-                full_optimization=not params['decompose_training']
+                full_optimization=not params['decompose_training'] and params['latent_policy']
             )
         else:
             vae = variational_mdp.load(params['load_vae'])
@@ -473,11 +485,12 @@ def main(argv):
         if params['full_vae_optimization'] and params['load_vae'] != '':
             vae = variational_action_discretizer.load(params['load_vae'], full_optimization=True)
         else:
-            q, p_t, p_r, p_decode, latent_policy = generate_network_components(name='action')
+            q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(name='action')
             vae = variational_action_discretizer.VariationalActionDiscretizer(
                 vae_mdp=vae_mdp_model,
                 number_of_discrete_actions=params['number_of_discrete_actions'],
-                action_encoder_network=q, transition_network=p_t, reward_network=p_r, action_decoder_network=p_decode,
+                action_encoder_network=q, transition_network=p_t, label_transition_network=p_l_t,
+                reward_network=p_r, action_decoder_network=p_decode,
                 latent_policy_network=latent_policy,
                 encoder_temperature=params['encoder_temperature'],
                 prior_temperature=params['prior_temperature'],
