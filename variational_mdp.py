@@ -513,7 +513,10 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['rate'](rate)
             self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
             self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
-            self.loss_metrics['transition_log_probs'](tf.reduce_sum(log_p_prior, axis=1))
+            self.loss_metrics['transition_log_probs'](
+                tf.reduce_sum(self.discrete_latent_transition_probability_distribution(
+                    tf.round(latent_state), action
+                ).log_prob(tf.round(tf.sigmoid(next_logistic_latent_state))), axis=1))
             self.loss_metrics['predicted_next_state_mse'](
                 next_state, self.decode(tf.sigmoid(self.relaxed_latent_transition_probability_distribution(
                     latent_state, action, self.prior_temperature
@@ -524,11 +527,15 @@ class VariationalMarkovDecisionProcess(Model):
 
         if debug:
             tf.print(latent_state, "sampled z")
-            tf.print(next_latent_state, "sampled (logistic) z'")
-            tf.print(self.encoder_network([state, label]), "log locations[:-1] of Q")
+            tf.print(next_logistic_latent_state, "sampled (logistic) z'")
+            tf.print(next_latent_state, "sampled z'")
+            tf.print(self.encoder_network([state, label]), "log locations[:-1] -- logits[:-1] of Q")
             tf.print(log_q, "Log Q(logistic z'|s', l')")
             tf.print(self.transition_network([latent_state, action]), "log-locations P_transition")
             tf.print(log_p_prior, "log P(logistic z'|z, a)")
+            tf.print(self.discrete_latent_transition_probability_distribution(
+                    tf.round(latent_state), action
+                ).prob(tf.round(tf.sigmoid(next_logistic_latent_state))), "P(round(z') | round(z), a)")
             tf.print(next_latent_state, "sampled z'")
             tf.print(tf.exp(log_p_rewards), "P(r | z, a, z')")
             [reconstruction_mean, _, reconstruction_prior_components] = \
@@ -537,6 +544,8 @@ class VariationalMarkovDecisionProcess(Model):
             tf.print(reconstruction_prior_components, 'GMM: prior components')
             tf.print(log_p_state, "log P(s' | z')")
             tf.print(log_q - log_p_prior, "log Q(z') - log P(z')")
+            tf.print(tf.reduce_sum(log_q - log_p_prior, axis=1), "tf.reduce_sum(log_q - log_p_prior, axis=1)")
+            tf.print(tf.reduce_sum(log_q - log_p_prior, axis=-1), "tf.reduce_sum(log_q - log_p_prior, axis=-1)")
 
         return [distortion, rate, entropy_regularizer]
 

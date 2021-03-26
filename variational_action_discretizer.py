@@ -577,17 +577,17 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         logistic_next_latent_state = q_next_state.sample()
         q_action = self.relaxed_action_encoding(latent_state, action, self.encoder_temperature)
         p_action_prior = self.relaxed_latent_policy(latent_state, self.prior_temperature)
-        latent_action = q_action.sample()
+        log_latent_action = q_action.sample()
 
-        log_q_action = q_action.log_prob(latent_action)
-        log_p_action_prior = p_action_prior.log_prob(latent_action)
+        log_q_action = q_action.log_prob(log_latent_action)
+        log_p_action_prior = p_action_prior.log_prob(log_latent_action)
 
         # action encoder rate
         action_rate = log_q_action - log_p_action_prior
 
         # transitions
         transition_probability_distribution = self.discrete_latent_transition_probability_distribution(
-            latent_state, latent_action, relaxed_state_encoding=True, log_latent_action=True)
+            latent_state, log_latent_action, relaxed_state_encoding=True, log_latent_action=True)
         log_p_next_latent_state = transition_probability_distribution.log_prob(logistic_next_latent_state)
 
         # state encoder rate
@@ -597,7 +597,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         # rewards reconstruction
         reward_distribution = self.reward_probability_distribution(
-            latent_state, latent_action, next_latent_state, log_latent_action=True)
+            latent_state, log_latent_action, next_latent_state, log_latent_action=True)
         log_p_rewards = reward_distribution.log_prob(reward)
 
         # state reconstruction
@@ -605,7 +605,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         log_p_state = state_distribution.log_prob(next_state)
 
         # action reconstruction
-        action_distribution = self.decode_action(latent_state, latent_action, log_latent_action=True)
+        action_distribution = self.decode_action(latent_state, log_latent_action, log_latent_action=True)
         log_p_action = action_distribution.log_prob(action)
 
         rate = state_rate + action_rate
@@ -639,6 +639,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['transition_log_probs'](tf.reduce_sum(log_p_next_latent_state, axis=1))
         self.loss_metrics['predicted_next_state_mse'](
             next_state, self.decode(tf.sigmoid(transition_probability_distribution.sample())).sample())
+        self.loss_metrics['transition_log_probs'](
+            tf.reduce_sum(self.discrete_latent_transition_probability_distribution(
+                tf.round(latent_state), tf.round(tf.exp(log_latent_action))
+            ).log_prob(tf.round(next_latent_state)), axis=1))
 
         return [distortion, rate, entropy_regularizer]
 
