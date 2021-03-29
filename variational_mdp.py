@@ -159,21 +159,21 @@ class VariationalMarkovDecisionProcess(Model):
             if self.number_of_discrete_actions != -1:
                 transition_network_input = Concatenate(name='transition_network_input')([latent_state, next_label])
                 transition = transition_network(transition_network_input)
-                number_of_latent_state_logits = latent_state_size - self.number_of_atomic_propositions
+                no_latent_state_logits = latent_state_size - self.atomic_props_dims
                 transition_output_layer = Dense(
-                    units=number_of_latent_state_logits * self.number_of_discrete_actions,
+                    units=no_latent_state_logits * self.number_of_discrete_actions,
                     activation=None,
                     name='transition_raw_output_layer'
                 )(transition)
                 transition_output_layer = Reshape(
-                    target_shape=(number_of_latent_state_logits, self.number_of_discrete_actions),
+                    target_shape=(no_latent_state_logits, self.number_of_discrete_actions),
                     name='transition_output_layer_reshape'
                 )(transition_output_layer)
-                _action = tf.keras.layers.RepeatVector(number_of_latent_state_logits, name='repeat_action')(action)
+                _action = tf.keras.layers.RepeatVector(no_latent_state_logits, name='repeat_action')(action)
                 transition_output_layer = tf.keras.layers.Multiply(name="multiply_action_transition")(
                     [_action, transition_output_layer])
                 transition_output_layer = Lambda(
-                    lambda x: tf.reduce_sum(x, axis=-1), name='transition_logits_action_mask_reduce_sum'
+                    lambda x: tf.reduce_sum(x, axis=-1), name='transition_logits_reduce_sum_action_mask_layer'
                 )(transition_output_layer)
             else:
                 transition_network_input = Concatenate(
@@ -191,11 +191,10 @@ class VariationalMarkovDecisionProcess(Model):
             # Label transition network
             # Gives logits of a Bernoulli distribution giving the probability of the next label given the
             # current latent state and the action chosen
-            print(self.number_of_discrete_actions)
             if self.number_of_discrete_actions != -1:
                 _label_transition_network = label_transition_network(latent_state)
                 _label_transition_network = Dense(
-                    units=self.atomic_props_dims + self.number_of_discrete_actions,
+                    units=self.atomic_props_dims * self.number_of_discrete_actions,
                     activation=None,
                     name="label_transition_network_raw_output_layer"
                 )(_label_transition_network)
@@ -207,7 +206,7 @@ class VariationalMarkovDecisionProcess(Model):
                 _label_transition_network = tf.keras.layers.Multiply()([_action, _label_transition_network])
                 _label_transition_network = Lambda(
                     lambda x: tf.reduce_sum(x, axis=-1),
-                    name='label_transition_reduce_sum_layer'
+                    name='label_transition_reduce_sum_action_mask_layer'
                 )(_label_transition_network)
             else:
                 label_transition_network_input = Concatenate(
@@ -224,50 +223,41 @@ class VariationalMarkovDecisionProcess(Model):
             if self.number_of_discrete_actions != -1:
                 reward_network_input = Concatenate(name="reward_network_input")(
                     [latent_state, next_latent_state])
-            else:
-                reward_network_input = Concatenate(name="reward_network_input")(
-                    [latent_state, action, next_latent_state])
-            reward_1 = reward_network(reward_network_input)
-            _action = Lambda(lambda x: tf.expand_dims(x, -1), name='action_expand_dims')(action)
-            if self.number_of_discrete_actions != -1:
+                _reward_network = reward_network(reward_network_input)
                 reward_mean = Dense(
                     units=np.prod(reward_shape) * self.number_of_discrete_actions,
                     activation=None,
-                    name='reward_mean_raw_output')(reward_1)
-                reward_mean = Reshape(target_shape=((self.number_of_discrete_actions,) + reward_shape))(reward_mean)
-                _action_tile = Lambda(
-                    lambda x: tf.tile(x, (1, 1, np.prod(reward_shape))), name='action_tile_reward_mean'
-                )(_action)
-                reward_mean = tf.keras.layers.Multiply(name="multiply_action_reward_stack")([_action_tile, reward_mean])
+                    name='reward_mean_raw_output')(_reward_network)
+                reward_mean = Reshape(target_shape=(reward_shape + (self.number_of_discrete_actions,)))(reward_mean)
+                _action = tf.keras.layers.RepeatVector(np.prod(reward_shape))(action)
+                _action = Reshape(target_shape=(reward_shape + (self.number_of_discrete_actions, )))(_action)
+                reward_mean = tf.keras.layers.Multiply(name="multiply_action_reward_stack")([_action, reward_mean])
                 reward_mean = Lambda(
-                    lambda x: tf.reduce_sum(x, axis=1), name='reward_mean_action_mask'
+                    lambda x: tf.reduce_sum(x, axis=-1), name='reward_mean_reduce_sum_action_mask_layer'
                 )(reward_mean)
-            else:
-                reward_mean = Dense(units=np.prod(reward_shape), activation=None, name='reward_mean_0')(reward_1)
-            reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
-
-            if self.number_of_discrete_actions != -1:
                 reward_raw_covar = Dense(
                     units=np.prod(reward_shape) * self.number_of_discrete_actions,
                     activation=None,
-                    name='reward_covar_raw_output')(reward_1)
+                    name='reward_covar_raw_output')(_reward_network)
                 reward_raw_covar = Reshape(
-                    target_shape=(self.number_of_discrete_actions,) + reward_shape)(reward_raw_covar)
-                _action_tile = Lambda(
-                    lambda x: tf.tile(x, (1, 1, np.prod(reward_shape))), name='action_tile_reward_covar'
-                )(_action)
+                    target_shape=reward_shape + (self.number_of_discrete_actions,))(reward_raw_covar)
                 reward_raw_covar = tf.keras.layers.Multiply(
-                    name='multiply_action_raw_covar_stack')([_action_tile, reward_raw_covar])
+                    name='multiply_action_raw_covar_stack')([_action, reward_raw_covar])
                 reward_raw_covar = Lambda(
-                    lambda x: tf.reduce_sum(x, axis=1),
-                    name='reward_raw_covar_action_mask'
+                    lambda x: tf.reduce_sum(x, axis=-1),
+                    name='reward_raw_covar_reduce_sum_action_mask_layer'
                 )(reward_raw_covar)
             else:
+                reward_network_input = Concatenate(name="reward_network_input")(
+                    [latent_state, action, next_latent_state])
+                _reward_network = reward_network(reward_network_input)
+                reward_mean = Dense(units=np.prod(reward_shape), activation=None, name='reward_mean_0')(_reward_network)
                 reward_raw_covar = Dense(
                     units=np.prod(reward_shape),
                     activation=None,
                     name='reward_raw_diag_covariance_0'
-                )(reward_1)
+                )(_reward_network)
+            reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
             reward_raw_covar = Reshape(reward_shape, name='reward_raw_diag_covariance')(reward_raw_covar)
             self.reward_network = Model(
                 inputs=[latent_state, action, next_latent_state],
