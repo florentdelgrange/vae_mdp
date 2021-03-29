@@ -186,7 +186,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 )(_transition_network)
             self.transition_network = Model(
                 inputs=[latent_state, action, next_label], outputs=transition_output_layer, name="transition_network")
-            self.transition_network.summary()
 
             # Label transition network
             # Gives logits of a Bernoulli distribution giving the probability of the next label given the
