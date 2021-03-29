@@ -472,7 +472,6 @@ def main(argv):
                 max_decoder_variance=(
                     None if params['max_state_decoder_variance'] == 0. else params['max_state_decoder_variance']
                 ),
-                state_scaler=lambda x: x * params['state_scaling'],
                 full_optimization=not params['decompose_training'] and params['latent_policy']
             )
         else:
