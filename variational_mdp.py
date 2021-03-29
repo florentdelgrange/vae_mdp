@@ -38,7 +38,7 @@ if check_numerics:
 epsilon = 1e-25
 
 
-class VariationalMarkovDecisionProcess(Model):
+class VariationalMarkovDecisionProcess(tf.Module):
     def __init__(self,
                  state_shape: Tuple[int, ...],
                  action_shape: Tuple[int],
@@ -124,7 +124,8 @@ class VariationalMarkovDecisionProcess(Model):
             encoder = encoder_network(state)
             logits_layer = Dense(
                 units=latent_state_size - self.atomic_props_dims,
-                activation=None,
+                # allows avoiding exploding logits values and probability errors after applying a sigmoid
+                activation=lambda x: tfb.SoftClip(high=10., low=-10.).forward(x),
                 name='encoder_latent_distribution_logits'
             )(encoder)
             self.encoder_network = Model(
@@ -312,14 +313,13 @@ class VariationalMarkovDecisionProcess(Model):
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
             'encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
+            'marginal_encoder_entropy': tf.keras.metrics.Mean(name='marginal_encoder_entropy'),
             'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs'),
-            'predicted_next_state_mse': tf.keras.metrics.Mean(name='predicted_next_state_mse')
+            'predicted_next_state_mse': tf.keras.metrics.Mean(name='predicted_next_state_mse'),
             #  'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
         }
         if self.latent_policy_network is not None:
             self.loss_metrics['action_mse'] = tf.keras.metrics.Mean(name='action_mse')
-        #  if self.marginal_entropy_regularizer_ratio > 0:
-        self.loss_metrics['marginal_encoder_entropy'] = tf.keras.metrics.Mean(name='marginal_encoder_entropy')
 
     def reset_metrics(self):
         for value in self.loss_metrics.values():
@@ -464,7 +464,7 @@ class VariationalMarkovDecisionProcess(Model):
                 (1. - self._decay_kl_scale_factor))
 
     @tf.function
-    def call(self, inputs, training=None, mask=None, metrics=True):
+    def __call__(self, inputs, training=None, mask=None, metrics=True):
         if self.latent_policy_training_phase:
             return self.latent_policy_training(inputs)
 
@@ -575,12 +575,14 @@ class VariationalMarkovDecisionProcess(Model):
                 mixture_distribution=tfd.Categorical(logits=tf.ones(shape=batch_size)),
                 components_distribution=tfd.RelaxedBernoulli(
                     logits=tf.transpose(logits), temperature=self.encoder_temperature),
-                reparameterize=(latent_states is None))
+                reparameterize=(latent_states is None),
+                allow_nan_stats=False
+            )
         )
         if latent_states is None:
             latent_states = marginal_encoder.sample(batch_size)
         else:
-            latent_states = latent_states[..., :tf.shape(logits)[1]]
+            latent_states = latent_states[..., self.atomic_props_dims:]
         latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
         marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states))
         #  regularizer = ((1. - self.marginal_entropy_regularizer_ratio) * regularizer +
