@@ -328,8 +328,8 @@ class VariationalMarkovDecisionProcess(Model):
         }
         if self.latent_policy_network is not None:
             self.loss_metrics['action_mse'] = tf.keras.metrics.Mean(name='action_mse')
-        if self.marginal_entropy_regularizer_ratio > 0:
-            self.loss_metrics['marginal_encoder_entropy'] = tf.keras.metrics.Mean(name='marginal_encoder_entropy')
+        #  if self.marginal_entropy_regularizer_ratio > 0:
+        self.loss_metrics['marginal_encoder_entropy'] = tf.keras.metrics.Mean(name='marginal_encoder_entropy')
 
     def reset_metrics(self):
         for value in self.loss_metrics.values():
@@ -350,7 +350,7 @@ class VariationalMarkovDecisionProcess(Model):
         if label is not None:
             # change label = 1 to 100 and label = 0 to -100 so that
             # sigmoid(logistic_z[-1]) ~= 1 if label = 1 and sigmoid(logistic_z[-1]) ~= 0 if label = 0
-            logits = tf.concat([logits, (label * 2. - 1.) * 1e2], axis=-1)
+            logits = tf.concat([(label * 2. - 1.) * 1e2, logits], axis=-1)
         return tfd.Independent(tfd.Logistic(loc=logits / temperature, scale=1. / temperature))
 
     def binary_encode(self, state: tf.Tensor, label: Optional[tf.Tensor] = None) -> tfd.Distribution:
@@ -360,7 +360,7 @@ class VariationalMarkovDecisionProcess(Model):
         """
         logits = self.encoder_network(state)
         if label is not None:
-            logits = tf.concat([logits, (label * 2. - 1.) * 1e2], axis=-1)
+            logits = tf.concat([(label * 2. - 1.) * 1e2, logits], axis=-1)
         return tfd.Independent(tfd.Bernoulli(logits, name='discrete_state_encoder_distribution'))
 
     def decode(self, latent_state: tf.Tensor) -> tfd.Distribution:
@@ -486,7 +486,7 @@ class VariationalMarkovDecisionProcess(Model):
 
         # Sigmoid of Logistic samples with location alpha/t and scale 1/t gives Relaxed Bernoulli
         # samples of location alpha and temperature t
-        latent_state = tf.concat([tf.sigmoid(state_encoder_distribution.sample()), label], axis=-1)
+        latent_state = tf.concat([label, tf.sigmoid(state_encoder_distribution.sample())], axis=-1)
         next_logistic_latent_state = next_state_encoder_distribution.sample()
 
         log_q_encoding = next_state_encoder_distribution.log_prob(next_logistic_latent_state)
@@ -495,7 +495,7 @@ class VariationalMarkovDecisionProcess(Model):
         ).log_prob(next_label, next_logistic_latent_state)
 
         # retrieve Relaxed Bernoulli samples
-        next_latent_state = tf.concat([tf.sigmoid(next_logistic_latent_state), next_label], axis=-1)
+        next_latent_state = tf.concat([next_label, tf.sigmoid(next_logistic_latent_state)], axis=-1)
 
         # log P(r | z, a_1, z')
         reward_distribution = self.reward_probability_distribution(latent_state, action, next_latent_state)
@@ -537,7 +537,7 @@ class VariationalMarkovDecisionProcess(Model):
             predicted_next_label, predicted_next_logistic = self.relaxed_latent_transition_probability_distribution(
                 latent_state, action, temperature=self.prior_temperature).sample()
             predicted_next_latent_state = tf.concat(
-                [tf.sigmoid(predicted_next_logistic), tf.cast(predicted_next_label, dtype=tf.float32)], axis=-1)
+                [tf.cast(predicted_next_label, dtype=tf.float32), tf.sigmoid(predicted_next_logistic)], axis=-1)
             self.loss_metrics['predicted_next_state_mse'](
                 next_state, self.decode(predicted_next_latent_state).sample())
 
@@ -573,36 +573,35 @@ class VariationalMarkovDecisionProcess(Model):
             latent_states: Optional[tf.Tensor] = None
     ):
         logits = self.encoder_network(state)
-        regularizer = -1. * tfd.Independent(tfd.Bernoulli(logits=logits)).entropy()
 
         for metric_label in ('encoder_entropy', 'state_encoder_entropy'):
             if metric_label in self.loss_metrics:
-                self.loss_metrics[metric_label](-1. * regularizer)
+                self.loss_metrics[metric_label](tfd.Independent(tfd.Bernoulli(logits=logits)).entropy())
 
-        if enforce_latent_space_spreading:
-            batch_size = tf.shape(logits)[0]
-            marginal_encoder = tfd.Independent(
-                tfd.MixtureSameFamily(
-                    mixture_distribution=tfd.Categorical(logits=tf.ones(shape=batch_size)),
-                    components_distribution=tfd.RelaxedBernoulli(
-                        logits=tf.transpose(logits), temperature=1e-5),  # temperature=self.encoder_temperature),
-                    reparameterize=(latent_states is None))
-            )
-            if latent_states is None:
-                latent_states = marginal_encoder.sample(batch_size)
-            else:
-                latent_states = latent_states[..., :tf.shape(logits)[1]]
-            latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
-            marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states))
-            regularizer = ((1. - self.marginal_entropy_regularizer_ratio) * regularizer +
-                           self.marginal_entropy_regularizer_ratio *
-                           (tf.abs(self.entropy_regularizer_scale_factor) / self.entropy_regularizer_scale_factor)
-                           * marginal_entropy_regularizer)
+        #  if enforce_latent_space_spreading:
+        batch_size = tf.shape(logits)[0]
+        marginal_encoder = tfd.Independent(
+            tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(logits=tf.ones(shape=batch_size)),
+                components_distribution=tfd.RelaxedBernoulli(
+                    logits=tf.transpose(logits), temperature=self.encoder_temperature),
+                reparameterize=(latent_states is None))
+        )
+        if latent_states is None:
+            latent_states = marginal_encoder.sample(batch_size)
+        else:
+            latent_states = latent_states[..., :tf.shape(logits)[1]]
+        latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
+        marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states))
+        #  regularizer = ((1. - self.marginal_entropy_regularizer_ratio) * regularizer +
+        #                 self.marginal_entropy_regularizer_ratio *
+        #                 (tf.abs(self.entropy_regularizer_scale_factor) / self.entropy_regularizer_scale_factor)
+        #                 * marginal_entropy_regularizer)
 
-            if 'marginal_encoder_entropy' in self.loss_metrics:
-                self.loss_metrics['marginal_encoder_entropy'](-1. * marginal_entropy_regularizer)
+        if 'marginal_encoder_entropy' in self.loss_metrics:
+            self.loss_metrics['marginal_encoder_entropy'](-1. * marginal_entropy_regularizer)
 
-        return regularizer
+        return marginal_entropy_regularizer
 
     def latent_policy_training(self, inputs):
         state, label, action, _, next_state, next_label = inputs
@@ -630,7 +629,7 @@ class VariationalMarkovDecisionProcess(Model):
 
         latent_distribution = self.binary_encode(state)
         next_latent_distribution = self.binary_encode(next_state)
-        latent_state = tf.concat([tf.cast(latent_distribution.sample(), tf.float32), label], axis=-1)
+        latent_state = tf.concat([label, tf.cast(latent_distribution.sample(), tf.float32)], axis=-1)
         next_latent_state_no_label = tf.cast(next_latent_distribution.sample(), tf.float32)
 
         transition_distribution = self.discrete_latent_transition_probability_distribution(latent_state, action)
@@ -638,7 +637,7 @@ class VariationalMarkovDecisionProcess(Model):
         rate = next_latent_distribution.log_prob(next_latent_state_no_label) - transition_distribution.log_prob(
             next_label, next_latent_state_no_label)
 
-        next_latent_state = tf.concat([next_latent_state_no_label, next_label], axis=-1)
+        next_latent_state = tf.concat([next_label, next_latent_state_no_label], axis=-1)
 
         reward_distribution = self.reward_probability_distribution(latent_state, action, next_latent_state)
         log_p_rewards = reward_distribution.log_prob(reward)
