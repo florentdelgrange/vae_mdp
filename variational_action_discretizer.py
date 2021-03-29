@@ -32,12 +32,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             transition_network: Model,
             reward_network: Model,
             latent_policy_network: Model,
-            action_label_transition_network: Model,
             pre_processing_network: Model = Sequential(
                 [Dense(units=256, activation='relu'),
                  Dense(units=256, activation='relu')],
                 name='variational_action_discretizer_pre_processing_network'),
             branching_action_networks: bool = False,
+            action_label_transition_network: Optional[Model] = None,
             encoder_temperature: Optional[float] = None,
             prior_temperature: Optional[float] = None,
             encoder_temperature_decay_rate: float = 0.,
@@ -149,44 +149,66 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
             # discrete actions transition network
             if not one_output_per_action:
-                _transition_network = Concatenate()([latent_state, latent_action, next_label])
+                if action_label_transition_network is not None:
+                    _transition_network = Concatenate()([latent_state, latent_action, next_label])
+                else:
+                    _transition_network = Concatenate()([latent_state, latent_action])
                 _transition_network = transition_network(_transition_network)
-                _transition_network = Dense(
+                _next_label_logits = (None if action_label_transition_network is None else
+                                      Dense(units=self.atomic_props_dims,
+                                            activation=None,
+                                            name='action_transition_next_label_logits'))
+                _next_state_logits = Dense(
                     units=self.latent_state_size - self.atomic_props_dims,
                     activation=None,
                     name='variational_action_discretizer_discrete_action_transition_next_state_logits'
                 )(_transition_network)
                 self.action_transition_network = Model(
                     inputs=[latent_state, latent_action, next_label],
-                    outputs=_transition_network,
+                    outputs=_next_state_logits if not _next_label_logits else [_next_label_logits, _next_state_logits],
                     name="variational_action_discretizer_transition_network")
             else:
-                transition_network_input = Concatenate()([latent_state, next_label])
+                if action_label_transition_network is not None:
+                    transition_network_input = Concatenate()([latent_state, next_label])
+                else:
+                    transition_network_input = latent_state
                 transition_network_pre_processing = clone_model(
                     pre_processing_network, 'transition')(transition_network_input)
-                transition_outputs = []
+                transition_outputs_next_label = []
+                transition_outputs_next_state = []
                 for action in range(number_of_discrete_actions):
                     if branching_action_networks:
                         _transition_network = clone_model(transition_network, str(action))
                     else:
                         _transition_network = transition_network
                     _transition_network = _transition_network(transition_network_pre_processing)
-                    _transition_network = Dense(
+                    _next_state_logits = Dense(
                         units=self.latent_state_size - self.atomic_props_dims,
                         activation=None,
                         name='variational_action_discretizer_transition_next_state_logits_action{}'.format(action)
                     )(_transition_network)
-                    transition_outputs.append(_transition_network)
+                    transition_outputs_next_state.append(_next_state_logits)
+                    if action_label_transition_network is not None:
+                        _next_label_logits = Dense(
+                            units=self.atomic_props_dims,
+                            activation=None,
+                            name='variational_action_discretizer_transition_next_label_logits_action{}'.format(action))
+                        transition_outputs_next_label.append(_next_label_logits)
+                next_label_logits = Lambda(
+                    lambda x: tf.stack(x, axis=1),
+                    name="variational_action_discretizer_transition_network_output_label"
+                )(transition_outputs_next_label) if action_label_transition_network is not None else None
+                next_state_logits = Lambda(
+                    lambda x: tf.stack(x, axis=1),
+                    name="variational_action_discretizer_transition_network_output_state"
+                )(transition_outputs_next_state)
                 self.action_transition_network = Model(
-                    inputs=[latent_state, next_label],
-                    outputs=Lambda(
-                        lambda x: tf.stack(x, axis=1),
-                        name="variational_action_discretizer_transition_network_output"
-                    )(transition_outputs),
+                    inputs=[latent_state, next_label] if next_label_logits is not None else latent_state,
+                    outputs=next_state_logits if next_label_logits is None else [next_label_logits, next_state_logits],
                     name="variational_action_discretizer_transition_network")
 
             # label transition network
-            if not one_output_per_action:
+            if not one_output_per_action and action_label_transition_network is not None:
                 _label_transition_network = Concatenate()([latent_state, latent_action])
                 _label_transition_network = action_label_transition_network(_label_transition_network)
                 _label_transition_network = Dense(
@@ -196,7 +218,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     inputs=[latent_state, latent_action],
                     outputs=_label_transition_network,
                     name='variational_action_discretizer_label_transition_network')
-            else:
+            elif action_label_transition_network is not None:
                 if branching_action_networks:
                     _action_label_transition_network = clone_model(action_label_transition_network, str(action))
                 else:
@@ -215,6 +237,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         lambda x: tf.stack(x, axis=1),
                         name='variational_action_discretizer_label_transition_network_output')(outputs),
                     name='variational_action_discretizer_label_transition_network')
+            else:
+                self.action_label_transition_network = None
 
             # discrete actions reward network
             if not one_output_per_action:
@@ -378,10 +402,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             'reward_mse': tf.keras.metrics.MeanSquaredError(name='reward_mse'),
             'distortion': tf.keras.metrics.Mean(name='distortion'),
             'rate': tf.keras.metrics.Mean(name='rate'),
-            'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
+            # 'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
             'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs'),
             # 'decoder_divergence': tf.keras.metrics.Mean(name='decoder_divergence'),
+            'action_decoder_std': tf.keras.metrics.Mean(name='action_decoder_std')
         }
         if self.full_optimization:
             self.loss_metrics.update({
@@ -390,10 +415,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 'marginal_encoder_entropy': tf.keras.metrics.Mean(name='marginal_encoder_entropy'),
                 'action_encoder_entropy': tf.keras.metrics.Mean(name='action_encoder_entropy'),
                 # 'state_decoder_variance': tf.keras.metrics.Mean('decoder_variance'),
-                'state_rate': tf.keras.metrics.Mean(name='state_rate'),
-                'action_rate': tf.keras.metrics.Mean(name='action_rate'),
+                # 'state_rate': tf.keras.metrics.Mean(name='state_rate'),
+                # 'action_rate': tf.keras.metrics.Mean(name='action_rate'),
                 't_1_state': tf.keras.metrics.Mean(name='state_encoder_temperature'),
-                't_2_state': tf.keras.metrics.Mean(name='state_prior_temperature')
+                't_2_state': tf.keras.metrics.Mean(name='state_prior_temperature'),
             })
 
     def anneal(self):
@@ -425,29 +450,36 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             if log_latent_action:
                 latent_action = tf.exp(latent_action)
 
+            if self.action_label_transition_network is None:
+                next_label_logits, next_state_logits = self.action_transition_network([latent_state, latent_action])
+                next_state_logits = lambda: next_state_logits
+            else:
+                next_label_logits = self.action_label_transition_network([latent_state, latent_action])
+                next_state_logits = lambda _next_label: self.action_transition_network(
+                    [latent_state, latent_action, _next_label])
+
             if relaxed_state_encoding:
                 return tfd.JointDistributionSequential([
                     tfd.Independent(
                         tfd.Bernoulli(
-                            logits=self.action_label_transition_network([latent_state, latent_action]),
+                            logits=next_label_logits,
                             allow_nan_stats=False,
                             dtype=tf.float32, )),
                     lambda _next_label: tfd.Independent(
                         tfd.Logistic(
-                            loc=(self.action_transition_network([latent_state, latent_action, _next_label])
-                                 / self._state_vae.prior_temperature),
+                            loc=next_state_logits(_next_label) / self._state_vae.prior_temperature,
                             scale=1. / self._state_vae.prior_temperature,
                             allow_nan_stats=False))])
             else:
                 return tfd.JointDistributionSequential([
                     tfd.Independent(
                         tfd.Bernoulli(
-                            logits=self.action_label_transition_network([latent_state, latent_action]),
+                            logits=next_label_logits,
                             allow_nan_stats=False,
                             dtype=tf.float32)),
                     lambda _next_label: tfd.Independent(
                         tfd.Bernoulli(
-                            logits=self.action_transition_network([latent_state, latent_action, _next_label]),
+                            logits=next_state_logits(_next_label),
                             allow_nan_stats=False))])
         else:
             if log_latent_action:
@@ -455,13 +487,21 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             else:
                 action_categorical = tfd.Categorical(probs=latent_action, allow_nan_stats=False)
 
+            if self.action_label_transition_network is None:
+                next_label_logits, next_state_logits = self.action_transition_network(latent_state)
+                next_state_logits = lambda: next_state_logits
+            else:
+                next_label_logits = self.action_label_transition_network(latent_state)
+                next_state_logits = lambda _next_label: self.action_transition_network(
+                    [latent_state, _next_label])
+
             if relaxed_state_encoding:
                 return tfd.JointDistributionSequential([
                     tfd.MixtureSameFamily(
                         mixture_distribution=action_categorical,
                         components_distribution=tfd.Independent(
                             tfd.Bernoulli(
-                                logits=self.action_label_transition_network(latent_state),
+                                logits=next_label_logits,
                                 allow_nan_stats=False,
                                 dtype=tf.float32),
                             reinterpreted_batch_ndims=1),
@@ -470,8 +510,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         mixture_distribution=action_categorical,
                         components_distribution=tfd.Independent(
                             tfd.Logistic(
-                                loc=(self.action_transition_network([latent_state, _next_label])
-                                     / self._state_vae.prior_temperature),
+                                loc=next_state_logits(_next_label) / self._state_vae.prior_temperature,
                                 scale=1. / self._state_vae.prior_temperature,
                                 allow_nan_stats=False),
                             reinterpreted_batch_ndims=1),
@@ -482,7 +521,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         mixture_distribution=action_categorical,
                         components_distribution=tfd.Independent(
                             tfd.Bernoulli(
-                                logits=self.action_label_transition_network(latent_state),
+                                logits=next_label_logits,
                                 allow_nan_stats=False,
                                 dtype=tf.float32),
                             reinterpreted_batch_ndims=1),
@@ -491,7 +530,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         mixture_distribution=action_categorical,
                         components_distribution=tfd.Independent(
                             tfd.Bernoulli(
-                                logits=self.action_transition_network([latent_state, _next_label]),
+                                logits=next_state_logits(_next_label),
                                 allow_nan_stats=False),
                             reinterpreted_batch_ndims=1),
                         allow_nan_stats=False)])
@@ -717,11 +756,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['reward_mse'](reward, tf.stop_gradient(reward_distribution.sample()))
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
-        self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
+        # self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
         self.loss_metrics['entropy_regularizer'](
             tf.stop_gradient(self.entropy_regularizer_scale_factor * entropy_regularizer))
         # if self.one_output_per_action:
         #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
+        self.loss_metrics['action_decoder_std'](action_distribution.std())
 
         if variational_mdp.debug:
             tf.print(latent_state, "sampled z", summarize=variational_mdp.debug_verbosity)
@@ -751,7 +791,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         latent_state_encoder = self._state_vae.relaxed_encoding(state, self._state_vae.encoder_temperature)
         next_latent_state_encoder = self._state_vae.relaxed_encoding(next_state, self._state_vae.encoder_temperature)
         latent_state = tf.concat([label, tf.sigmoid(latent_state_encoder.sample())], axis=-1)
-        next_logistic_latent_state = next_latent_state_encoder.sample()
+        next_logistic_latent_state_no_label = next_latent_state_encoder.sample()
         latent_action_encoder = self.relaxed_action_encoding(latent_state, action, self.encoder_temperature)
         latent_policy = self.relaxed_latent_policy(latent_state, self.prior_temperature)
         log_latent_action = latent_action_encoder.sample()
@@ -764,20 +804,22 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         # transitions
         transition_probability_distribution = self.discrete_latent_transition_probability_distribution(
             latent_state, log_latent_action, relaxed_state_encoding=True, log_latent_action=True)
-        log_p_next_latent_state = transition_probability_distribution.log_prob(next_label, next_logistic_latent_state)
+        log_p_next_latent_state = transition_probability_distribution.log_prob(
+            next_label, next_logistic_latent_state_no_label)
 
         # state encoder rate
-        log_q_next_latent_state = next_latent_state_encoder.log_prob(next_logistic_latent_state)
+        log_q_next_latent_state = next_latent_state_encoder.log_prob(next_logistic_latent_state_no_label)
         state_encoder_rate = log_q_next_latent_state - log_p_next_latent_state
 
         rate = state_encoder_rate + action_encoder_rate
 
-        next_latent_state = tf.concat([next_label, tf.sigmoid(next_logistic_latent_state)], axis=-1)
+        next_latent_state = tf.concat([next_label, tf.sigmoid(next_logistic_latent_state_no_label)], axis=-1)
 
         # Reconstruction
         # log P(a, r, s' | z, â, z') = log P(a | z, â) + log P(r | z, â, z') + log P(s' | z')
+        action_distribution = self.decode_action(latent_state, log_latent_action, log_latent_action=True)
         reconstruction_distribution = tfd.JointDistributionSequential([
-            self.decode_action(latent_state, log_latent_action, log_latent_action=True),
+            action_distribution,
             self.reward_probability_distribution(
                 latent_state, log_latent_action, next_latent_state, log_latent_action=True),
             self.decode(next_latent_state)
@@ -803,12 +845,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['action_mse'](action, action_sample)
         self.loss_metrics['reward_mse'](reward, reward_sample)
         self.loss_metrics['state_mse'](next_state, next_state_sample)
-        self.loss_metrics['state_rate'](state_encoder_rate)
+        # self.loss_metrics['state_rate'](state_encoder_rate)
         # self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(next_state, next_label).entropy())
         self.loss_metrics['action_encoder_entropy'](
             tf.stop_gradient(self.discrete_action_encoding(latent_state, action).entropy()))
         #  self.loss_metrics['state_decoder_variance'](state_distribution.variance())
-        self.loss_metrics['action_rate'](action_encoder_rate)
+        # self.loss_metrics['action_rate'](action_encoder_rate)
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
@@ -824,7 +866,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     tf.stop_gradient(tf.round(latent_state)),
                     tf.stop_gradient(tf.math.log(tf.round(tf.exp(log_latent_action)) + epsilon)),
                     log_latent_action=True
-                ).log_prob(next_label, tf.stop_gradient(tf.round(tf.sigmoid(next_logistic_latent_state))))))
+                ).log_prob(next_label, tf.stop_gradient(tf.round(tf.sigmoid(next_logistic_latent_state_no_label))))))
+        self.loss_metrics['action_decoder_std'](tf.stop_gradient(action_distribution.std()))
 
         return {'distortion': distortion, 'rate': rate, 'entropy_regularizer': entropy_regularizer}
 
