@@ -39,7 +39,7 @@ if check_numerics:
 epsilon = 1e-25
 
 
-class VariationalMarkovDecisionProcess(tf.Module):
+class VariationalMarkovDecisionProcess(Model):
     def __init__(self,
                  state_shape: Tuple[int, ...],
                  action_shape: Tuple[int, ...],
@@ -77,13 +77,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
 
-        self.state_shape = state_shape
-        self.action_shape = action_shape
-        self.reward_shape = reward_shape
-        self.latent_state_size = latent_state_size
-        self.label_shape = label_shape
-        self.atomic_props_dims = np.prod(label_shape) + int(reset_state_label)
-        self.mixture_components = mixture_components
+        self.state_shape = tf.TensorShape(state_shape)
+        self.action_shape = tf.TensorShape(action_shape)
+        self.reward_shape = tf.TensorShape(reward_shape)
+        self.latent_state_size = tf.Variable(
+            latent_state_size, dtype=tf.int64, trainable=False, name='latent_state_size')
+        self.label_shape = tf.TensorShape(label_shape)
+        self.atomic_props_dims = tf.Variable(
+            np.prod(label_shape) + int(reset_state_label), dtype=tf.int64, trainable=False, name='atomic_props_dims')
+        self.mixture_components = tf.constant(mixture_components)
         self.full_covariance = multivariate_normal_full_covariance
         self.induced_markov_chain_transition_function = (
                 induced_markov_chain_transition_function and latent_policy_network is not None)
@@ -112,23 +114,20 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         self.number_of_discrete_actions = -1  # only used if a latent policy network is provided
 
-        input_state = Input(shape=state_shape, name="state")
+        state = Input(shape=state_shape, name="state")
         action = Input(shape=action_shape, name="action")
-        input_next_state = Input(shape=state_shape, name="next_state")
-
-        state, next_state = input_state, input_next_state
 
         if not pre_loaded_model:
             # Encoder network
             encoder = encoder_network(state)
             logits_layer = Dense(
-                units=latent_state_size - self.atomic_props_dims,
+                units=latent_state_size - self.atomic_props_dims.numpy(),
                 # allows avoiding exploding logits values and probability errors after applying a sigmoid
                 activation=lambda x: tfb.SoftClip(high=10., low=-10.).forward(x),
                 name='encoder_latent_distribution_logits'
             )(encoder)
             self.encoder_network = Model(
-                inputs=input_state,
+                inputs=state,
                 outputs=logits_layer,
                 name='encoder')
 
@@ -155,11 +154,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
             # Transition network
             # inputs are binary concrete random variables, outputs are locations of logistic distributions
-            next_label = Input(shape=(self.atomic_props_dims,), name='next_label')
+            next_label = Input(shape=(self.atomic_props_dims.numpy(),), name='next_label')
             if self.number_of_discrete_actions != -1:
                 transition_network_input = Concatenate(name='transition_network_input')([latent_state, next_label])
                 transition = transition_network(transition_network_input)
-                no_latent_state_logits = latent_state_size - self.atomic_props_dims
+                no_latent_state_logits = latent_state_size - self.atomic_props_dims.numpy()
                 transition_output_layer = Dense(
                     units=no_latent_state_logits * self.number_of_discrete_actions,
                     activation=None,
@@ -180,7 +179,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     name="transition_network_input")([latent_state, action, next_label])
                 _transition_network = transition_network(transition_network_input)
                 transition_output_layer = Dense(
-                    units=latent_state_size - self.atomic_props_dims,
+                    units=latent_state_size - self.atomic_props_dims.numpy(),
                     activation=None,
                     name='latent_transition_distribution_logits'
                 )(_transition_network)
@@ -193,15 +192,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if self.number_of_discrete_actions != -1:
                 _label_transition_network = label_transition_network(latent_state)
                 _label_transition_network = Dense(
-                    units=self.atomic_props_dims * self.number_of_discrete_actions,
+                    units=self.atomic_props_dims.numpy() * self.number_of_discrete_actions,
                     activation=None,
                     name="label_transition_network_raw_output_layer"
                 )(_label_transition_network)
                 _label_transition_network = Reshape(
-                    target_shape=(self.atomic_props_dims, self.number_of_discrete_actions),
+                    target_shape=(self.atomic_props_dims.numpy(), self.number_of_discrete_actions),
                     name='reshape_label_transition_output'
                 )(_label_transition_network)
-                _action = tf.keras.layers.RepeatVector(self.atomic_props_dims, name='repeat_action')(action)
+                _action = tf.keras.layers.RepeatVector(self.atomic_props_dims.numpy(), name='repeat_action')(action)
                 _label_transition_network = tf.keras.layers.Multiply()([_action, _label_transition_network])
                 _label_transition_network = Lambda(
                     lambda x: tf.reduce_sum(x, axis=-1),
@@ -212,7 +211,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     name="label_transition_network_input")([latent_state, action])
                 _label_transition_network = label_transition_network(label_transition_network_input)
                 _label_transition_network = Dense(
-                    units=self.atomic_props_dims, activation=None, name='next_label_transition_logits'
+                    units=self.atomic_props_dims.numpy(), activation=None, name='next_label_transition_logits'
                 )(_label_transition_network)
             self.label_transition_network = Model(
                 inputs=[latent_state, action], outputs=_label_transition_network, name='label_transition_network')
@@ -462,7 +461,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 (1. - self._decay_kl_scale_factor))
 
     @tf.function
-    def __call__(self, inputs, training=None, mask=None, metrics=True):
+    def call(self, inputs, training=None, mask=None, metrics=True):
         if self.latent_policy_training_phase:
             return self.latent_policy_training(inputs)
 
@@ -644,7 +643,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         return (
             tf.reduce_mean(-1. * (distortion + rate)),
-            tf.concat([tf.cast(latent_state, tf.int32), tf.cast(next_latent_state, tf.int32)], axis=0),
+            tf.concat([tf.cast(latent_state, tf.int64), tf.cast(next_latent_state, tf.int64)], axis=0),
             None
         )
 
@@ -1127,10 +1126,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     for value in ('state', 'action'):
                         if data[value] is not None:
                             if value == 'state':
-                                data[value] = tf.cast(
-                                    tf.reduce_sum(data[value] * 2 ** tf.range(self.latent_state_size), axis=-1),
-                                    dtype=tf.int64
-                                )
+                                data[value] = tf.reduce_sum(
+                                        data[value] * 2 ** tf.range(self.latent_state_size), axis=-1)
                             tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
             model_name = os.path.join(log_name, 'step{}'.format(global_step),
@@ -1243,7 +1240,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             name='action'
         )
         observation_spec = specs.BoundedTensorSpec(
-            shape=(self.latent_state_size,),
+            shape=(self.latent_state_size.numpy(),),
             dtype=tf.int32,
             minimum=0,
             maximum=1,
@@ -1267,6 +1264,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
 def load(tf_model_path: str, discrete_action=False) -> VariationalMarkovDecisionProcess:
     model = tf.saved_model.load(tf_model_path)
+    print(model.signatures)
     if discrete_action:
         return VariationalMarkovDecisionProcess(
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
@@ -1277,15 +1275,15 @@ def load(tf_model_path: str, discrete_action=False) -> VariationalMarkovDecision
             transition_network=model.transition_network,
             reward_network=model.reward_network,
             decoder_network=model.reconstruction_network,
+            label_transition_network=model.label_transition_network,
             latent_policy_network=model.latent_policy_network,
-            latent_state_size=model.reconstruction_network.variables[0].shape[0],
+            latent_state_size=model.latent_state_size,
             encoder_temperature=model._encoder_temperature,
             prior_temperature=model._prior_temperature,
             entropy_regularizer_scale_factor=model._entropy_regularizer_scale_factor,
             kl_scale_factor=model._kl_scale_factor,
             pre_loaded_model=True)
     else:
-        assert model.transition_network.variables[-1].name == 'transition_logistic_locations/bias:0'
         return VariationalMarkovDecisionProcess(
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[1:],
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[1:],
@@ -1295,7 +1293,8 @@ def load(tf_model_path: str, discrete_action=False) -> VariationalMarkovDecision
             transition_network=model.transition_network,
             reward_network=model.reward_network,
             decoder_network=model.reconstruction_network,
-            latent_state_size=model.transition_network.variables[-1].shape[0],
+            latent_state_size=model.latent_state_size,
+            label_transition_network=model.label_transition_network,
             encoder_temperature=model._encoder_temperature,
             prior_temperature=model._prior_temperature,
             entropy_regularizer_scale_factor=model._entropy_regularizer_scale_factor,

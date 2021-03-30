@@ -104,10 +104,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         if not pre_loaded_model:
             # action encoder network
-            latent_state = Input(shape=(self.latent_state_size,))
+            latent_state = Input(shape=(self.latent_state_size.numpy(),))
             action = Input(shape=self.action_shape)
-            next_latent_state = Input(shape=(self.latent_state_size,))
-            next_label = Input(shape=(self.atomic_props_dims,))
+            next_latent_state = Input(shape=(self.latent_state_size.numpy(),))
+            next_label = Input(shape=(self.atomic_props_dims.numpy(),))
             latent_action = Input(shape=(number_of_discrete_actions,)) if not one_output_per_action else None
 
             action_encoder = Concatenate(name="action_encoder_input")([latent_state, action])
@@ -140,7 +140,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 _transition_network = Concatenate()([latent_state, latent_action, next_label])
                 _transition_network = transition_network(_transition_network)
                 _transition_network = Dense(
-                    units=self.latent_state_size - self.atomic_props_dims,
+                    units=self.latent_state_size.numpy() - self.atomic_props_dims.numpy(),
                     activation=None,
                     name='discrete_action_transition_next_state_logits'
                 )(_transition_network)
@@ -161,7 +161,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         _transition_network = transition_network
                     _transition_network = _transition_network(transition_network_pre_processing)
                     _transition_network = Dense(
-                        units=self.latent_state_size - self.atomic_props_dims,
+                        units=self.latent_state_size.numpy() - self.atomic_props_dims.numpy(),
                         activation=None,
                         name='action{}_transition_next_state_logits'.format(action)
                     )(_transition_network)
@@ -170,14 +170,14 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     inputs=[latent_state, next_label],
                     outputs=transition_outputs,
                     name="action_transition_network")
-            self.action_transition_network.summary()
 
             # label transition network
             if not one_output_per_action:
                 _label_transition_network = Concatenate()([latent_state, latent_action])
                 _label_transition_network = label_transition_network(_label_transition_network)
                 _label_transition_network = Dense(
-                    units=self.atomic_props_dims, name='next_label_transition_logits')(_label_transition_network)
+                    units=self.atomic_props_dims.numpy(),
+                    name='next_label_transition_logits')(_label_transition_network)
                 self.action_label_transition_network = Model(
                     inputs=[latent_state, latent_action],
                     outputs=_label_transition_network,
@@ -187,7 +187,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 outputs = []
                 for action in range(self.number_of_discrete_actions):
                     _label_transition_network = Dense(
-                        units=self.atomic_props_dims, name='action{}_next_label_transition_logits'.format(action)
+                        units=self.atomic_props_dims.numpy(),
+                        name='action{}_next_label_transition_logits'.format(action)
                     )(_label_transition_network)
                     outputs.append(_label_transition_network)
                 self.action_label_transition_network = Model(
@@ -538,7 +539,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
         return tfd.OneHotCategorical(logits=log_probs)
 
-    def __call__(self, inputs, training=None, mask=None, **kwargs):
+    def call(self, inputs, training=None, mask=None, **kwargs):
         if self.full_optimization:
             return self._full_optimization_call(inputs, training, mask)
 
@@ -753,8 +754,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         return (
             tf.reduce_mean(-1. * (distortion + rate)),
-            tf.concat([tf.cast(latent_state, tf.int32), tf.cast(next_latent_state, tf.int32)], axis=0),
-            tf.cast(tf.argmax(latent_action, axis=1), tf.int32)
+            tf.concat([tf.cast(latent_state, tf.int64), tf.cast(next_latent_state, tf.int64)], axis=0),
+            tf.cast(tf.argmax(latent_action, axis=1), tf.int64)
         )
 
     def mean_latent_bits_used(self, inputs, eps=1e-3, deterministic=True):
@@ -795,7 +796,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     name='action'
                 )
                 observation_spec = specs.BoundedTensorSpec(
-                    shape=(variational_action_discretizer.latent_state_size,),
+                    shape=(variational_action_discretizer.latent_state_size.numpy(),),
                     dtype=tf.int32,
                     minimum=0,
                     maximum=1,
@@ -912,8 +913,9 @@ def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActi
         encoder_network=state_model.encoder_network,
         transition_network=state_model.transition_network,
         reward_network=state_model.reward_network,
+        label_transition_network=state_model.label_transition_network,
         decoder_network=state_model.reconstruction_network,
-        latent_state_size=state_model.transition_network.variables[-1].shape[0],
+        latent_state_size=state_model.latent_state_size,
         encoder_temperature=state_model._encoder_temperature,
         prior_temperature=state_model._prior_temperature,
         pre_loaded_model=True)
@@ -924,6 +926,7 @@ def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActi
         action_decoder_network=model.action_decoder_network,
         transition_network=model.action_transition_network,
         reward_network=model.action_reward_network,
+        label_transition_network=model.action_label_transition_network,
         latent_policy_network=model.latent_policy_network,
         one_output_per_action=model.action_decoder_network.variables[0].shape[0] == state_vae.latent_state_size,
         encoder_temperature=model._encoder_temperature,
