@@ -906,16 +906,17 @@ def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActi
     model = tf.saved_model.load(tf_model_path)
     state_model = model._state_vae
     state_vae = VariationalMarkovDecisionProcess(
-        state_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
-        action_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
-        reward_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
-        label_shape=tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
+        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[1:],
+        (model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1] - 1,),
+        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[1:],
+        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[1:],
         encoder_network=state_model.encoder_network,
         transition_network=state_model.transition_network,
         reward_network=state_model.reward_network,
         label_transition_network=state_model.label_transition_network,
         decoder_network=state_model.reconstruction_network,
-        latent_state_size=state_model.latent_state_size,
+        latent_state_size=(model.encoder_network.variables[-1].shape[0] +
+                           model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1]),
         encoder_temperature=state_model._encoder_temperature,
         prior_temperature=state_model._prior_temperature,
         pre_loaded_model=True)

@@ -1,3 +1,4 @@
+import gc
 import os
 import threading
 from typing import Tuple, Optional, List, Callable, Dict, Iterator
@@ -77,14 +78,14 @@ class VariationalMarkovDecisionProcess(Model):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
 
-        self.state_shape = tf.TensorShape(state_shape)
-        self.action_shape = tf.TensorShape(action_shape)
-        self.reward_shape = tf.TensorShape(reward_shape)
-        self.latent_state_size = tf.Variable(
-            latent_state_size, dtype=tf.int64, trainable=False, name='latent_state_size')
-        self.label_shape = tf.TensorShape(label_shape)
-        self.atomic_props_dims = tf.Variable(
-            np.prod(label_shape) + int(reset_state_label), dtype=tf.int64, trainable=False, name='atomic_props_dims')
+        self.state_shape = state_shape
+        self.action_shape = action_shape
+        self.reward_shape = reward_shape
+        self.latent_state_size = tf.constant(
+            latent_state_size, dtype=tf.int64, name='latent_state_size')
+        self.label_shape = label_shape
+        self.atomic_props_dims = tf.constant(
+            np.prod(label_shape) + int(reset_state_label), dtype=tf.int64, name='atomic_props_dims')
         self.mixture_components = mixture_components
         self.full_covariance = multivariate_normal_full_covariance
         self.induced_markov_chain_transition_function = (
@@ -527,8 +528,8 @@ class VariationalMarkovDecisionProcess(Model):
             self.loss_metrics['predicted_next_state_mse'](
                 next_state, self.decode(predicted_next_latent_state).sample())
 
-        if 'action_mse' in self.loss_metrics:
-            self.loss_metrics['action_mse'](action, reconstruction_sample[0])
+            if 'action_mse' in self.loss_metrics:
+                self.loss_metrics['action_mse'](action, reconstruction_sample[0])
 
         if debug:
             tf.print(latent_state, "sampled z")
@@ -1093,20 +1094,21 @@ class VariationalMarkovDecisionProcess(Model):
     ):
         eval_elbo = tf.metrics.Mean()
         if eval_steps > 0:
-            eval_progressbar = Progbar(target=eval_steps * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
+            eval_progressbar = Progbar(
+                target=(eval_steps + 1) * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
 
             tf.print("\nEvalutation over {} steps".format(eval_steps))
             data = {'state': None, 'action': None}
             for step, x in enumerate(dataset_iterator):
+                if step > eval_steps:
+                    break
+
                 elbo, latent_states, latent_actions = self.eval(x)
                 for value in ('state', 'action'):
                     latent = latent_states if value == 'state' else latent_actions
                     data[value] = latent if data[value] is None else tf.concat([data[value], latent], axis=0)
                 eval_elbo(elbo)
                 eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
-
-                if step > eval_steps:
-                    break
 
             if policy_evaluation_environment is not None:
                 self.eval_policy(policy_evaluation_environment, labeling_function,
@@ -1118,8 +1120,7 @@ class VariationalMarkovDecisionProcess(Model):
                     for value in ('state', 'action'):
                         if data[value] is not None:
                             if value == 'state':
-                                data[value] = tf.reduce_sum(
-                                    data[value] * 2 ** tf.range(self.latent_state_size), axis=-1)
+                                data[value] = tf.reduce_sum(data[value] * 2 ** tf.range(self.latent_state_size), axis=-1)
                             tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
             model_name = os.path.join(log_name, 'step{}'.format(global_step),
@@ -1129,10 +1130,11 @@ class VariationalMarkovDecisionProcess(Model):
                                       'eval_elbo{:.3f}'.format(eval_elbo.result()))
         if check_numerics:
             tf.debugging.disable_check_numerics()
-        x = tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name))
+        tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name))
         if check_numerics:
             tf.debugging.enable_check_numerics()
 
+        del data
         return eval_elbo
 
     def eval_policy(self,
@@ -1284,17 +1286,18 @@ def load(tf_model_path: str, discrete_action=False) -> VariationalMarkovDecision
     print(model.signatures)
     if discrete_action:
         return VariationalMarkovDecisionProcess(
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[2:],
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[2:],
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[2:],
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[2:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[1:],
+            (model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1] - 1, ),
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[1:],
+            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[1:],
             encoder_network=model.encoder_network,
             transition_network=model.transition_network,
             reward_network=model.reward_network,
             decoder_network=model.reconstruction_network,
             label_transition_network=model.label_transition_network,
             latent_policy_network=model.latent_policy_network,
-            latent_state_size=model.latent_state_size,
+            latent_state_size=(model.encoder_network.variables[-1].shape[0] +
+                               model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1]),
             encoder_temperature=model._encoder_temperature,
             prior_temperature=model._prior_temperature,
             entropy_regularizer_scale_factor=model._entropy_regularizer_scale_factor,
@@ -1303,14 +1306,15 @@ def load(tf_model_path: str, discrete_action=False) -> VariationalMarkovDecision
     else:
         return VariationalMarkovDecisionProcess(
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[1:],
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape)[1:],
+            (model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1] - 1, ),
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[1:],
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[1:],
             encoder_network=model.encoder_network,
             transition_network=model.transition_network,
             reward_network=model.reward_network,
             decoder_network=model.reconstruction_network,
-            latent_state_size=model.latent_state_size,
+            latent_state_size=(model.encoder_network.variables[-1].shape[0] +
+                               model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1]),
             label_transition_network=model.label_transition_network,
             encoder_temperature=model._encoder_temperature,
             prior_temperature=model._prior_temperature,
