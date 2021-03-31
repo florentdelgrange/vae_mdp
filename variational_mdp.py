@@ -81,11 +81,9 @@ class VariationalMarkovDecisionProcess(Model):
         self.state_shape = state_shape
         self.action_shape = action_shape
         self.reward_shape = reward_shape
-        self.latent_state_size = tf.constant(
-            latent_state_size, dtype=tf.int64, name='latent_state_size')
+        self.latent_state_size = latent_state_size
         self.label_shape = label_shape
-        self.atomic_props_dims = tf.constant(
-            np.prod(label_shape) + int(reset_state_label), dtype=tf.int64, name='atomic_props_dims')
+        self.atomic_props_dims = np.prod(label_shape) + int(reset_state_label)
         self.mixture_components = mixture_components
         self.full_covariance = multivariate_normal_full_covariance
         self.induced_markov_chain_transition_function = (
@@ -122,7 +120,7 @@ class VariationalMarkovDecisionProcess(Model):
             # Encoder network
             encoder = encoder_network(state)
             logits_layer = Dense(
-                units=latent_state_size - self.atomic_props_dims.numpy(),
+                units=latent_state_size - self.atomic_props_dims,
                 # allows avoiding exploding logits values and probability errors after applying a sigmoid
                 activation=lambda x: tfb.SoftClip(high=10., low=-10.).forward(x),
                 name='encoder_latent_distribution_logits'
@@ -155,11 +153,11 @@ class VariationalMarkovDecisionProcess(Model):
 
             # Transition network
             # inputs are binary concrete random variables, outputs are locations of logistic distributions
-            next_label = Input(shape=(self.atomic_props_dims.numpy(),), name='next_label')
+            next_label = Input(shape=(self.atomic_props_dims,), name='next_label')
             if self.number_of_discrete_actions != -1:
                 transition_network_input = Concatenate(name='transition_network_input')([latent_state, next_label])
                 transition = transition_network(transition_network_input)
-                no_latent_state_logits = latent_state_size - self.atomic_props_dims.numpy()
+                no_latent_state_logits = latent_state_size - self.atomic_props_dims
                 transition_output_layer = Dense(
                     units=no_latent_state_logits * self.number_of_discrete_actions,
                     activation=None,
@@ -180,7 +178,7 @@ class VariationalMarkovDecisionProcess(Model):
                     name="transition_network_input")([latent_state, action, next_label])
                 _transition_network = transition_network(transition_network_input)
                 transition_output_layer = Dense(
-                    units=latent_state_size - self.atomic_props_dims.numpy(),
+                    units=latent_state_size - self.atomic_props_dims,
                     activation=None,
                     name='latent_transition_distribution_logits'
                 )(_transition_network)
@@ -193,15 +191,15 @@ class VariationalMarkovDecisionProcess(Model):
             if self.number_of_discrete_actions != -1:
                 _label_transition_network = label_transition_network(latent_state)
                 _label_transition_network = Dense(
-                    units=self.atomic_props_dims.numpy() * self.number_of_discrete_actions,
+                    units=self.atomic_props_dims * self.number_of_discrete_actions,
                     activation=None,
                     name="label_transition_network_raw_output_layer"
                 )(_label_transition_network)
                 _label_transition_network = Reshape(
-                    target_shape=(self.atomic_props_dims.numpy(), self.number_of_discrete_actions),
+                    target_shape=(self.atomic_props_dims, self.number_of_discrete_actions),
                     name='reshape_label_transition_output'
                 )(_label_transition_network)
-                _action = tf.keras.layers.RepeatVector(self.atomic_props_dims.numpy(), name='repeat_action')(action)
+                _action = tf.keras.layers.RepeatVector(self.atomic_props_dims, name='repeat_action')(action)
                 _label_transition_network = tf.keras.layers.Multiply()([_action, _label_transition_network])
                 _label_transition_network = Lambda(
                     lambda x: tf.reduce_sum(x, axis=-1),
@@ -212,7 +210,7 @@ class VariationalMarkovDecisionProcess(Model):
                     name="label_transition_network_input")([latent_state, action])
                 _label_transition_network = label_transition_network(label_transition_network_input)
                 _label_transition_network = Dense(
-                    units=self.atomic_props_dims.numpy(), activation=None, name='next_label_transition_logits'
+                    units=self.atomic_props_dims, activation=None, name='next_label_transition_logits'
                 )(_label_transition_network)
             self.label_transition_network = Model(
                 inputs=[latent_state, action], outputs=_label_transition_network, name='label_transition_network')
@@ -1120,7 +1118,8 @@ class VariationalMarkovDecisionProcess(Model):
                     for value in ('state', 'action'):
                         if data[value] is not None:
                             if value == 'state':
-                                data[value] = tf.reduce_sum(data[value] * 2 ** tf.range(self.latent_state_size), axis=-1)
+                                data[value] = tf.reduce_sum(data[value] * 2 ** tf.range(tf.cast(self.latent_state_size),
+                                                                                        dtype=tf.int64), axis=-1)
                             tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
             model_name = os.path.join(log_name, 'step{}'.format(global_step),
@@ -1287,7 +1286,7 @@ def load(tf_model_path: str, discrete_action=False) -> VariationalMarkovDecision
     if discrete_action:
         return VariationalMarkovDecisionProcess(
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[1:],
-            (model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1] - 1, ),
+            (model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1] - 1,),
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[1:],
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[1:],
             encoder_network=model.encoder_network,
@@ -1306,7 +1305,7 @@ def load(tf_model_path: str, discrete_action=False) -> VariationalMarkovDecision
     else:
         return VariationalMarkovDecisionProcess(
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[1:],
-            (model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1] - 1, ),
+            (model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1] - 1,),
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[1:],
             tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[1:],
             encoder_network=model.encoder_network,
