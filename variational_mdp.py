@@ -1118,8 +1118,8 @@ class VariationalMarkovDecisionProcess(Model):
                     for value in ('state', 'action'):
                         if data[value] is not None:
                             if value == 'state':
-                                data[value] = tf.reduce_sum(data[value] * 2 ** tf.range(tf.cast(self.latent_state_size),
-                                                                                        dtype=tf.int64), axis=-1)
+                                data[value] = tf.reduce_sum(data[value] * 2 ** tf.range(tf.cast(self.latent_state_size,
+                                                                                        dtype=tf.int64)), axis=-1)
                             tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
             model_name = os.path.join(log_name, 'step{}'.format(global_step),
@@ -1181,7 +1181,7 @@ class VariationalMarkovDecisionProcess(Model):
             ):
                 action_spec = tf_env.action_spec()
                 observation_spec = specs.BoundedTensorSpec(
-                    shape=(vae_mdp.latent_state_size.numpy(),),
+                    shape=(vae_mdp.latent_state_size,),
                     dtype=tf.int32,
                     minimum=0,
                     maximum=1,
@@ -1258,7 +1258,7 @@ class VariationalMarkovDecisionProcess(Model):
             name='action'
         )
         observation_spec = specs.BoundedTensorSpec(
-            shape=(self.latent_state_size.numpy(),),
+            shape=(self.latent_state_size,),
             dtype=tf.int32,
             minimum=0,
             maximum=1,
