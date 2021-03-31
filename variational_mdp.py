@@ -1,6 +1,6 @@
 import os
 import threading
-from typing import Tuple, Optional, List, Callable, Dict
+from typing import Tuple, Optional, List, Callable, Dict, Iterator
 import numpy as np
 
 import tensorflow as tf
@@ -85,7 +85,7 @@ class VariationalMarkovDecisionProcess(Model):
         self.label_shape = tf.TensorShape(label_shape)
         self.atomic_props_dims = tf.Variable(
             np.prod(label_shape) + int(reset_state_label), dtype=tf.int64, trainable=False, name='atomic_props_dims')
-        self.mixture_components = tf.constant(mixture_components)
+        self.mixture_components = mixture_components
         self.full_covariance = multivariate_normal_full_covariance
         self.induced_markov_chain_transition_function = (
                 induced_markov_chain_transition_function and latent_policy_network is not None)
@@ -927,22 +927,19 @@ class VariationalMarkovDecisionProcess(Model):
         initial_collect_driver.run()
         print("Start training.")
 
-        def dataset_generator():
-            generator = ErgodicMDPTransitionGenerator(
-                labeling_function,
-                replay_buffer,
-                discrete_action=discrete_action_space,
-                num_discrete_actions=self.action_shape[0])
-            return replay_buffer.as_dataset(
-                num_parallel_calls=tf.data.experimental.AUTOTUNE,
-                num_steps=2
-            ).map(
-                map_func=generator,
-                num_parallel_calls=tf.data.experimental.AUTOTUNE,
-                #  deterministic=False  # TF version >= 2.2.0
-            )
-
-        dataset = dataset_generator().batch(batch_size=batch_size, drop_remainder=True)
+        generator = ErgodicMDPTransitionGenerator(
+            labeling_function,
+            replay_buffer,
+            discrete_action=discrete_action_space,
+            num_discrete_actions=self.action_shape[0])
+        dataset = replay_buffer.as_dataset(
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+            num_steps=2
+        ).map(
+            map_func=generator,
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+            #  deterministic=False  # TF version >= 2.2.0
+        ).batch(batch_size=batch_size, drop_remainder=True)
         dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
 
         if policy_evaluation_num_episodes > 0:
@@ -974,10 +971,10 @@ class VariationalMarkovDecisionProcess(Model):
                 additional_training_metrics['epsilon_greedy'] = epsilon_greedy
 
             loss = self.training_step(
-                dataset_batch=next(dataset_iterator), batch_size=batch_size, optimizer=optimizer,
+                dataset_iterator=dataset_iterator, batch_size=batch_size, optimizer=optimizer,
                 annealing_period=annealing_period, global_step=global_step,
                 dataset_size=replay_buffer.num_frames().numpy(), display_progressbar=display_progressbar,
-                start_step=start_step, epoch=0, progressbar=progressbar, dataset_generator=dataset_generator,
+                start_step=start_step, epoch=0, progressbar=progressbar,
                 save_model_interval=save_model_interval,
                 eval_ratio=eval_steps * batch_size / replay_buffer.num_frames(),
                 save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
@@ -1013,8 +1010,8 @@ class VariationalMarkovDecisionProcess(Model):
         return 0
 
     def training_step(
-            self, dataset_batch, batch_size, optimizer, annealing_period, global_step, dataset_size,
-            display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
+            self, dataset_iterator, batch_size, optimizer, annealing_period, global_step, dataset_size,
+            display_progressbar, start_step, epoch, progressbar, save_model_interval,
             eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
             start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None,
             aggressive_training=False, aggressive_update=True,
@@ -1022,16 +1019,17 @@ class VariationalMarkovDecisionProcess(Model):
             policy_evaluation_environment: Optional[tf_agents.environments.tf_environment.TFEnvironment] = None,
             labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None
     ):
+        batch = next(dataset_iterator)
         if additional_metrics is None:
             additional_metrics = {}
         if not aggressive_training and not self.latent_policy_training_phase:
-            gradients = self.compute_apply_gradients(dataset_batch, optimizer)
+            gradients = self.compute_apply_gradients(batch, optimizer)
         elif not aggressive_training and self.latent_policy_training_phase:
-            gradients = self.latent_policy_update(dataset_batch, optimizer)
+            gradients = self.latent_policy_update(batch, optimizer)
         elif aggressive_update:
-            gradients = self.inference_update(dataset_batch, optimizer)
+            gradients = self.inference_update(batch, optimizer)
         else:
-            gradients = self.generator_update(dataset_batch, optimizer)
+            gradients = self.generator_update(batch, optimizer)
         loss = gradients
 
         if annealing_period > 0 and \
@@ -1042,7 +1040,7 @@ class VariationalMarkovDecisionProcess(Model):
         metrics_key_values = [('step', global_step.numpy()), ('loss', loss.numpy())] + \
                              [(key, value.result()) for key, value in self.loss_metrics.items()] + \
                              [(key, value) for key, value in additional_metrics.items()] + \
-                             [(key, value) for key, value in self.mean_latent_bits_used(dataset_batch).items()]
+                             [(key, value) for key, value in self.mean_latent_bits_used(batch).items()]
         if annealing_period != 0:
             metrics_key_values.append(('t_1', self.encoder_temperature))
             metrics_key_values.append(('t_2', self.prior_temperature))
@@ -1061,7 +1059,7 @@ class VariationalMarkovDecisionProcess(Model):
         # eval, save and log
         eval_steps = int(1e3) if dataset_size is None else int(dataset_size * eval_ratio) // batch_size
         if global_step.numpy() % save_model_interval == 0:
-            self.eval_and_save(dataset=dataset_generator(),
+            self.eval_and_save(dataset_iterator=dataset_iterator,
                                batch_size=batch_size, eval_steps=eval_steps,
                                global_step=int(global_step.numpy()), save_directory=save_directory, log_name=log_name,
                                train_summary_writer=train_summary_writer,
@@ -1082,7 +1080,7 @@ class VariationalMarkovDecisionProcess(Model):
 
     def eval_and_save(
             self,
-            dataset: tf.data.Dataset,
+            dataset_iterator: Iterator,
             batch_size: int,
             eval_steps: int,
             global_step: int,
@@ -1095,22 +1093,20 @@ class VariationalMarkovDecisionProcess(Model):
     ):
         eval_elbo = tf.metrics.Mean()
         if eval_steps > 0:
-            eval_set = dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
             eval_progressbar = Progbar(target=eval_steps * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
 
             tf.print("\nEvalutation over {} steps".format(eval_steps))
             data = {'state': None, 'action': None}
-            for step, x in enumerate(eval_set):
+            for step, x in enumerate(dataset_iterator):
                 elbo, latent_states, latent_actions = self.eval(x)
                 for value in ('state', 'action'):
                     latent = latent_states if value == 'state' else latent_actions
                     data[value] = latent if data[value] is None else tf.concat([data[value], latent], axis=0)
                 eval_elbo(elbo)
                 eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
+
                 if step > eval_steps:
                     break
-
-            del eval_set
 
             if policy_evaluation_environment is not None:
                 self.eval_policy(policy_evaluation_environment, labeling_function,
@@ -1123,7 +1119,7 @@ class VariationalMarkovDecisionProcess(Model):
                         if data[value] is not None:
                             if value == 'state':
                                 data[value] = tf.reduce_sum(
-                                        data[value] * 2 ** tf.range(self.latent_state_size), axis=-1)
+                                    data[value] * 2 ** tf.range(self.latent_state_size), axis=-1)
                             tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
             model_name = os.path.join(log_name, 'step{}'.format(global_step),
@@ -1133,11 +1129,9 @@ class VariationalMarkovDecisionProcess(Model):
                                       'eval_elbo{:.3f}'.format(eval_elbo.result()))
         if check_numerics:
             tf.debugging.disable_check_numerics()
-        tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name))
+        x = tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name))
         if check_numerics:
             tf.debugging.enable_check_numerics()
-
-        del dataset
 
         return eval_elbo
 
@@ -1186,7 +1180,7 @@ class VariationalMarkovDecisionProcess(Model):
             ):
                 action_spec = tf_env.action_spec()
                 observation_spec = specs.BoundedTensorSpec(
-                    shape=(vae_mdp.latent_state_size,),
+                    shape=(vae_mdp.latent_state_size.numpy(),),
                     dtype=tf.int32,
                     minimum=0,
                     maximum=1,
