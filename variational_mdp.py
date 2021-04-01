@@ -563,14 +563,14 @@ class VariationalMarkovDecisionProcess(Model):
 
         #  if enforce_latent_space_spreading:
         batch_size = tf.shape(logits)[0]
-        marginal_encoder = tfd.Independent(
-            tfd.MixtureSameFamily(
-                mixture_distribution=tfd.Categorical(logits=tf.ones(shape=batch_size)),
-                components_distribution=tfd.RelaxedBernoulli(
-                    logits=tf.transpose(logits), temperature=self.encoder_temperature),
+        marginal_encoder = tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(
+                    logits=tf.ones(shape=(batch_size, batch_size))),
+                components_distribution=tfd.Independent(tfd.RelaxedBernoulli(
+                    logits=tf.tile(tf.expand_dims(logits, axis=0), [batch_size, 1, 1]),
+                    temperature=self.encoder_temperature), reinterpreted_batch_ndims=1),
                 reparameterize=(latent_states is None),
                 allow_nan_stats=False
-            )
         )
         if latent_states is None:
             latent_states = marginal_encoder.sample(batch_size)
