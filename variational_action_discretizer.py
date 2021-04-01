@@ -539,9 +539,18 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
         return tfd.OneHotCategorical(logits=log_probs)
 
-    def call(self, inputs, training=None, mask=None, **kwargs):
+    @tf.function
+    def __call__(
+            self,
+            state: tf.Tensor,
+            label: tf.Tensor,
+            action: tf.Tensor,
+            reward: tf.Tensor,
+            next_state: tf.Tensor,
+            next_label: tf.Tensor
+    ):
         if self.full_optimization:
-            return self._full_optimization_call(inputs, training, mask)
+            return self._full_optimization_call(state, label, action, reward, next_state, next_label)
 
         state, label, action, reward, next_state, next_label = inputs
 
@@ -621,11 +630,17 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             tf.print(log_p_transition, "log P(z' | z, â)", summarize=variational_mdp.debug_verbosity)
             tf.print(log_p_action, "log P(a | z, â)", summarize=variational_mdp.debug_verbosity)
 
-        return [distortion, rate, entropy_regularizer]
+        return {'distortion': distortion, 'rate': rate, 'entropy_regularizer': entropy_regularizer}
 
-    def _full_optimization_call(self, inputs, training=None, mask=None, **kwargs):
-        state, label, action, reward, next_state, next_label = inputs
-
+    def _full_optimization_call(
+            self,
+            state: tf.Tensor,
+            label: tf.Tensor,
+            action: tf.Tensor,
+            reward: tf.Tensor,
+            next_state: tf.Tensor,
+            next_label: tf.Tensor
+    ):
         # sampling from encoder distributions
         latent_state_encoder = self._state_vae.relaxed_encoding(state, self._state_vae.encoder_temperature)
         next_latent_state_encoder = self._state_vae.relaxed_encoding(next_state, self._state_vae.encoder_temperature)
@@ -698,7 +713,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.loss_metrics['predicted_next_state_mse'](
             next_state, self.decode(predicted_next_latent_state).sample())
 
-        return [distortion, rate, entropy_regularizer]
+        return {'distortion': distortion, 'rate': rate, 'entropy_regularizer': entropy_regularizer}
 
     @tf.function
     def entropy_regularizer(
@@ -721,9 +736,15 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         return state_regularizer + action_regularizer
 
-    def eval(self, inputs):
-        state, label, action, reward, next_state, next_label = inputs
-
+    def eval(
+            self,
+            state: tf.Tensor,
+            label: tf.Tensor,
+            action: tf.Tensor,
+            reward: tf.Tensor,
+            next_state: tf.Tensor,
+            next_label: tf.Tensor
+    ):
         latent_distribution = self.binary_encode(state)
         next_latent_distribution = self.binary_encode(next_state)
         latent_state = tf.concat([label, tf.cast(latent_distribution.sample(), tf.float32)], axis=-1)
@@ -895,31 +916,42 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         return variables
 
     @tf.function
-    def compute_apply_gradients(self, x, optimizer):
+    def compute_apply_gradients(
+            self,
+            state: tf.Tensor,
+            label: tf.Tensor,
+            action: tf.Tensor,
+            reward: tf.Tensor,
+            next_state: tf.Tensor,
+            next_label: tf.Tensor
+    ):
         if self.full_optimization:
-            return self._compute_apply_gradients(x, optimizer, self.trainable_variables)
+            return self._compute_apply_gradients(
+                state, label, action, reward, next_state, next_label, self.trainable_variables)
         else:
-            return self._compute_apply_gradients(x, optimizer, self.action_discretizer_variables)
+            return self._compute_apply_gradients(
+                state, label, action, reward, next_state, next_label, self.action_discretizer_variables)
 
 
 def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActionDiscretizer:
     model = tf.saved_model.load(tf_model_path)
     state_model = model._state_vae
     state_vae = VariationalMarkovDecisionProcess(
-        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_1'].shape)[1:],
-        (model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1] - 1,),
-        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_3'].shape)[1:],
-        tuple(model.signatures['serving_default'].structured_input_signature[1]['input_5'].shape)[1:],
+        tuple(model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
+        (model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
+        tuple(model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
+        tuple(model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
         encoder_network=state_model.encoder_network,
         transition_network=state_model.transition_network,
         reward_network=state_model.reward_network,
         label_transition_network=state_model.label_transition_network,
         decoder_network=state_model.reconstruction_network,
         latent_state_size=(model.encoder_network.variables[-1].shape[0] +
-                           model.signatures['serving_default'].structured_input_signature[1]['input_2'].shape[-1]),
+                           model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1]),
         encoder_temperature=state_model._encoder_temperature,
         prior_temperature=state_model._prior_temperature,
-        pre_loaded_model=True)
+        pre_loaded_model=True,
+        optimizer=state_model._optimizer)
     return VariationalActionDiscretizer(
         vae_mdp=state_vae,
         number_of_discrete_actions=model.action_encoder.variables[-1].shape[0],
@@ -934,5 +966,4 @@ def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActi
         prior_temperature=model._prior_temperature,
         reconstruction_mixture_components=model.action_decoder_network.variables[-1].shape[0],
         pre_loaded_model=True,
-        full_optimization=full_optimization
-    )
+        full_optimization=full_optimization)
