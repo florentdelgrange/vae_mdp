@@ -878,8 +878,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             checkpoint: Optional[tf.train.Checkpoint] = None,
             manager: Optional[tf.train.CheckpointManager] = None,
             log_interval: int = 80,
-            eval_steps: int = int(1e3),
-            save_model_interval: int = int(1e4),
+            eval_steps: int = int(1e2),
+            save_model_interval: int = int(1e3),
             log_name: str = 'vae_training',
             annealing_period: int = 0,
             start_annealing_step: int = 0,
@@ -1225,6 +1225,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         eval_checkpoint.save(
             os.path.join(save_directory, 'training_checkpoints', log_name, 'ckpt-{:d}'.format(global_step.numpy())))
 
+        del eval_checkpoint
         del data
         return eval_elbo
 
@@ -1251,7 +1252,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
         print('eval policy', eval_avg_rewards.result().numpy())
 
+        del eval_policy_driver.run
         del eval_policy_driver
+        del eval_env
 
         return 0
 
