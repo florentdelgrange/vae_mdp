@@ -53,7 +53,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
                       Dense(units=256, activation='relu')],
                      name='label_transition_network_body'),
                  latent_policy_network: Optional[Model] = None,
-                 induced_markov_chain_transition_function: bool = False,  # experimental
                  latent_state_size: int = 12,
                  encoder_temperature: float = 2. / 3,
                  prior_temperature: float = 1. / 2,
@@ -85,8 +84,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.atomic_props_dims = np.prod(label_shape) + int(reset_state_label)
         self.mixture_components = mixture_components
         self.full_covariance = multivariate_normal_full_covariance
-        self.induced_markov_chain_transition_function = (
-                induced_markov_chain_transition_function and latent_policy_network is not None)
         self.latent_policy_training_phase = latent_policy_training_phase
         self.full_optimization = full_optimization
         self._optimizer = optimizer
@@ -296,6 +293,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         else:
             self.encoder_network = encoder_network
             self.transition_network = transition_network
+            self.label_transition_network = label_transition_network
             self.reward_network = reward_network
             self.reconstruction_network = decoder_network
             self.latent_policy_network = latent_policy_network
@@ -801,7 +799,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         if debug_gradients:
             for gradient, variable in zip(gradients, trainable_variables):
-                tf.print(gradient, "Gradient for {}".format(variable.name))
+                tf.print(gradient, "Gradient for {}".format(variable.name), ' -- variable=', trainable_variables)
 
         if self._optimizer is not None:
             self._optimizer.apply_gradients(zip(gradients, trainable_variables))
@@ -1031,9 +1029,28 @@ class VariationalMarkovDecisionProcess(tf.Module):
         max_inference_update_steps = int(1e2)
         inference_update_steps = 0
 
+        # save model procedure
+        def save(model_name: str):
+            if check_numerics:
+                tf.debugging.disable_check_numerics()
+            state, label, action, reward, next_state, next_label = next(dataset_iterator)
+            call = self.__call__.get_concrete_function(
+                tf.TensorSpec((None,) + tuple(tf.shape(state)[1:])),
+                tf.TensorSpec((None,) + tuple(tf.shape(label)[1:])),
+                tf.TensorSpec((None,) + tuple(tf.shape(action)[1:])),
+                tf.TensorSpec((None,) + tuple(tf.shape(reward)[1:])),
+                tf.TensorSpec((None,) + tuple(tf.shape(next_state)[1:])),
+                tf.TensorSpec((None,) + tuple(tf.shape(next_label)[1:])))
+            tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name), signatures=call, )
+            if check_numerics:
+                tf.debugging.enable_check_numerics()
+
         for _ in range(global_step.numpy(), num_iterations):
             # Collect a few steps and save them to the replay buffer.
             driver.run()
+
+            if tf.equal(global_step, 0):
+                save(os.path.join(log_name, 'base'))
 
             additional_training_metrics = {
                 "num_episodes": num_episodes.result(),
@@ -1045,7 +1062,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 additional_training_metrics['epsilon_greedy'] = epsilon_greedy
 
             loss = self.training_step(
-                dataset_iterator=dataset_iterator, batch_size=batch_size, optimizer=optimizer,
+                dataset_iterator=dataset_iterator, batch_size=batch_size,
                 annealing_period=annealing_period, global_step=global_step,
                 dataset_size=replay_buffer.num_frames().numpy(), display_progressbar=display_progressbar,
                 start_step=start_step, epoch=0, progressbar=progressbar,
@@ -1058,6 +1075,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 aggressive_update=aggressive_inference_optimization,
                 policy_evaluation_num_episodes=policy_evaluation_num_episodes,
                 policy_evaluation_environment=eval_env, labeling_function=labeling_function)
+
+            if checkpoint is not None:
+                if tf.equal(tf.math.mod(global_step, log_interval), 0):
+                    manager.save()
 
             if aggressive_training and global_step.numpy() < aggressive_training_steps:
                 if display_progressbar:
@@ -1079,12 +1100,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     prev_loss = None
                     inference_update_steps = 0
 
+        # save the final model
+        save(os.path.join(log_name, 'step{:d}'.format(global_step)))
+
         tf_env.close()
         del tf_env
         return 0
 
     def training_step(
-            self, dataset_iterator, batch_size, optimizer, annealing_period, global_step, dataset_size,
+            self, dataset_iterator, batch_size, annealing_period, global_step, dataset_size,
             display_progressbar, start_step, epoch, progressbar, save_model_interval,
             eval_ratio, save_directory, log_name, train_summary_writer, log_interval, manager, logs,
             start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None,
@@ -1132,21 +1156,19 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         # eval, save and log
         eval_steps = int(1e3) if dataset_size is None else int(dataset_size * eval_ratio) // batch_size
-        if global_step.numpy() % save_model_interval == 0:
+        if global_step.numpy() > 0 and global_step.numpy() % save_model_interval == 0:
             self.eval_and_save(dataset_iterator=dataset_iterator,
                                batch_size=batch_size, eval_steps=eval_steps,
-                               global_step=int(global_step.numpy()), save_directory=save_directory, log_name=log_name,
+                               global_step=global_step, save_directory=save_directory, log_name=log_name,
                                train_summary_writer=train_summary_writer,
                                policy_evaluation_num_episodes=policy_evaluation_num_episodes,
                                policy_evaluation_environment=policy_evaluation_environment,
                                labeling_function=labeling_function)
         if global_step.numpy() % log_interval == 0:
-            if manager is not None:
-                manager.save()
             if logs:
                 with train_summary_writer.as_default():
                     for key, value in metrics_key_values:
-                        tf.summary.scalar(key, value, step=global_step.numpy())
+                        tf.summary.scalar(key, value, step=global_step)
             # reset metrics
             self.reset_metrics()
 
@@ -1157,7 +1179,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             dataset_iterator: Iterator,
             batch_size: int,
             eval_steps: int,
-            global_step: int,
+            global_step: tf.Variable,
             save_directory: str,
             log_name: str,
             train_summary_writer: Optional[tf.summary.SummaryWriter] = None,
@@ -1198,24 +1220,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
                                                             axis=-1)
                             tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
-            model_name = os.path.join(log_name, 'step{}'.format(global_step),
-                                      'eval_elbo{:.3f}'.format(eval_elbo.result()))
-        else:
-            model_name = os.path.join(log_name, 'step{}'.format(global_step),
-                                      'eval_elbo{:.3f}'.format(eval_elbo.result()))
-        if check_numerics:
-            tf.debugging.disable_check_numerics()
-        state, label, action, reward, next_state, next_label = next(dataset_iterator)
-        call = self.__call__.get_concrete_function(
-            tf.TensorSpec((None, ) + tuple(tf.shape(state)[1:])),
-            tf.TensorSpec((None, ) + tuple(tf.shape(label)[1:])),
-            tf.TensorSpec((None, ) + tuple(tf.shape(action)[1:])),
-            tf.TensorSpec((None, ) + tuple(tf.shape(reward)[1:])),
-            tf.TensorSpec((None, ) + tuple(tf.shape(next_state)[1:])),
-            tf.TensorSpec((None, ) + tuple(tf.shape(next_label)[1:])))
-        tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name), signatures=call)
-        if check_numerics:
-            tf.debugging.enable_check_numerics()
+
+        eval_checkpoint = tf.train.Checkpoint(model=self)
+        eval_checkpoint.save(
+            os.path.join(save_directory, 'training_checkpoints', log_name, 'ckpt-{:d}'.format(global_step.numpy())))
 
         del data
         return eval_elbo
@@ -1224,7 +1232,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     policy_evaluation_environment: tf_agents.environments.tf_environment.TFEnvironment,
                     labeling_function: Callable[[tf.Tensor], tf.Tensor],
                     policy_evaluation_num_episodes: int,
-                    global_step: int,
+                    global_step: tf.Variable,
                     train_summary_writer: Optional = None):
         eval_env = self.wrap_tf_environment(
             policy_evaluation_environment, labeling_function, deterministic_embedding_functions=True)
@@ -1364,45 +1372,59 @@ class VariationalMarkovDecisionProcess(tf.Module):
         return LatentPolicy(time_step_spec, action_spec, self.discrete_latent_policy)
 
 
-def load(tf_model_path: str, discrete_action=False) -> VariationalMarkovDecisionProcess:
-    model = tf.saved_model.load(tf_model_path)
-    print(model.signatures)
+def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) -> VariationalMarkovDecisionProcess:
+    tf_model = tf.saved_model.load(tf_model_path)
     if discrete_action:
-        return VariationalMarkovDecisionProcess(
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
-            (model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
-            encoder_network=model.encoder_network,
-            transition_network=model.transition_network,
-            reward_network=model.reward_network,
-            decoder_network=model.reconstruction_network,
-            label_transition_network=model.label_transition_network,
-            latent_policy_network=model.latent_policy_network,
-            latent_state_size=(model.encoder_network.variables[-1].shape[0] +
-                               model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1]),
-            encoder_temperature=model._encoder_temperature,
-            prior_temperature=model._prior_temperature,
-            entropy_regularizer_scale_factor=model._entropy_regularizer_scale_factor,
-            kl_scale_factor=model._kl_scale_factor,
+        model = VariationalMarkovDecisionProcess(
+            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
+            (tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
+            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
+            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
+            encoder_network=tf_model.encoder_network,
+            transition_network=tf_model.transition_network,
+            reward_network=tf_model.reward_network,
+            decoder_network=tf_model.reconstruction_network,
+            label_transition_network=tf_model.label_transition_network,
+            latent_policy_network=tf_model.latent_policy_network,
+            latent_state_size=(tf_model.encoder_network.variables[-1].shape[0] +
+                               tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1]),
+            encoder_temperature=tf_model._encoder_temperature,
+            prior_temperature=tf_model._prior_temperature,
+            entropy_regularizer_scale_factor=tf_model._entropy_regularizer_scale_factor,
+            kl_scale_factor=tf_model._kl_scale_factor,
             pre_loaded_model=True,
-            optimizer=model._optimizer)
+            optimizer=tf_model._optimizer)
     else:
-        return VariationalMarkovDecisionProcess(
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
-            (model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
-            tuple(model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
-            encoder_network=model.encoder_network,
-            transition_network=model.transition_network,
-            reward_network=model.reward_network,
-            decoder_network=model.reconstruction_network,
-            latent_state_size=(model.encoder_network.variables[-1].shape[0] +
-                               model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1]),
-            label_transition_network=model.label_transition_network,
-            encoder_temperature=model._encoder_temperature,
-            prior_temperature=model._prior_temperature,
-            entropy_regularizer_scale_factor=model._entropy_regularizer_scale_factor,
-            kl_scale_factor=model._kl_scale_factor,
+        model = VariationalMarkovDecisionProcess(
+            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
+            (tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
+            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
+            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
+            encoder_network=tf_model.encoder_network,
+            transition_network=tf_model.transition_network,
+            reward_network=tf_model.reward_network,
+            decoder_network=tf_model.reconstruction_network,
+            latent_state_size=(tf_model.encoder_network.variables[-1].shape[0] +
+                               tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1]),
+            label_transition_network=tf_model.label_transition_network,
+            encoder_temperature=tf_model._encoder_temperature,
+            prior_temperature=tf_model._prior_temperature,
+            entropy_regularizer_scale_factor=tf_model._entropy_regularizer_scale_factor,
+            kl_scale_factor=tf_model._kl_scale_factor,
             pre_loaded_model=True,
-            optimizer=model._optimizer)
+            optimizer=tf_model._optimizer)
+
+    if step is not None:
+        path_list = tf_model_path.split(os.sep)
+        path_list[path_list.index('models')] = 'training_checkpoints'
+        while not os.path.isdir(os.path.join(*path_list)) and len(path_list) > 0:
+            path_list.pop()
+        if not path_list:
+            raise FileNotFoundError('No training checkpoint found for model', model)
+        else:
+            path_list.append('ckpt-{:d}-1'.format(step))
+            checkpoint_path = os.path.join(*path_list)
+            checkpoint = tf.train.Checkpoint(model=model)
+            checkpoint.restore(checkpoint_path)
+
+    return model

@@ -1,3 +1,4 @@
+import os
 from typing import Tuple, Optional, List, Callable
 import numpy as np
 
@@ -29,7 +30,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             transition_network: Model,
             reward_network: Model,
             latent_policy_network: Model,
-            label_transition_network: Model = Sequential(
+            action_label_transition_network: Model = Sequential(
                 [Dense(units=256, activation='relu'),
                  Dense(units=256, activation='relu')],
                 name='label_transition_network_body'),
@@ -53,7 +54,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         super().__init__(
             state_shape=vae_mdp.state_shape, action_shape=vae_mdp.action_shape, reward_shape=vae_mdp.reward_shape,
             label_shape=vae_mdp.label_shape, encoder_network=vae_mdp.encoder_network,
-            transition_network=vae_mdp.transition_network, label_transition_network=label_transition_network,
+            transition_network=vae_mdp.transition_network, label_transition_network=vae_mdp.label_transition_network,
             reward_network=vae_mdp.reward_network,
             decoder_network=vae_mdp.reconstruction_network,
             latent_state_size=vae_mdp.latent_state_size,
@@ -174,7 +175,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             # label transition network
             if not one_output_per_action:
                 _label_transition_network = Concatenate()([latent_state, latent_action])
-                _label_transition_network = label_transition_network(_label_transition_network)
+                _label_transition_network = action_label_transition_network(_label_transition_network)
                 _label_transition_network = Dense(
                     units=self.atomic_props_dims,
                     name='next_label_transition_logits')(_label_transition_network)
@@ -183,7 +184,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     outputs=_label_transition_network,
                     name='label_transition_network')
             else:
-                _label_transition_network = label_transition_network(latent_state)
+                _label_transition_network = action_label_transition_network(latent_state)
                 outputs = []
                 for action in range(self.number_of_discrete_actions):
                     _label_transition_network = Dense(
@@ -349,6 +350,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self.action_transition_network = transition_network
             self.action_reward_network = reward_network
             self.action_decoder_network = action_decoder_network
+            self.action_label_transition_network = action_label_transition_network
 
         self.loss_metrics = {
             'ELBO': tf.keras.metrics.Mean(name='ELBO'),
@@ -551,8 +553,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
     ):
         if self.full_optimization:
             return self._full_optimization_call(state, label, action, reward, next_state, next_label)
-
-        state, label, action, reward, next_state, next_label = inputs
 
         if self.relaxed_state_encoding:
             logistic_latent_state = self.relaxed_encoding(state, self._state_vae.encoder_temperature).sample()
@@ -933,37 +933,53 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 state, label, action, reward, next_state, next_label, self.action_discretizer_variables)
 
 
-def load(tf_model_path: str, full_optimization: bool = False) -> VariationalActionDiscretizer:
-    model = tf.saved_model.load(tf_model_path)
-    state_model = model._state_vae
+def load(tf_model_path: str, full_optimization: bool = False,
+         step: Optional[int] = None) -> VariationalActionDiscretizer:
+    tf_model = tf.saved_model.load(tf_model_path)
+    state_model = tf_model._state_vae
     state_vae = VariationalMarkovDecisionProcess(
-        tuple(model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
-        (model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
-        tuple(model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
-        tuple(model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
+        tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
+        (tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
+        tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
+        tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
         encoder_network=state_model.encoder_network,
         transition_network=state_model.transition_network,
         reward_network=state_model.reward_network,
         label_transition_network=state_model.label_transition_network,
         decoder_network=state_model.reconstruction_network,
-        latent_state_size=(model.encoder_network.variables[-1].shape[0] +
-                           model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1]),
+        latent_state_size=(tf_model.encoder_network.variables[-1].shape[0] +
+                           tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1]),
         encoder_temperature=state_model._encoder_temperature,
         prior_temperature=state_model._prior_temperature,
         pre_loaded_model=True,
         optimizer=state_model._optimizer)
-    return VariationalActionDiscretizer(
+    model = VariationalActionDiscretizer(
         vae_mdp=state_vae,
-        number_of_discrete_actions=model.action_encoder.variables[-1].shape[0],
-        action_encoder_network=model.action_encoder,
-        action_decoder_network=model.action_decoder_network,
-        transition_network=model.action_transition_network,
-        reward_network=model.action_reward_network,
-        label_transition_network=model.action_label_transition_network,
-        latent_policy_network=model.latent_policy_network,
-        one_output_per_action=model.action_decoder_network.variables[0].shape[0] == state_vae.latent_state_size,
-        encoder_temperature=model._encoder_temperature,
-        prior_temperature=model._prior_temperature,
-        reconstruction_mixture_components=model.action_decoder_network.variables[-1].shape[0],
+        number_of_discrete_actions=tf_model.action_encoder.variables[-1].shape[0],
+        action_encoder_network=tf_model.action_encoder,
+        action_decoder_network=tf_model.action_decoder_network,
+        transition_network=tf_model.action_transition_network,
+        reward_network=tf_model.action_reward_network,
+        action_label_transition_network=tf_model.action_label_transition_network,
+        latent_policy_network=tf_model.latent_policy_network,
+        one_output_per_action=tf_model.action_decoder_network.variables[0].shape[0] == state_vae.latent_state_size,
+        encoder_temperature=tf_model._encoder_temperature,
+        prior_temperature=tf_model._prior_temperature,
+        reconstruction_mixture_components=tf_model.action_decoder_network.variables[-1].shape[0],
         pre_loaded_model=True,
         full_optimization=full_optimization)
+
+    if step is not None:
+        path_list = tf_model_path.split(os.sep)
+        path_list[path_list.index('models')] = 'training_checkpoints'
+        while not os.path.isdir(os.path.join(*path_list)) and len(path_list) > 0:
+            path_list.pop()
+        if not path_list:
+            raise FileNotFoundError('No training checkpoint found for model', model)
+        else:
+            path_list.append('ckpt-{:d}-1'.format(step))
+            checkpoint_path = os.path.join(*path_list)
+            checkpoint = tf.train.Checkpoint(model=model)
+            checkpoint.restore(checkpoint_path)
+
+    return model

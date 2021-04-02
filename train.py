@@ -488,7 +488,7 @@ def main(argv):
             vae = variational_action_discretizer.VariationalActionDiscretizer(
                 vae_mdp=vae_mdp_model,
                 number_of_discrete_actions=params['number_of_discrete_actions'],
-                action_encoder_network=q, transition_network=p_t, label_transition_network=p_l_t,
+                action_encoder_network=q, transition_network=p_t, action_label_transition_network=p_l_t,
                 reward_network=p_r, action_decoder_network=p_decode,
                 latent_policy_network=latent_policy,
                 encoder_temperature=params['encoder_temperature'],
@@ -520,7 +520,7 @@ def main(argv):
             models.append(models[0])
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
-    step = tf.compat.v1.train.get_or_create_global_step()
+    step = tf.Variable(0, trainable=False, dtype=tf.int64)
 
     for phase, vae_mdp_model in enumerate(models):
         checkpoint_directory = os.path.join(
