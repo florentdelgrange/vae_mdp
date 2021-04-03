@@ -879,7 +879,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             manager: Optional[tf.train.CheckpointManager] = None,
             log_interval: int = 80,
             eval_steps: int = int(1e3),
-            save_model_interval: int = int(1e4),
+            save_model_interval: int = int(1e2),
             log_name: str = 'vae_training',
             annealing_period: int = 0,
             start_annealing_step: int = 0,
@@ -1206,14 +1206,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
 
             if eval_policy_driver is not None:
-                eval_avg_rewards = tf_agents.metrics.tf_metrics.AverageReturnMetric()
-                eval_policy_driver.observers.append(eval_avg_rewards)
-                eval_policy_driver.run()
-                eval_policy_driver.observers.remove(eval_avg_rewards)
-                if train_summary_writer is not None:
-                    with train_summary_writer.as_default():
-                        tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
-                print('eval policy', eval_avg_rewards.result().numpy())
+                eval_policy(eval_policy_driver, train_summary_writer, global_step)
 
             if train_summary_writer is not None:
                 with train_summary_writer.as_default():
@@ -1221,9 +1214,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     for value in ('state', 'action'):
                         if data[value] is not None:
                             if value == 'state':
-                                data[value] = tf.reduce_sum(data[value] * 2 ** tf.range(tf.cast(self.latent_state_size,
-                                                                                                dtype=tf.int64)),
-                                                            axis=-1)
+                                data[value] = tf.reduce_sum(
+                                    data[value] * 2 ** tf.range(tf.cast(self.latent_state_size, dtype=tf.int64)),
+                                    axis=-1)
                             tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
 
@@ -1408,3 +1401,13 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
             checkpoint.restore(checkpoint_path)
 
     return model
+
+def eval_policy(eval_policy_driver, train_summary_writer, global_step):
+    eval_avg_rewards = tf_agents.metrics.tf_metrics.AverageReturnMetric()
+    eval_policy_driver.observers.append(eval_avg_rewards)
+    eval_policy_driver.run()
+    eval_policy_driver.observers.remove(eval_avg_rewards)
+    if train_summary_writer is not None:
+        with train_summary_writer.as_default():
+            tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
+    print('eval policy', eval_avg_rewards.result().numpy())
