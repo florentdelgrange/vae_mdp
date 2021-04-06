@@ -934,7 +934,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             manager: Optional[tf.train.CheckpointManager] = None,
             log_interval: int = 80,
             eval_steps: int = int(1e3),
-            save_model_interval: int = int(1e3),
+            save_model_interval: int = int(1e4),
             log_name: str = 'vae_training',
             annealing_period: int = 0,
             start_annealing_step: int = 0,
