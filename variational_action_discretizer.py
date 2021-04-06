@@ -951,8 +951,7 @@ def load(tf_model_path: str, full_optimization: bool = False,
                            tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1]),
         encoder_temperature=state_model._encoder_temperature,
         prior_temperature=state_model._prior_temperature,
-        pre_loaded_model=True,
-        optimizer=state_model._optimizer)
+        pre_loaded_model=True)
     model = VariationalActionDiscretizer(
         vae_mdp=state_vae,
         number_of_discrete_actions=tf_model.action_encoder.variables[-1].shape[0],

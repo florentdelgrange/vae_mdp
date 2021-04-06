@@ -72,7 +72,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  reset_state_label: bool = True,
                  latent_policy_training_phase: bool = False,
                  full_optimization: bool = True,
-                 optimizer: Optional = None):
+                 optimizer: Optional = None,
+                 evaluation_memory_size: int = 5):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
 
@@ -114,7 +115,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
         action = Input(shape=action_shape, name="action")
         self._encoder_softclip = tfb.SoftClip(high=10., low=-10.)
 
+        # to save only the N best last models learned
+        self.evaluation_memory = tf.Variable([-1. * np.inf] * evaluation_memory_size, trainable=False)
+
         if not pre_loaded_model:
+            label_transition_network._name = 'label_transition_network_core'
+            transition_network._name = 'transition_network_core'
+
             # Encoder network
             encoder = encoder_network(state)
             logits_layer = Dense(
@@ -159,11 +166,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 transition_output_layer = Dense(
                     units=no_latent_state_logits * self.number_of_discrete_actions,
                     activation=None,
-                    name='transition_raw_output_layer'
+                    name='transition_network_raw_output_layer'
                 )(transition)
                 transition_output_layer = Reshape(
                     target_shape=(no_latent_state_logits, self.number_of_discrete_actions),
-                    name='transition_output_layer_reshape'
+                    name='transition_network_output_layer_reshape'
                 )(transition_output_layer)
                 _action = tf.keras.layers.RepeatVector(no_latent_state_logits, name='repeat_action')(action)
                 transition_output_layer = tf.keras.layers.Multiply(name="multiply_action_transition")(
@@ -298,6 +305,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             self.reward_network = reward_network
             self.reconstruction_network = decoder_network
             self.latent_policy_network = latent_policy_network
+            self.number_of_discrete_actions = self.action_shape[0] if self.latent_policy_network is not None else -1
 
         self.loss_metrics = {
             'ELBO': tf.keras.metrics.Mean(name='ELBO'),
@@ -310,11 +318,25 @@ class VariationalMarkovDecisionProcess(tf.Module):
             'encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
             'marginal_encoder_entropy': tf.keras.metrics.Mean(name='marginal_encoder_entropy'),
             'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs'),
-            'predicted_next_state_mse': tf.keras.metrics.Mean(name='predicted_next_state_mse'),
             #  'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
         }
-        if self.latent_policy_network is not None:
-            self.loss_metrics['action_mse'] = tf.keras.metrics.Mean(name='action_mse')
+
+        if self.number_of_discrete_actions != -1:
+            latent_state = Input(shape=(latent_state_size,), name='latent_state_action_transition_input')
+            next_label = Input(shape=(self.atomic_props_dims,), name='next_label_action_transition_input')
+            self.action_label_transition_network = Sequential([
+                latent_state,
+                self.label_transition_network.get_layer('label_transition_network_core'),
+                self.label_transition_network.get_layer('label_transition_network_raw_output_layer'),
+                self.label_transition_network.get_layer('reshape_label_transition_output')
+            ], name='action_label_transition_network')
+
+            x = self.transition_network.get_layer('transition_network_input')([latent_state, next_label])
+            x = self.transition_network.get_layer('transition_network_core')(x)
+            x = self.transition_network.get_layer('transition_network_raw_output_layer')(x)
+            x = self.transition_network.get_layer('transition_network_output_layer_reshape')(x)
+            self.action_transition_network = Model(
+                inputs=[latent_state, next_label], outputs=x, name='action_transition_network')
 
     def reset_metrics(self):
         for value in self.loss_metrics.values():
@@ -393,6 +415,21 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     ),
                 )
 
+    def relaxed_markov_chain_latent_transition_probability_distribution(
+            self, latent_state: tf.Tensor, temperature: float = 1e-5) -> tfd.Distribution:
+        return tfd.JointDistributionSequential([
+            tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(self.latent_policy_network(latent_state)),
+                components_distribution=tfd.Independent(
+                    tfd.Bernoulli(tf.transpose(self.action_label_transition_network(latent_state), perm=[0, 2, 1])),
+                    reinterpreted_batch_ndims=1)
+            ), lambda _next_label: tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(self.latent_policy_network(latent_state)),
+                components_distribution=tfd.Independent(tfd.Logistic(
+                    loc=(tf.transpose(self.action_transition_network([latent_state, _next_label]), perm=[0, 2, 1])
+                         / temperature),
+                    scale=1. / temperature), reinterpreted_batch_ndims=1))])
+
     def relaxed_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, action: tf.Tensor, next_label: Optional[tf.Tensor] = None,
             temperature: float = 1e-5
@@ -414,6 +451,20 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     loc=self.transition_network([latent_state, action, _next_label]) / temperature,
                     scale=1. / temperature))
             ])
+
+    def discrete_markov_chain_latent_transition_probability_distribution(
+            self, latent_state: tf.Tensor) -> tfd.Distribution:
+        return tfd.JointDistributionSequential([
+            tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(self.latent_policy_network(latent_state)),
+                components_distribution=tfd.Independent(
+                    tfd.Bernoulli(tf.transpose(self.action_label_transition_network(latent_state), perm=[0, 2, 1])),
+                    reinterpreted_batch_ndims=1)
+            ), lambda _next_label: tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(self.latent_policy_network(latent_state)),
+                components_distribution=tfd.Independent(tfd.Bernoulli(
+                    logits=tf.transpose(self.action_transition_network([latent_state, _next_label]), perm=[0, 2, 1])),
+                    reinterpreted_batch_ndims=1))])
 
     def discrete_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, action: tf.Tensor, next_label: Optional[tf.Tensor] = None
@@ -484,9 +535,14 @@ class VariationalMarkovDecisionProcess(tf.Module):
         next_logistic_latent_state = next_state_encoder_distribution.sample()
 
         log_q_encoding = next_state_encoder_distribution.log_prob(next_logistic_latent_state)
-        log_p_transition = self.relaxed_latent_transition_probability_distribution(
-            latent_state, action, temperature=self.prior_temperature
-        ).log_prob(next_label, next_logistic_latent_state)
+        if self.latent_policy_network is not None and self.full_optimization:
+            log_p_transition = self.relaxed_markov_chain_latent_transition_probability_distribution(
+                latent_state, temperature=self.prior_temperature
+            ).log_prob(next_label, next_logistic_latent_state)
+        else:
+            log_p_transition = self.relaxed_latent_transition_probability_distribution(
+                latent_state, action, temperature=self.prior_temperature
+            ).log_prob(next_label, next_logistic_latent_state)
         rate = log_q_encoding - log_p_transition
 
         # retrieve Relaxed Bernoulli samples
@@ -527,12 +583,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.loss_metrics['transition_log_probs'](
             self.discrete_latent_transition_probability_distribution(tf.round(latent_state), action).log_prob(
                 next_label, tf.round(tf.sigmoid(next_logistic_latent_state))))
-        predicted_next_label, predicted_next_logistic = self.relaxed_latent_transition_probability_distribution(
-            latent_state, action, temperature=self.prior_temperature).sample()
-        predicted_next_latent_state = tf.concat(
-            [tf.cast(predicted_next_label, dtype=tf.float32), tf.sigmoid(predicted_next_logistic)], axis=-1)
-        self.loss_metrics['predicted_next_state_mse'](
-            next_state, self.decode(predicted_next_latent_state).sample())
 
         if 'action_mse' in self.loss_metrics:
             self.loss_metrics['action_mse'](action, reconstruction_sample[0])
@@ -637,7 +687,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
         latent_state = tf.concat([label, tf.cast(latent_distribution.sample(), tf.float32)], axis=-1)
         next_latent_state_no_label = tf.cast(next_latent_distribution.sample(), tf.float32)
 
-        transition_distribution = self.discrete_latent_transition_probability_distribution(latent_state, action)
+        if self.latent_policy_network is not None and self.full_optimization:
+            transition_distribution = self.discrete_markov_chain_latent_transition_probability_distribution(
+                latent_state)
+        else:
+            transition_distribution = self.discrete_latent_transition_probability_distribution(latent_state, action)
         # rate = next_latent_distribution.kl_divergence(transition_distribution)
         rate = next_latent_distribution.log_prob(next_latent_state_no_label) - transition_distribution.log_prob(
             next_label, next_latent_state_no_label)
@@ -880,7 +934,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             manager: Optional[tf.train.CheckpointManager] = None,
             log_interval: int = 80,
             eval_steps: int = int(1e3),
-            save_model_interval: int = int(1e4),
+            save_model_interval: int = int(1e3),
             log_name: str = 'vae_training',
             annealing_period: int = 0,
             start_annealing_step: int = 0,
@@ -1003,7 +1057,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             eval_env = wrap_eval_tf_env(eval_env)
             eval_env.reset()
             policy_evaluation_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
-                eval_env, get_policy_evaluation(), num_episodes=policy_evaluation_num_episodes)
+                eval_env, get_policy_evaluation(), num_episodes=policy_evaluation_num_episodes) #, observers=[lambda _:  py_eval_env.render(mode='human')])
             #  policy_evaluation_driver.run = common.function(policy_evaluation_driver.run)
 
         driver.run = common.function(driver.run)
@@ -1111,7 +1165,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     inference_update_steps = 0
 
         # save the final model
-        save(os.path.join(log_name, 'step{:d}'.format(global_step)))
+        save(os.path.join(log_name, 'step{:d}'.format(global_step.numpy())))
 
         tf_env.close()
         del tf_env
@@ -1210,7 +1264,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
 
             if eval_policy_driver is not None:
-                eval_policy(eval_policy_driver, train_summary_writer, global_step)
+                avg_rewards = eval_policy(eval_policy_driver, train_summary_writer, global_step)
 
             if train_summary_writer is not None:
                 with train_summary_writer.as_default():
@@ -1224,11 +1278,27 @@ class VariationalMarkovDecisionProcess(tf.Module):
                             tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
 
-        eval_checkpoint = tf.train.Checkpoint(model=self)
-        eval_checkpoint.save(
-            os.path.join(save_directory, 'training_checkpoints', log_name, 'ckpt-{:d}'.format(global_step.numpy())))
+        def _checkpoint():
+            optimizer = self._optimizer
+            self._optimizer = None
+            eval_checkpoint = tf.train.Checkpoint(model=self)
+            eval_checkpoint.save(
+                os.path.join(save_directory, 'training_checkpoints', log_name, 'ckpt-{:d}'.format(global_step.numpy())))
+            self.attach_optimizer(optimizer)
 
-        del eval_checkpoint
+        if eval_policy_driver:
+            for i in tf.range(tf.shape(self.evaluation_memory)[0]):
+                if self.evaluation_memory[i] <= avg_rewards:
+                    self.evaluation_memory[i].assign(avg_rewards)
+                    _checkpoint()
+                    break
+        else:
+            for i in tf.range(tf.shape(self.evaluation_memory)[0]):
+                if self.evaluation_memory[i] <= eval_elbo:
+                    self.evaluation_memory[i].assign(eval_elbo)
+                    _checkpoint()
+                    break
+
         del dataset
         return eval_elbo
 
@@ -1388,8 +1458,7 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
             prior_temperature=tf_model._prior_temperature,
             entropy_regularizer_scale_factor=tf_model._entropy_regularizer_scale_factor,
             kl_scale_factor=tf_model._kl_scale_factor,
-            pre_loaded_model=True,
-            optimizer=tf_model._optimizer)
+            pre_loaded_model=True)
 
     if step is not None:
         path_list = tf_model_path.split(os.sep)
@@ -1406,6 +1475,7 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
 
     return model
 
+
 def eval_policy(eval_policy_driver, train_summary_writer, global_step):
     eval_avg_rewards = tf_agents.metrics.tf_metrics.AverageReturnMetric()
     eval_policy_driver.observers.append(eval_avg_rewards)
@@ -1415,3 +1485,4 @@ def eval_policy(eval_policy_driver, train_summary_writer, global_step):
         with train_summary_writer.as_default():
             tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
     print('eval policy', eval_avg_rewards.result().numpy())
+    return eval_avg_rewards.result()
