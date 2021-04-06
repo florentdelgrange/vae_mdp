@@ -73,7 +73,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  latent_policy_training_phase: bool = False,
                  full_optimization: bool = True,
                  optimizer: Optional = None,
-                 evaluation_memory_size: int = 5):
+                 evaluation_memory_size: int = 5,
+                 action_label_transition_network: Optional[Model] = None,
+                 action_transition_network: Optional[Model] = None):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
 
@@ -298,6 +300,21 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 outputs=[decoder_output_mean, decoder_raw_output, decoder_prior],
                 name='reconstruction_network')
 
+            if self.number_of_discrete_actions != -1:
+                self.action_label_transition_network = Sequential([
+                    latent_state,
+                    self.label_transition_network.get_layer('label_transition_network_core'),
+                    self.label_transition_network.get_layer('label_transition_network_raw_output_layer'),
+                    self.label_transition_network.get_layer('reshape_label_transition_output')
+                ], name='action_label_transition_network')
+
+                x = self.transition_network.get_layer('transition_network_input')([latent_state, next_label])
+                x = self.transition_network.get_layer('transition_network_core')(x)
+                x = self.transition_network.get_layer('transition_network_raw_output_layer')(x)
+                x = self.transition_network.get_layer('transition_network_output_layer_reshape')(x)
+                self.action_transition_network = Model(
+                    inputs=[latent_state, next_label], outputs=x, name='action_transition_network')
+
         else:
             self.encoder_network = encoder_network
             self.transition_network = transition_network
@@ -306,6 +323,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             self.reconstruction_network = decoder_network
             self.latent_policy_network = latent_policy_network
             self.number_of_discrete_actions = self.action_shape[0] if self.latent_policy_network is not None else -1
+            self.action_label_transition_network = action_label_transition_network
+            self.action_transition_network = action_transition_network
 
         self.loss_metrics = {
             'ELBO': tf.keras.metrics.Mean(name='ELBO'),
@@ -320,23 +339,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs'),
             #  'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
         }
-
-        if self.number_of_discrete_actions != -1:
-            latent_state = Input(shape=(latent_state_size,), name='latent_state_action_transition_input')
-            next_label = Input(shape=(self.atomic_props_dims,), name='next_label_action_transition_input')
-            self.action_label_transition_network = Sequential([
-                latent_state,
-                self.label_transition_network.get_layer('label_transition_network_core'),
-                self.label_transition_network.get_layer('label_transition_network_raw_output_layer'),
-                self.label_transition_network.get_layer('reshape_label_transition_output')
-            ], name='action_label_transition_network')
-
-            x = self.transition_network.get_layer('transition_network_input')([latent_state, next_label])
-            x = self.transition_network.get_layer('transition_network_core')(x)
-            x = self.transition_network.get_layer('transition_network_raw_output_layer')(x)
-            x = self.transition_network.get_layer('transition_network_output_layer_reshape')(x)
-            self.action_transition_network = Model(
-                inputs=[latent_state, next_label], outputs=x, name='action_transition_network')
 
     def reset_metrics(self):
         for value in self.loss_metrics.values():
@@ -1098,6 +1100,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if check_numerics:
                 tf.debugging.disable_check_numerics()
             state, label, action, reward, next_state, next_label = next(dataset_iterator)
+            print(label)
             call = self.__call__.get_concrete_function(
                 tf.TensorSpec((None,) + tuple(tf.shape(state)[1:])),
                 tf.TensorSpec((None,) + tuple(tf.shape(label)[1:])),
@@ -1423,10 +1426,10 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
     tf_model = tf.saved_model.load(tf_model_path)
     if discrete_action:
         model = VariationalMarkovDecisionProcess(
-            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
-            (tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
-            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
-            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
+            state_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
+            label_shape=(tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
+            action_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
+            reward_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
             encoder_network=tf_model.encoder_network,
             transition_network=tf_model.transition_network,
             reward_network=tf_model.reward_network,
@@ -1439,14 +1442,17 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
             prior_temperature=tf_model._prior_temperature,
             entropy_regularizer_scale_factor=tf_model._entropy_regularizer_scale_factor,
             kl_scale_factor=tf_model._kl_scale_factor,
+            mixture_components=tf.shape(tf_model.reconstruction_network.variables[-1])[-1],
             pre_loaded_model=True,
-            optimizer=tf_model._optimizer)
+            action_label_transition_network=tf_model.action_label_transition_network,
+            action_transition_network=tf_model.action_transition_network)
+
     else:
         model = VariationalMarkovDecisionProcess(
-            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
-            (tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
-            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
-            tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
+            state_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
+            label_shape=(tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
+            action_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
+            reward_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
             encoder_network=tf_model.encoder_network,
             transition_network=tf_model.transition_network,
             reward_network=tf_model.reward_network,
@@ -1458,6 +1464,7 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
             prior_temperature=tf_model._prior_temperature,
             entropy_regularizer_scale_factor=tf_model._entropy_regularizer_scale_factor,
             kl_scale_factor=tf_model._kl_scale_factor,
+            mixture_components=tf.shape(tf_model.reconstruction_network.variables[-1])[-1],
             pre_loaded_model=True)
 
     if step is not None:

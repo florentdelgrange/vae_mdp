@@ -938,10 +938,10 @@ def load(tf_model_path: str, full_optimization: bool = False,
     tf_model = tf.saved_model.load(tf_model_path)
     state_model = tf_model._state_vae
     state_vae = VariationalMarkovDecisionProcess(
-        tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
-        (tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
-        tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
-        tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
+        state_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
+        label_shape=(tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
+        action_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
+        reward_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
         encoder_network=state_model.encoder_network,
         transition_network=state_model.transition_network,
         reward_network=state_model.reward_network,
@@ -951,6 +951,7 @@ def load(tf_model_path: str, full_optimization: bool = False,
                            tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1]),
         encoder_temperature=state_model._encoder_temperature,
         prior_temperature=state_model._prior_temperature,
+        mixture_components=tf.shape(state_model.reconstruction_network.variables[-1])[-1],
         pre_loaded_model=True)
     model = VariationalActionDiscretizer(
         vae_mdp=state_vae,
