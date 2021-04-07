@@ -2,7 +2,8 @@ import tensorflow as tf
 import math
 
 labeling_functions = {
-    'HumanoidBulletEnv-v0': lambda observation: tf.stack([
+    'HumanoidBulletEnv-v0':
+        lambda observation: tf.stack([
             # falling down -- observation[0] is the head position, 0.8 is the initial position
             observation[..., 0] + 0.8 <= 0.78,
             # has stuck joints
