@@ -5,8 +5,12 @@ labeling_functions = {
     'HumanoidBulletEnv-v0':
         lambda observation: observation[..., 0] + 0.8 <= 0.78,  # falling down
     # np.count_nonzero(np.abs(observation[:, :, 8: 42][0::2]) > 0.99) > 0  # has stuck joints
-    'BipedalWalker-v2':  # unsafe label
-        lambda observation: tf.math.abs(observation[..., 0]) > math.pi / 3.,  # hull angle too high/low
+    'BipedalWalker-v2':
+        lambda observation: tf.stack([
+            tf.math.abs(observation[..., 0]) > math.pi / 3.,  # hull angle too high/low (unsafe flag)
+            tf.cast(observation[..., 8], tf.bool),  # contact of the left leg with the ground
+            tf.cast(observation[..., 13], tf.bool)  # contact of the right leg with the ground
+        ], axis=-1),
     'Pendulum-v0':  # safe labels
         lambda observation: tf.stack([
             tf.logical_and(observation[..., 0] > 0., tf.abs(observation[..., 1]) < tf.math.sin(math.pi / 2)),
