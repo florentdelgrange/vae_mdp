@@ -1,3 +1,4 @@
+import importlib
 import os
 
 import tensorflow as tf
@@ -423,30 +424,35 @@ def main(argv):
 
     if params['env_suite'] != '':
         try:
-            import importlib
             environment_suite = importlib.import_module('tf_agents.environments.' + params['env_suite'])
         except BaseException as err:
             serr = str(err)
-            print("Error to load the module '" + params['env_suite'] + "': " + serr)
+            print("An error occurred when loading the module '" + params['env_suite'] + "': " + serr)
     else:
         environment_suite = None
 
-    environment = environment_suite.load(environment_name)
+    environment = tf_py_environment.TFPyEnvironment(
+        tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
+            [lambda: environment_suite.load(environment_name)]))
 
     state_shape, action_shape, reward_shape, label_shape = (
         shape if shape != () else (1,) for shape in (
-        environment.observation_spec().shape,
-        environment.action_spec().shape,
-        environment.time_step_spec().reward.shape,
-        tuple(reinforcement_learning.labeling_functions[environment_name](
-            environment.reset().observation).shape)
+            environment.observation_spec().shape,
+            environment.action_spec().shape,
+            environment.time_step_spec().reward.shape,
+            tuple(reinforcement_learning.labeling_functions[environment_name](
+                environment.reset().observation).shape[1:])
+        )
     )
-    )
+
     time_step_spec = tensor_spec.from_spec(environment.time_step_spec())
     action_spec = tensor_spec.from_spec(environment.action_spec())
     if params['latent_policy']:
         # one hot encoding
         action_shape = (environment.action_spec().maximum + 1,)
+
+    environment.close()
+    del environment
 
     def build_vae_model():
         if params['load_vae'] == '':

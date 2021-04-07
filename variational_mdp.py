@@ -1000,14 +1000,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
             interval=0.1) if display_progressbar else None
 
         discrete_action_space = discrete_action_space and (self.latent_policy_network is not None)
-        load_environment = lambda: environment_suite.load(env_name)
 
         if parallelization:
             tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
-                [load_environment] * num_parallel_call))
+                [lambda: environment_suite.load(env_name)] * num_parallel_call))
             tf_env.reset()
         else:
-            py_env = load_environment()
+            py_env = environment_suite.load(env_name)
             py_env.reset()
             tf_env = tf_py_environment.TFPyEnvironment(py_env)
 
