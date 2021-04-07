@@ -361,7 +361,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
             'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs'),
-            'predicted_next_state_mse': tf.keras.metrics.Mean(name='predicted_next_state_mse')
             # 'decoder_divergence': tf.keras.metrics.Mean(name='decoder_divergence'),
         }
         if self.full_optimization:
@@ -706,12 +705,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self.discrete_latent_transition_probability_distribution(
                 tf.round(latent_state), tf.round(tf.exp(log_latent_action))
             ).log_prob(next_label, tf.round(tf.sigmoid(next_logistic_latent_state))))
-        predicted_next_label, predicted_next_logistic = self.discrete_latent_transition_probability_distribution(
-            latent_state, log_latent_action, relaxed_state_encoding=True, log_latent_action=True).sample()
-        predicted_next_latent_state = tf.concat(
-            [tf.cast(predicted_next_label, dtype=tf.float32), tf.sigmoid(predicted_next_logistic)], axis=-1)
-        self.loss_metrics['predicted_next_state_mse'](
-            next_state, self.decode(predicted_next_latent_state).sample())
 
         return {'distortion': distortion, 'rate': rate, 'entropy_regularizer': entropy_regularizer}
 
