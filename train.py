@@ -440,7 +440,7 @@ def main(argv):
         environment.time_step_spec().reward.shape,
         tuple(reinforcement_learning.labeling_functions[environment_name](
             environment.reset().observation).shape)
-        )
+    )
     )
     time_step_spec = tensor_spec.from_spec(environment.time_step_spec())
     action_spec = tensor_spec.from_spec(environment.action_spec())
@@ -555,10 +555,14 @@ def main(argv):
                                             params['start_annealing_step']),
                                         reset_kl_scale_factor=(
                                             params['kl_annealing_scale_factor'] if phase == 1 and
-                                            (params['action_discretizer'] or params['latent_policy']) else None),
+                                                                                   (params['action_discretizer'] or
+                                                                                    params['latent_policy']) else None),
                                         reset_entropy_regularizer=(
                                             params['entropy_regularizer_scale_factor'] if phase == 1 and
-                                            (params['action_discretizer'] or params['latent_policy']) else None),
+                                                                                          (params[
+                                                                                               'action_discretizer'] or
+                                                                                           params[
+                                                                                               'latent_policy']) else None),
                                         logs=params['logs'],
                                         num_iterations=(
                                             params['max_steps'] if not params['decompose_training'] or phase == 1
@@ -568,17 +572,9 @@ def main(argv):
                                         parallelization=params['parallel_env'] > 1,
                                         num_parallel_call=params['parallel_env'],
                                         eval_steps=int(1e3) if not params['do_not_eval'] else 0,
-                                        get_policy_evaluation=(
-                                            None if not (params['action_discretizer'] or params['latent_policy'])
-                                                    or (phase == 0 and len(
-                                                models) > 1) else vae_mdp_model.get_latent_policy),
-                                        wrap_eval_tf_env=(
-                                            None if not (params['action_discretizer'] or params['latent_policy'])
-                                                    or (phase == 0 and len(models) > 1) else
-                                            lambda tf_env: vae_mdp_model.wrap_tf_environment(
-                                                tf_env, reinforcement_learning.labeling_functions[environment_name]
-                                            )
-                                        ),
+                                        policy_evaluation_num_episodes=(
+                                            0 if not (params['action_discretizer'] or params['latent_policy'])
+                                                 or (phase == 0 and len(models) > 1) else 30),
                                         annealing_period=params['annealing_period'],
                                         aggressive_training=params['aggressive_training'],
                                         initial_collect_steps=params['initial_collect_steps'],

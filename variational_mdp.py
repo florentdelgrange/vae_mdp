@@ -15,7 +15,7 @@ from tf_agents import specs, trajectories
 from tf_agents.policies import tf_policy
 from tf_agents.trajectories import time_step as ts
 from tf_agents.drivers import dynamic_step_driver
-from tf_agents.environments import tf_py_environment, parallel_py_environment, tf_environment
+from tf_agents.environments import tf_py_environment, parallel_py_environment, tf_environment, py_environment
 from tf_agents.metrics import tf_metrics
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.trajectories import trajectory
@@ -945,9 +945,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             logs: bool = True,
             display_progressbar: bool = True,
             save_directory='.',
-            get_policy_evaluation: Optional[Callable[[], tf_agents.policies.tf_policy.Base]] = None,
             policy_evaluation_num_episodes: int = 30,
-            wrap_eval_tf_env: Optional[Callable[[tf_environment.TFEnvironment], tf_environment.TFEnvironment]] = None,
             aggressive_training: bool = False,
             approximate_convergence_error: float = 5e-1,
             approximate_convergence_steps: int = 10,
@@ -1053,13 +1051,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
             tf_env, policy, observers=observers, num_steps=initial_collect_steps)
 
         policy_evaluation_driver = None
-        if get_policy_evaluation is not None and wrap_eval_tf_env is not None:
+        if policy_evaluation_num_episodes > 0:
             py_eval_env = environment_suite.load(env_name)
             eval_env = tf_py_environment.TFPyEnvironment(py_eval_env)
-            eval_env = wrap_eval_tf_env(eval_env)
+            eval_env = self.wrap_tf_environment(eval_env, labeling_function)
             eval_env.reset()
             policy_evaluation_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
-                eval_env, get_policy_evaluation(), num_episodes=policy_evaluation_num_episodes) #, observers=[lambda _:  py_eval_env.render(mode='human')])
+                eval_env, self.get_latent_policy(), num_episodes=policy_evaluation_num_episodes)
             #  policy_evaluation_driver.run = common.function(policy_evaluation_driver.run)
 
         driver.run = common.function(driver.run)
@@ -1100,7 +1098,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if check_numerics:
                 tf.debugging.disable_check_numerics()
             state, label, action, reward, next_state, next_label = next(dataset_iterator)
-            print(label)
             call = self.__call__.get_concrete_function(
                 tf.TensorSpec((None,) + tuple(tf.shape(state)[1:])),
                 tf.TensorSpec((None,) + tuple(tf.shape(label)[1:])),
@@ -1143,9 +1140,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 aggressive_update=aggressive_inference_optimization,
             )
 
-            if checkpoint is not None:
-                if tf.equal(tf.math.mod(global_step, log_interval), 0):
-                    manager.save()
+            if checkpoint is not None and tf.equal(tf.math.mod(global_step, log_interval), 0):
+                manager.save()
 
             if aggressive_training and global_step.numpy() < aggressive_training_steps:
                 if display_progressbar:
@@ -1267,7 +1263,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
 
             if eval_policy_driver is not None:
-                avg_rewards = eval_policy(eval_policy_driver, train_summary_writer, global_step)
+                avg_rewards = self.eval_policy(eval_policy_driver=eval_policy_driver,
+                                               train_summary_writer=train_summary_writer,
+                                               global_step=global_step)
 
             if train_summary_writer is not None:
                 with train_summary_writer.as_default():
@@ -1305,6 +1303,46 @@ class VariationalMarkovDecisionProcess(tf.Module):
         del dataset
         return eval_elbo
 
+    def eval_policy(
+            self,
+            eval_env: Optional[py_environment.PyEnvironment] = None,
+            eval_policy_driver: Optional[tf_agents.drivers.driver.Driver] = None,
+            labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None,
+            num_eval_episodes: int = 30,
+            train_summary_writer: Optional = None,
+            global_step: Optional[tf.Variable] = None,
+            render: bool = False
+    ):
+        if (eval_env is None) == (eval_policy_driver is None):
+            raise ValueError('Must either pass an eval_tf_env or an eval_tf_driver.')
+
+        eval_avg_rewards = tf_agents.metrics.tf_metrics.AverageReturnMetric()
+        if eval_env is not None:
+            if labeling_function is None:
+                raise ValueError('Must provide a labeling function if eval_env is provided.')
+            eval_tf_env = tf_py_environment.TFPyEnvironment(eval_env)
+            latent_eval_env = self.wrap_tf_environment(eval_tf_env, labeling_function)
+            latent_eval_env.reset()
+            eval_policy_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
+                latent_eval_env, self.get_latent_policy(), num_episodes=num_eval_episodes,
+                observers=[] if not render else [lambda _: eval_env.render(mode='human')])
+
+        driver_run = eval_policy_driver.run
+        driver_run_tf_fun = common.function(eval_policy_driver.run)
+        eval_policy_driver.run = driver_run_tf_fun if not render else eval_policy_driver.run
+        eval_policy_driver.observers.append(eval_avg_rewards)
+        eval_policy_driver.run()
+
+        eval_policy_driver.observers.remove(eval_avg_rewards)
+        eval_policy_driver.run = driver_run
+        del driver_run_tf_fun
+
+        if train_summary_writer is not None:
+            with train_summary_writer.as_default():
+                tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
+        print('eval policy', eval_avg_rewards.result().numpy())
+        return eval_avg_rewards.result()
+
     def wrap_tf_environment(
             self,
             tf_env: tf_environment.TFEnvironment,
@@ -1338,7 +1376,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
                 self.embed_observation = vae_mdp.binary_encode
                 self.tf_env = tf_env
-                self._labeling_function = common.function(labeling_function)
+                self._labeling_function = labeling_function
                 self.observation_shape, self.action_shape, self.reward_shape = [
                     vae_mdp.state_shape,
                     vae_mdp.action_shape,
@@ -1481,15 +1519,3 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
             checkpoint.restore(checkpoint_path)
 
     return model
-
-
-def eval_policy(eval_policy_driver, train_summary_writer, global_step):
-    eval_avg_rewards = tf_agents.metrics.tf_metrics.AverageReturnMetric()
-    eval_policy_driver.observers.append(eval_avg_rewards)
-    eval_policy_driver.run()
-    eval_policy_driver.observers.remove(eval_avg_rewards)
-    if train_summary_writer is not None:
-        with train_summary_writer.as_default():
-            tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
-    print('eval policy', eval_avg_rewards.result().numpy())
-    return eval_avg_rewards.result()
