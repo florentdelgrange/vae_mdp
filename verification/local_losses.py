@@ -1,4 +1,5 @@
 from collections import Callable
+from typing import Optional
 
 import tensorflow as tf
 from tf_agents.environments.py_environment import PyEnvironment
@@ -6,22 +7,87 @@ from tf_agents.environments.tf_py_environment import TFPyEnvironment
 from tf_agents.drivers.dynamic_step_driver import DynamicStepDriver
 from tf_agents.policies import tf_policy
 from tf_agents.replay_buffers.replay_buffer import ReplayBuffer
+from tf_agents.replay_buffers.tf_uniform_replay_buffer import TFUniformReplayBuffer
+from tf_agents.trajectories import policy_step, trajectory
 from tf_agents.utils import common
 import tensorflow_probability as tfp
+from verification.latent_environment import LatentPolicyOverRealStateSpace, DiscreteActionTFEnvironmentWrapper
+
 tfd = tfp.distributions
 
 
 def compute_local_losses_from_samples(
-        environment: TFPyEnvironment, latent_policy: tf_policy.Base, steps: int, latent_state_size: int):
-    # create environment wrapper
-    # create dataset
+        environment: TFPyEnvironment,
+        latent_policy: tf_policy.Base,
+        steps: int,
+        latent_state_size: int,
+        number_of_discrete_actions: int,
+        state_embedding_function: Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor],
+        action_embedding_function: Callable[[tf.Tensor, tf.Tensor], tf.Tensor],
+        labeling_function: Callable[[tf.Tensor], tf.Tensor],
+):
+    # generate environment wrapper for discrete actions
+    latent_environment = DiscreteActionTFEnvironmentWrapper(
+        tf_env=environment,
+        action_embedding_function=action_embedding_function,
+        number_of_discrete_actions=number_of_discrete_actions)
+    # set the latent policy over real states
+    policy = LatentPolicyOverRealStateSpace(
+        time_step_spec=latent_environment.time_step_spec(),
+        labeling_function=labeling_function,
+        latent_policy=latent_policy,
+        state_embedding_function=state_embedding_function)
+    policy_step_spec = policy_step.PolicyStep(action=latent_environment.action_spec(), state=(), info=())
+    trajectory_spec = trajectory.from_transition(
+        latent_environment.time_step_spec(), policy_step_spec, latent_environment.time_step_spec())
     # replay_buffer
-    replay_buffer = ReplayBuffer()
+    replay_buffer = TFUniformReplayBuffer(
+        data_spec=trajectory_spec,
+        batch_size=latent_environment.batch_size,
+        max_length=steps,
+        dataset_drop_remainder=True,
+        # set the window shift is one to gather all transitions when the batch size corresponds to max_length
+        dataset_window_shift=1)
+    # create dataset
+    replay_buffer.as_dataset(
+        num_parallel_calls=tf.data.experimental.AUTOTUNE,
+        num_steps=2,
+        single_deterministic_pass=True  # gather transitions only once
+    ).batch(
+        batch_size=replay_buffer.num_frames(),
+        drop_remainder=False)
     # create driver
     driver = DynamicStepDriver(environment, latent_policy, num_steps=steps, observers=[replay_buffer.add_batch])
     driver.run = common.function(driver.run)
 
     state, label, latent_action, reward, next_latent_state, next_label = next(dataset_iterator)
+    return (estimate_local_reward_loss(state, label, latent_action, reward, next_latent_state, ),
+            estimate_local_probability_loss())
+
+
+def generate_binary_latent_state_space(latent_state_size):
+    all_latent_states = tf.range(2 ** latent_state_size)
+    return tf.map_fn(lambda n: (n // 2 ** tf.range(latent_state_size)) % 2, all_latent_states)
+
+
+def estimate_local_reward_loss(
+        state: tf.Tensor,
+        label: tf.Tensor,
+        latent_action: tf.Tensor,
+        reward: tf.Tensor,
+        next_state: tf.Tensor,
+        next_label: tf.Tensor,
+        latent_reward_function: Callable[[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor],
+        latent_state: Optional[tf.Tensor] = None,
+        next_latent_state: Optional[tf.Tensor] = None,
+        embed_state: Optional[Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor]] = None,
+):
+    if latent_state is None:
+        latent_state = embed_state(state, label)
+    if next_latent_state is None:
+        next_latent_state = embed_state(next_state, next_label)
+
+    return tf.reduce_mean(tf.abs(reward - latent_reward_function(latent_state, latent_action, next_latent_state)))
 
 
 def estimate_local_probability_loss(
@@ -30,16 +96,33 @@ def estimate_local_probability_loss(
         latent_action: tf.Tensor,
         next_state: tf.Tensor,
         next_label: tf.Tensor,
-        embed_state: Callable[[tf.Tensor, tf.Tensor], tf.Tensor],
-        latent_probability_transition_function: tfd.Distribution,
+        latent_transition_function: Callable[[tf.Tensor, tf.Tensor], tfd.Distribution],
         latent_state_size: int,
+        latent_state: Optional[tf.Tensor] = None,
+        next_latent_state_no_label: Optional[tf.Tensor] = None,
+        next_latent_state: Optional[tf.Tensor] = None,
+        embed_state: Optional[Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor]] = None,
+        all_latent_states: Optional[tf.Tensor] = None
 ):
-    all_latent_states = tf.range(2 ** tf.cast(latent_state_size))
-    all_latent_states = tf.map_fn(lambda n: (n // 2 ** tf.range(latent_state_size)) % 2, all_latent_states)
+    if all_latent_states is None:
+        all_latent_states = generate_binary_latent_state_space(latent_state_size)
 
-    def total_variation(state, label, latent_action, next_state, next_label):
-        latent_state = embed_state(state, label)
-        next_latent_state = embed_state(next_state, next_label)
-        next_latent_state = tf.map_fn(lambda s: s == next_latent_state, all_latent_states)
+    def total_variation(
+            state, label, latent_action, next_state, next_label,
+            latent_state=None, next_latent_state_no_label=None, next_latent_state=None):
+        if latent_state is None:
+            latent_state = embed_state(state, label)
+        if next_latent_state_no_label is None:
+            next_latent_state_no_label = embed_state(next_state)
+        if next_latent_state is None:
+            next_latent_state = tf.concat([next_label, next_latent_state_no_label], axis=-1)
 
-    tf.map_fn(total_variation, inputs)
+        p_next_latent_state = tf.cast(tf.reduce_all(next_latent_state == all_latent_states, axis=-1), dtype=tf.float32)
+        latent_transition_distribution = latent_transition_function(latent_state, latent_action)
+        return tf.reduce_sum(tf.abs(
+            p_next_latent_state - latent_transition_distribution.prob(next_label, next_latent_state_no_label)),
+            axis=-1)
+
+    return tf.reduce_mean(tf.map_fn(total_variation, (
+        state, label, latent_action, next_state, next_label,
+        latent_state, next_latent_state_no_label, next_latent_state)))
