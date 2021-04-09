@@ -11,9 +11,37 @@ from tf_agents.replay_buffers.tf_uniform_replay_buffer import TFUniformReplayBuf
 from tf_agents.trajectories import policy_step, trajectory
 from tf_agents.utils import common
 import tensorflow_probability as tfp
+
+from util.io.dataset_generator import ErgodicMDPTransitionGenerator
 from verification.latent_environment import LatentPolicyOverRealStateSpace, DiscreteActionTFEnvironmentWrapper
 
 tfd = tfp.distributions
+
+
+def frequency_estimation_probability_function(
+        latent_state: tf.Tensor,
+        latent_action: tf.Tensor,
+        next_latent_state: tf.Tensor,  # Optional[tf.Tensor] = None,
+        # next_latent_state_no_label: Optional[tf.Tensor] = None,
+        # next_label: Optional[tf.Tensor] = None,
+        # label_size: Optional[int] = None,
+):
+    #  if (next_latent_state is None) == (next_latent_state_no_label is None):
+    #      raise ValueError('Must either pass next latent states or next latent states without labels')
+    #  if next_latent_state_no_label is not None:
+    #      assert next_label is not None
+    #  else:
+    #      assert label_size is not None
+
+    #  if next_latent_state_no_label is None:
+    #  next_label,  = next_latent_state[..., :label_size]
+    #  next_latent_state_no_label = next_latent_state[...: label_size:]
+
+    latent_state_size = tf.shape(latent_state)[1]  # first axis is batch, second is latent state size
+    number_of_discrete_actions = tf.shape(latent_action)[1]  # first axis is batch, second is a one-hot vector
+    latent_state_indices = tf.reduce_sum(latent_state * 2 ** tf.range(latent_state_size), axis=-1)
+    latent_action_indices = tf.argmax(latent_action, axis=-1)
+    next_latent_state_indices = tf.reduce_sum(latent_state * 2 ** tf.range(latent_state_size), axis=-1)
 
 
 def compute_local_losses_from_samples(
@@ -24,6 +52,8 @@ def compute_local_losses_from_samples(
         number_of_discrete_actions: int,
         state_embedding_function: Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor],
         action_embedding_function: Callable[[tf.Tensor, tf.Tensor], tf.Tensor],
+        latent_reward_function: Callable[[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor],
+        latent_transition_function: Callable[[tf.Tensor, tf.Tensor], tfd.Distribution],
         labeling_function: Callable[[tf.Tensor], tf.Tensor],
 ):
     # generate environment wrapper for discrete actions
@@ -48,21 +78,40 @@ def compute_local_losses_from_samples(
         dataset_drop_remainder=True,
         # set the window shift is one to gather all transitions when the batch size corresponds to max_length
         dataset_window_shift=1)
-    # create dataset
-    replay_buffer.as_dataset(
+    # retrieve dataset from the replay buffer
+    generator = ErgodicMDPTransitionGenerator(
+        labeling_function,
+        replay_buffer,
+        discrete_action=True,
+        num_discrete_actions=number_of_discrete_actions)
+    dataset = replay_buffer.as_dataset(
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
         num_steps=2,
         single_deterministic_pass=True  # gather transitions only once
+    ).map(
+        map_func=generator,
+        num_parallel_calls=tf.data.experimental.AUTOTUNE,
     ).batch(
         batch_size=replay_buffer.num_frames(),
         drop_remainder=False)
-    # create driver
-    driver = DynamicStepDriver(environment, latent_policy, num_steps=steps, observers=[replay_buffer.add_batch])
+    dataset_iterator = iter(dataset)
+    # initialize driver
+    driver = DynamicStepDriver(latent_environment, policy, num_steps=steps, observers=[replay_buffer.add_batch])
     driver.run = common.function(driver.run)
+    # collect environment steps
+    driver.run()
 
-    state, label, latent_action, reward, next_latent_state, next_label = next(dataset_iterator)
-    return (estimate_local_reward_loss(state, label, latent_action, reward, next_latent_state, ),
-            estimate_local_probability_loss())
+    state, label, latent_action, reward, next_state, next_label = next(dataset_iterator)
+    latent_state = state_embedding_function(state, label)
+    next_latent_state_no_label = state_embedding_function(next_state)
+    next_latent_state = tf.concat([next_label, next_latent_state_no_label], axis=-1)
+    local_reward_loss = estimate_local_reward_loss(
+        state, label, latent_action, reward, next_state, next_label,
+        latent_reward_function, latent_state, next_latent_state)
+    local_probability_loss = estimate_local_probability_loss(
+        state, label, latent_action, next_state, next_label, latent_transition_function,
+        latent_state_size, latent_state, next_latent_state_no_label, next_latent_state)
+    return local_reward_loss, local_probability_loss
 
 
 def generate_binary_latent_state_space(latent_state_size):
@@ -80,12 +129,12 @@ def estimate_local_reward_loss(
         latent_reward_function: Callable[[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor],
         latent_state: Optional[tf.Tensor] = None,
         next_latent_state: Optional[tf.Tensor] = None,
-        embed_state: Optional[Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor]] = None,
+        state_embedding_function: Optional[Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor]] = None,
 ):
     if latent_state is None:
-        latent_state = embed_state(state, label)
+        latent_state = state_embedding_function(state, label)
     if next_latent_state is None:
-        next_latent_state = embed_state(next_state, next_label)
+        next_latent_state = state_embedding_function(next_state, next_label)
 
     return tf.reduce_mean(tf.abs(reward - latent_reward_function(latent_state, latent_action, next_latent_state)))
 
@@ -101,7 +150,7 @@ def estimate_local_probability_loss(
         latent_state: Optional[tf.Tensor] = None,
         next_latent_state_no_label: Optional[tf.Tensor] = None,
         next_latent_state: Optional[tf.Tensor] = None,
-        embed_state: Optional[Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor]] = None,
+        state_embedding_function: Optional[Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor]] = None,
         all_latent_states: Optional[tf.Tensor] = None
 ):
     if all_latent_states is None:
@@ -111,9 +160,9 @@ def estimate_local_probability_loss(
             state, label, latent_action, next_state, next_label,
             latent_state=None, next_latent_state_no_label=None, next_latent_state=None):
         if latent_state is None:
-            latent_state = embed_state(state, label)
+            latent_state = state_embedding_function(state, label)
         if next_latent_state_no_label is None:
-            next_latent_state_no_label = embed_state(next_state)
+            next_latent_state_no_label = state_embedding_function(next_state)
         if next_latent_state is None:
             next_latent_state = tf.concat([next_label, next_latent_state_no_label], axis=-1)
 
