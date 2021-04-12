@@ -54,7 +54,7 @@ class TransitionFrequencyEstimator:
         action = tf.argmax(latent_action, axis=-1)
 
         @tf.function
-        def _get_prob_value(state: tf.Tensor, action: tf.Tensor, next_state: tf.Tensor):
+        def _get_prob_value(next_state: tf.Tensor):
             probs = tf.squeeze(tf.sparse.slice(self.transition_tensor, [state, action, next_state], [1, 1, 1]))
             return 0. if tf.equal(tf.size(probs), 0) else probs
 
@@ -62,6 +62,6 @@ class TransitionFrequencyEstimator:
         def _prob(*value):
             next_latent_state = tf.concat(value, axis=-1)
             next_state = tf.reduce_sum(next_latent_state * 2 ** tf.range(self.num_states), axis=-1)
-            return tf.map_fn(fn=_get_prob_value, elems=(state, action, next_state))
+            return tf.map_fn(fn=_get_prob_value, elems=next_state)
 
         return namedtuple('next_state_transition_distribution', ['prob'])(_prob)

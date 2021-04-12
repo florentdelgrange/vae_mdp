@@ -1,4 +1,4 @@
-from collections import Callable
+from typing import Callable
 import tensorflow as tf
 from tf_agents import trajectories, specs
 from tf_agents.environments.tf_environment import TFEnvironment

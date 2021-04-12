@@ -1,5 +1,4 @@
-from collections import Callable, namedtuple
-from typing import Optional
+from typing import Optional, Callable
 
 import tensorflow as tf
 from tf_agents.environments.tf_py_environment import TFPyEnvironment
@@ -92,7 +91,8 @@ def estimate_local_losses_from_samples(
     local_probability_loss = estimate_local_probability_loss(
         state, label, latent_action, next_state, next_label, latent_transition_function,
         latent_state_size, latent_state, next_latent_state_no_label, next_latent_state)
-    return local_reward_loss, local_probability_loss
+
+    return {'local_reward_loss': local_reward_loss, 'local_probability_loss': local_probability_loss}
 
 
 def generate_binary_latent_state_space(latent_state_size):
@@ -100,6 +100,7 @@ def generate_binary_latent_state_space(latent_state_size):
     return tf.map_fn(lambda n: (n // 2 ** tf.range(latent_state_size)) % 2, all_latent_states)
 
 
+@tf.function
 def estimate_local_reward_loss(
         state: tf.Tensor,
         label: tf.Tensor,
@@ -120,6 +121,7 @@ def estimate_local_reward_loss(
     return tf.reduce_mean(tf.abs(reward - latent_reward_function(latent_state, latent_action, next_latent_state)))
 
 
+@tf.function
 def estimate_local_probability_loss(
         state: tf.Tensor,
         label: tf.Tensor,
