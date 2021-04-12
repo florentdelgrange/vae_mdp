@@ -23,6 +23,7 @@ from tf_agents.trajectories.policy_step import PolicyStep
 from tf_agents.utils import common
 
 from util.io.dataset_generator import ErgodicMDPTransitionGenerator
+from verification.local_losses import estimate_local_losses_from_samples
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -1457,6 +1458,30 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 return PolicyStep(tfd.Categorical(logits=one_hot_categorical_distribution.logits_parameter()), (), ())
 
         return LatentPolicy(time_step_spec, action_spec, self.discrete_latent_policy)
+
+    def estimate_local_losses_from_samples(
+            self,
+            environment: tf_py_environment.TFPyEnvironment,
+            steps: int,
+            labeling_function: Callable[[tf.Tensor], tf.Tensor],
+            estimate_transition_function_from_samples: bool = False,
+    ):
+        if self.latent_policy_network is None:
+            raise ValueError('This VAE is not built for policy abstraction.')
+
+        return estimate_local_losses_from_samples(
+            environment=environment,
+            steps=steps,
+            latent_policy=self.get_latent_policy(),
+            latent_state_size=self.latent_state_size,
+            number_of_discrete_actions=self.number_of_discrete_actions,
+            state_embedding_function=lambda state, label: self.binary_encode(state, label).mode(),
+            action_embedding_function=lambda _, action: action,
+            latent_reward_function=lambda latent_state, action, next_latent_state: (
+                self.reward_probability_distribution(latent_state, action, next_latent_state).mode()),
+            labeling_function=labeling_function,
+            latent_transition_function=self.discrete_latent_transition_probability_distribution,
+            estimate_transition_function_from_samples=estimate_transition_function_from_samples)
 
 
 def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) -> VariationalMarkovDecisionProcess:

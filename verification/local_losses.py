@@ -12,6 +12,7 @@ import tensorflow_probability as tfp
 
 from util.io.dataset_generator import ErgodicMDPTransitionGenerator
 from verification.latent_environment import LatentPolicyOverRealStateSpace, DiscreteActionTFEnvironmentWrapper
+from verification.transition_function import TransitionFrequencyEstimator
 
 tfd = tfp.distributions
 
@@ -25,9 +26,12 @@ def estimate_local_losses_from_samples(
         state_embedding_function: Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor],
         action_embedding_function: Callable[[tf.Tensor, tf.Tensor], tf.Tensor],
         latent_reward_function: Callable[[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor],
-        latent_transition_function: Callable[[tf.Tensor, tf.Tensor], tfd.Distribution],
         labeling_function: Callable[[tf.Tensor], tf.Tensor],
+        latent_transition_function: Optional[Callable[[tf.Tensor, tf.Tensor], tfd.Distribution]] = None,
+        estimate_transition_function_from_samples: bool = False
 ):
+    if latent_transition_function is None and not estimate_transition_function_from_samples:
+        raise ValueError('no latent transition function provided')
     # generate environment wrapper for discrete actions
     latent_environment = DiscreteActionTFEnvironmentWrapper(
         tf_env=environment,
@@ -75,11 +79,16 @@ def estimate_local_losses_from_samples(
 
     state, label, latent_action, reward, next_state, next_label = next(dataset_iterator)
     latent_state = state_embedding_function(state, label)
-    next_latent_state_no_label = state_embedding_function(next_state)
+    next_latent_state_no_label = state_embedding_function(next_state, None)
     next_latent_state = tf.concat([next_label, next_latent_state_no_label], axis=-1)
     local_reward_loss = estimate_local_reward_loss(
         state, label, latent_action, reward, next_state, next_label,
         latent_reward_function, latent_state, next_latent_state)
+
+    if estimate_transition_function_from_samples:
+        latent_transition_function = TransitionFrequencyEstimator(
+            latent_state, latent_action, next_latent_state)
+
     local_probability_loss = estimate_local_probability_loss(
         state, label, latent_action, next_state, next_label, latent_transition_function,
         latent_state_size, latent_state, next_latent_state_no_label, next_latent_state)
@@ -134,7 +143,7 @@ def estimate_local_probability_loss(
         if latent_state is None:
             latent_state = state_embedding_function(state, label)
         if next_latent_state_no_label is None:
-            next_latent_state_no_label = state_embedding_function(next_state)
+            next_latent_state_no_label = state_embedding_function(next_state, None)
         if next_latent_state is None:
             next_latent_state = tf.concat([next_label, next_latent_state_no_label], axis=-1)
 
