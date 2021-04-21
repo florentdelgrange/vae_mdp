@@ -89,8 +89,8 @@ def estimate_local_losses_from_samples(
             latent_state, latent_action, next_latent_state)
 
     local_probability_loss = estimate_local_probability_loss(
-        state, label, latent_action, next_state, next_label, latent_transition_function,
-        latent_state_size, latent_state, next_latent_state_no_label, next_latent_state)
+        state, label, latent_action, next_state, next_label,
+        latent_transition_function, latent_state, next_latent_state_no_label)
 
     return {'local_reward_loss': local_reward_loss, 'local_probability_loss': local_probability_loss}
 
@@ -129,32 +129,15 @@ def estimate_local_probability_loss(
         next_state: tf.Tensor,
         next_label: tf.Tensor,
         latent_transition_function: Callable[[tf.Tensor, tf.Tensor], tfd.Distribution],
-        latent_state_size: int,
         latent_state: Optional[tf.Tensor] = None,
         next_latent_state_no_label: Optional[tf.Tensor] = None,
-        next_latent_state: Optional[tf.Tensor] = None,
         state_embedding_function: Optional[Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor]] = None,
-        all_latent_states: Optional[tf.Tensor] = None
 ):
-    if all_latent_states is None:
-        all_latent_states = generate_binary_latent_state_space(latent_state_size)
 
-    def total_variation(
-            state, label, latent_action, next_state, next_label,
-            latent_state=None, next_latent_state_no_label=None, next_latent_state=None):
-        if latent_state is None:
-            latent_state = state_embedding_function(state, label)
-        if next_latent_state_no_label is None:
-            next_latent_state_no_label = state_embedding_function(next_state, None)
-        if next_latent_state is None:
-            next_latent_state = tf.concat([next_label, next_latent_state_no_label], axis=-1)
+    if latent_state is None:
+        latent_state = state_embedding_function(state, label)
+    if next_latent_state_no_label is None:
+        next_latent_state_no_label = state_embedding_function(next_state, None)
 
-        p_next_latent_state = tf.cast(tf.reduce_all(next_latent_state == all_latent_states, axis=-1), dtype=tf.float32)
-        latent_transition_distribution = latent_transition_function(latent_state, latent_action)
-        return tf.reduce_sum(tf.abs(
-            p_next_latent_state - latent_transition_distribution.prob(next_label, next_latent_state_no_label)),
-            axis=-1)
-
-    return tf.reduce_mean(tf.map_fn(total_variation, (
-        state, label, latent_action, next_state, next_label,
-        latent_state, next_latent_state_no_label, next_latent_state)))
+    latent_transition_distribution = latent_transition_function(latent_state, latent_action)
+    return tf.reduce_mean(1. - latent_transition_distribution.prob(next_label, next_latent_state_no_label))

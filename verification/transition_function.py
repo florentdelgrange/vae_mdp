@@ -33,7 +33,7 @@ class TransitionFrequencyEstimator:
                 if tf.reduce_all(indices[i] == state_action_pair_counter.indices[j], axis=-1):
                     probs[i].assign(probs[i] / state_action_pair_counter.values[j])
                 else:
-                    j.assign_add(1)  # works by assuming ordered indices
+                    j.assign_add(1)  # works only if indices are ordered
 
             #  probs = tf.reduce_sum(
             #      tf.map_fn(
@@ -49,7 +49,7 @@ class TransitionFrequencyEstimator:
 
         self.transition_tensor = estimate_transition_tensor()
 
-    def __call__(self, latent_state: tf.Tensor, latent_action: tf.Tensor, *next_latent_state):
+    def __call__(self, latent_state: tf.Tensor, latent_action: tf.Tensor):
         state = tf.reduce_sum(latent_state * 2 ** tf.range(self.num_states), axis=-1)
         action = tf.argmax(latent_action, axis=-1)
 
