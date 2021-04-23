@@ -5,12 +5,12 @@ from tf_agents.environments.tf_environment import TFEnvironment
 from tf_agents.policies import tf_policy
 
 
-class LatentPolicyOverRealStateSpace(tf_policy.Base):
+class LatentPolicyOverRealStateSpace(tf_policy.TFPolicy):
 
     def __init__(self,
                  time_step_spec,
                  labeling_function: Callable[[tf.Tensor], tf.Tensor],
-                 latent_policy: tf_policy.Base,
+                 latent_policy: tf_policy.TFPolicy,
                  state_embedding_function: Callable[[tf.Tensor, tf.Tensor], tf.Tensor]):
         super().__init__(time_step_spec, latent_policy.action_spec)
         self.labeling_function = labeling_function

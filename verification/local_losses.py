@@ -18,7 +18,7 @@ tfd = tfp.distributions
 
 def estimate_local_losses_from_samples(
         environment: TFPyEnvironment,
-        latent_policy: tf_policy.Base,
+        latent_policy: tf_policy.TFPolicy,
         steps: int,
         latent_state_size: int,
         number_of_discrete_actions: int,
