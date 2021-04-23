@@ -575,8 +575,8 @@ def main(argv):
                                             else params['max_steps'] // 2),
                                         display_progressbar=params['display_progressbar'],
                                         save_directory=params['save_dir'],
-                                        parallelization=params['parallel_env'] > 1,
-                                        num_parallel_call=params['parallel_env'],
+                                        parallel_environments=params['parallel_env'] > 1,
+                                        num_parallel_environments=params['parallel_env'],
                                         eval_steps=int(1e3) if not params['do_not_eval'] else 0,
                                         policy_evaluation_num_episodes=(
                                             0 if not (params['action_discretizer'] or params['latent_policy'])
