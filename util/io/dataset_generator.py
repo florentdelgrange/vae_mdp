@@ -1,3 +1,5 @@
+from typing import Callable
+
 import h5py
 import os
 import glob
@@ -7,6 +9,8 @@ from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 import tensorflow as tf
+import tf_agents.replay_buffers.replay_buffer
+from tf_agents.trajectories.trajectory import Trajectory
 import tf_agents.trajectories.time_step as ts
 import time
 
@@ -64,7 +68,11 @@ def gather_rl_observations(
 
 @tf.function
 def map_rl_trajectory_to_vae_input(
-        trajectory, labeling_function, discrete_action: bool = False, num_discrete_actions: Optional[int] = 0):
+        trajectory: Trajectory,
+        labeling_function: Callable[[tf.Tensor], tf.Tensor],
+        discrete_action: bool = False,
+        num_discrete_actions: Optional[int] = 0
+):
     """
     Maps a tf-agent trajectory of 2 time steps to a transition tuple of the form
     <state, state label, action, reward, next state, next state label>
@@ -91,12 +99,25 @@ class ErgodicMDPTransitionGenerator:
     Generates a dataset from 2-steps transitions contained in a replay buffer.
     """
 
-    def __init__(self, labeling_function, replay_buffer, discrete_action: bool = False, num_discrete_actions=0):
+    def __init__(
+            self,
+            labeling_function: Callable[[tf.Tensor], tf.Tensor],
+            replay_buffer: tf_agents.replay_buffers.replay_buffer.ReplayBuffer,
+            discrete_action: bool = False,
+            num_discrete_actions: int = 0,
+            prioritized_replay_buffer: bool = False,
+            state_embedding_function: Optional[Callable[[tf.Tensor, tf.Tensor], tf.Tensor]] = None
+    ):
+        assert not discrete_action or num_discrete_actions > 0
+        assert not prioritized_replay_buffer or state_embedding_function is not None
+
         self.labeling_function = labeling_function
         self.discrete_action = discrete_action
         self.num_discrete_actions = num_discrete_actions
-        assert not self.discrete_action or num_discrete_actions > 0
-        self.cache_hit = tf.Variable(False, dtype=tf.bool, trainable=False)
+        self._cache_hit = tf.Variable(False, dtype=tf.bool, trainable=False)
+        self.prioritized_replay_buffer = prioritized_replay_buffer
+        self.state_embedding_function = state_embedding_function
+        self.replay_buffer = replay_buffer
 
         state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
             trajectory=next(iter(replay_buffer.as_dataset(
@@ -118,38 +139,82 @@ class ErgodicMDPTransitionGenerator:
         self.cached_state = tf.Variable(self.reset_state, trainable=False)
         self.cached_label = tf.Variable(self.reset_state_label, trainable=False)
 
-    def __call__(self, trajectory, buffer_info=None):
-        def cache_hit():
-            self.cache_hit.assign(False)
-            return (self.reset_state,
-                    self.reset_state_label,
-                    self.reset_action,
-                    self.reset_reward,
-                    self.cached_state,
-                    self.cached_label)
+        self.cached_priority = tf.Variable(1., trainable=False, dtype=tf.float64)
 
-        def process_transition():
-            state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
-                trajectory=trajectory,
-                labeling_function=self.labeling_function,
-                discrete_action=self.discrete_action,
-                num_discrete_actions=self.num_discrete_actions)
-            new_state_label = tf.concat([state_label, self.reset_label - 1.], axis=-1)
-            new_next_state_label = tf.concat([next_state_label, self.reset_label - 1.], axis=-1)
+        self.buckets = None
+        self.step_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
+        self.latent_state_size = tf.shape(self.state_embedding_function(self.reset_state, self.reset_state_label))[-1]
+        if self.prioritized_replay_buffer:
+            size = 2 ** self.latent_state_size
+            self.buckets = tf.Variable(initial_value=tf.zeros(shape=(size,), dtype=tf.int32), trainable=False)
 
-            def last_transition():
-                self.cache_hit.assign(True)
-                self.cached_state.assign(next_state)
-                self.cached_label.assign(new_next_state_label)
-                return state, new_state_label, action, reward, self.reset_state, self.reset_state_label
+    def update_bucket_priority(self, state: tf.Tensor, label: tf.Tensor, key):
+        assert self.prioritized_replay_buffer
+        self.step_counter.assign_add(1)
+        latent_state = self.state_embedding_function(state, label)
+        index = tf.reduce_sum(latent_state * 2 * tf.range(self.latent_state_size), axis=-1)
+        self.buckets[index].assign(self.buckets[index] + 1)
+        priority = 1. - self.buckets[index] / self.step_counter
+        self.replay_buffer.update_priorities(tf.expand_dims(key, axis=0), tf.expand_dims(priority, axis=0))
+        return priority
 
-            return tf.cond(
-                tf.logical_and(trajectory.step_type[0] == ts.StepType.LAST,
-                               trajectory.next_step_type[0] == ts.StepType.FIRST),
-                last_transition,
-                lambda: (state, new_state_label, action, reward, next_state, new_next_state_label))
+    def cache_hit(self):
+        self._cache_hit.assign(False)
+        transition = (self.reset_state,
+                      self.reset_state_label,
+                      self.reset_action,
+                      self.reset_reward,
+                      self.cached_state,
+                      self.cached_label)
+        return transition
 
-        return tf.cond(self.cache_hit, cache_hit, process_transition)
+    def process_transition(self, trajectory: Trajectory):
+        state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
+            trajectory=trajectory,
+            labeling_function=self.labeling_function,
+            discrete_action=self.discrete_action,
+            num_discrete_actions=self.num_discrete_actions)
+        new_state_label = tf.concat([state_label, self.reset_label - 1.], axis=-1)
+        new_next_state_label = tf.concat([next_state_label, self.reset_label - 1.], axis=-1)
+
+        def last_transition():
+            self._cache_hit.assign(True)
+            self.cached_state.assign(next_state)
+            self.cached_label.assign(new_next_state_label)
+            return state, new_state_label, action, reward, self.reset_state, self.reset_state_label
+
+        return tf.cond(
+            trajectory.is_boundary()[0],
+            last_transition,
+            lambda: (state, new_state_label, action, reward, next_state, new_next_state_label))
+
+    def __call__(self, trajectory: Trajectory, sample_info=None):
+        cache_hit = tf.identity(self._cache_hit)
+        state, label, action, reward, next_state, next_label = tf.cond(
+            cache_hit, self.cache_hit, lambda: self.process_transition(trajectory))
+
+        if self.prioritized_replay_buffer:
+            if cache_hit:
+                _state = trajectory.observation[0, ...]
+                labels = tf.cast(self.labeling_function(trajectory.observation), tf.float32)
+                if tf.rank(labels) == 1:
+                    labels = tf.expand_dims(labels, axis=-1)
+                _label = labels[0, ...]
+                _label = tf.concat([_label, self.reset_label - 1.], axis=-1)
+            else:
+                _state = state
+                _label = label
+
+            key = sample_info.key[0]
+            priority = self.update_bucket_priority(_state, _label, key)
+
+            if trajectory.is_boundary()[0]:
+                self.cached_priority.assign(priority)
+            priority = self.cached_priority if cache_hit else priority
+
+            return state, label, action, reward, next_state, next_label, priority
+        else:
+            return state, label, action, reward, next_state, next_label
 
 
 class DictionaryDatasetGenerator:
