@@ -918,7 +918,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
     def train_from_policy(
             self,
-            policy: tf_agents.policies.tf_policy.Base,
+            policy: tf_agents.policies.tf_policy.TFPolicy,
             environment_suite,
             env_name: str,
             labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]],
@@ -1427,7 +1427,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         return VariationalTFEnvironmentDiscretizer(self, tf_env, labeling_function, deterministic_embedding_functions)
 
-    def get_latent_policy(self) -> tf_policy.Base:
+    def get_latent_policy(self) -> tf_policy.TFPolicy:
 
         assert self.latent_policy_network is not None
         action_spec = specs.BoundedTensorSpec(
@@ -1446,7 +1446,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         )
         time_step_spec = ts.time_step_spec(observation_spec)
 
-        class LatentPolicy(tf_policy.Base):
+        class LatentPolicy(tf_policy.TFPolicy):
 
             def __init__(self, time_step_spec, action_spec, discrete_latent_policy):
                 super().__init__(time_step_spec, action_spec)
