@@ -1,6 +1,7 @@
 import os
 from typing import Tuple, Optional, Callable, Dict, Iterator
 import numpy as np
+import reverb
 
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -12,12 +13,12 @@ import tf_agents.policies.tf_policy
 import tf_agents.agents.tf_agent
 from tensorflow.python.keras.models import Sequential
 from tf_agents import specs, trajectories
-from tf_agents.policies import tf_policy
+from tf_agents.policies import tf_policy, py_tf_eager_policy
 from tf_agents.trajectories import time_step as ts
-from tf_agents.drivers import dynamic_step_driver
+from tf_agents.drivers import dynamic_step_driver, py_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment, tf_environment, py_environment
 from tf_agents.metrics import tf_metrics
-from tf_agents.replay_buffers import tf_uniform_replay_buffer
+from tf_agents.replay_buffers import tf_uniform_replay_buffer, reverb_replay_buffer, reverb_utils
 from tf_agents.trajectories import trajectory
 from tf_agents.trajectories.policy_step import PolicyStep
 from tf_agents.utils import common
@@ -340,6 +341,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             'transition_log_probs': tf.keras.metrics.Mean(name='transition_log_probs'),
             #  'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
         }
+
+        self._transition_generator = None
 
     def reset_metrics(self):
         for value in self.loss_metrics.values():
@@ -929,8 +932,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             initial_collect_steps: int = int(1e4),
             collect_steps_per_iteration: Optional[int] = None,
             replay_buffer_capacity: int = int(1e6),
-            parallelization: bool = True,
-            num_parallel_call: int = 4,
+            use_prioritized_replay_buffer: bool = True,
+            parallel_environments: bool = True,
+            num_parallel_environments: int = 4,
             batch_size: int = 128,
             optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
             checkpoint: Optional[tf.train.Checkpoint] = None,
@@ -950,13 +954,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
             aggressive_training: bool = False,
             approximate_convergence_error: float = 5e-1,
             approximate_convergence_steps: int = 10,
-            aggressive_training_steps: int = int(2e6)
+            aggressive_training_steps: int = int(2e6),
     ):
+        # reverb replay buffers are not compatible with parallel env
+        parallel_environments = parallel_environments and not use_prioritized_replay_buffer
         if collect_steps_per_iteration is None:
-            collect_steps_per_iteration = batch_size
-        if parallelization:
-            replay_buffer_capacity = replay_buffer_capacity // num_parallel_call
-            collect_steps_per_iteration = max(1, collect_steps_per_iteration // num_parallel_call)
+            collect_steps_per_iteration = batch_size // 8
+        if parallel_environments:
+            replay_buffer_capacity = replay_buffer_capacity // num_parallel_environments
+            collect_steps_per_iteration = max(1, collect_steps_per_iteration // num_parallel_environments)
 
         save_directory = os.path.join(save_directory, 'saves', env_name)
 
@@ -1002,14 +1008,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         discrete_action_space = discrete_action_space and (self.latent_policy_network is not None)
 
-        if parallelization:
-            tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
-                [lambda: environment_suite.load(env_name)] * num_parallel_call))
-            tf_env.reset()
+        if parallel_environments:
+            py_env = parallel_py_environment.ParallelPyEnvironment(
+                [lambda: environment_suite.load(env_name)] * num_parallel_environments)
+            env = tf_py_environment.TFPyEnvironment(py_env)
+            env.reset()
         else:
             py_env = environment_suite.load(env_name)
             py_env.reset()
-            tf_env = tf_py_environment.TFPyEnvironment(py_env)
+            env = tf_py_environment.TFPyEnvironment(py_env) if not use_prioritized_replay_buffer else py_env
 
         if epsilon_greedy > 0.:
             epsilon_greedy = tf.Variable(epsilon_greedy, trainable=False, dtype=tf.float32)
@@ -1031,24 +1038,63 @@ class VariationalMarkovDecisionProcess(tf.Module):
             policy = tf_agents.policies.epsilon_greedy_policy.EpsilonGreedyPolicy(policy, _epsilon)
 
         # specs
-        trajectory_spec = trajectory.from_transition(tf_env.time_step_spec(),
+        trajectory_spec = trajectory.from_transition(env.time_step_spec(),
                                                      policy.policy_step_spec,
-                                                     tf_env.time_step_spec())
+                                                     env.time_step_spec())
+        if use_prioritized_replay_buffer:
+            table_name = 'prioritized_replay_buffer'
+            table = reverb.Table(
+                table_name,
+                max_size=int(1e6),
+                sampler=reverb.selectors.Prioritized(priority_exponent=0.6),
+                remover=reverb.selectors.MaxHeap(),
+                rate_limiter=reverb.rate_limiters.MinSize(1))
 
-        replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
-            data_spec=trajectory_spec,
-            batch_size=tf_env.batch_size,
-            max_length=replay_buffer_capacity)
+            reverb_server = reverb.Server([table])
 
-        num_episodes = tf_metrics.NumberOfEpisodes()
-        env_steps = tf_metrics.EnvironmentSteps()
-        observers = [num_episodes, env_steps] if not parallelization else []
-        observers += [replay_buffer.add_batch]
+            replay_buffer = reverb_replay_buffer.ReverbReplayBuffer(
+                data_spec=policy.collect_data_spec,
+                sequence_length=2,
+                table_name=table_name,
+                local_server=reverb_server)
 
-        driver = dynamic_step_driver.DynamicStepDriver(
-            tf_env, policy, observers=observers, num_steps=collect_steps_per_iteration)
-        initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
-            tf_env, policy, observers=observers, num_steps=initial_collect_steps)
+            add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
+                py_client=replay_buffer.py_client,
+                table_name=table_name,
+                sequence_length=2,
+                stride_length=1,
+                priority=1.)
+
+            driver = py_driver.PyDriver(
+                env=env,
+                policy=py_tf_eager_policy.PyTFEagerPolicy(policy, use_tf_function=True),
+                observers=[add_batch],
+                max_steps=collect_steps_per_iteration)
+            initial_collect_driver = py_driver.PyDriver(
+                env=env,
+                policy=py_tf_eager_policy.PyTFEagerPolicy(policy, use_tf_function=True),
+                observers=[add_batch],
+                max_steps=initial_collect_steps)
+
+            self._transition_generator = ErgodicMDPTransitionGenerator(
+                labeling_function=labeling_function,
+                replay_buffer=replay_buffer,
+                discrete_action=discrete_action_space,
+                num_discrete_actions=self.action_shape[0],
+                prioritized_replay_buffer=True,
+                state_embedding_function=lambda state, label: tf.squeeze(
+                    self.binary_encode(tf.expand_dims(state, axis=0), tf.expand_dims(label, axis=0)).mode()))
+
+        else:
+            replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
+                data_spec=trajectory_spec,
+                batch_size=env.batch_size,
+                max_length=replay_buffer_capacity)
+            add_batch = replay_buffer.add_batch
+            driver = dynamic_step_driver.DynamicStepDriver(
+                env, policy, observers=[add_batch], num_steps=collect_steps_per_iteration)
+            initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
+                env, policy, observers=[add_batch], num_steps=initial_collect_steps)
 
         policy_evaluation_driver = None
         if policy_evaluation_num_episodes > 0:
@@ -1063,15 +1109,16 @@ class VariationalMarkovDecisionProcess(tf.Module):
         driver.run = common.function(driver.run)
 
         print("Initial collect steps...")
-        initial_collect_driver.run()
+        initial_collect_driver.run(env.current_time_step())
         print("Start training.")
 
-        def dataset_generator():
-            generator = ErgodicMDPTransitionGenerator(
-                labeling_function,
-                replay_buffer,
-                discrete_action=discrete_action_space,
-                num_discrete_actions=self.action_shape[0])
+        def dataset_generator(generator: Optional = None):
+            if generator is None:
+                generator = ErgodicMDPTransitionGenerator(
+                    labeling_function,
+                    replay_buffer,
+                    discrete_action=discrete_action_space,
+                    num_discrete_actions=self.action_shape[0])
             return replay_buffer.as_dataset(
                 num_parallel_calls=tf.data.experimental.AUTOTUNE,
                 num_steps=2
@@ -1111,15 +1158,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         for _ in range(global_step.numpy(), num_iterations):
             # Collect a few steps and save them to the replay buffer.
-            driver.run()
+            driver.run(env.current_time_step())
 
             if tf.equal(global_step, 0):
                 save(os.path.join(log_name, 'base'))
 
             additional_training_metrics = {
-                "num_episodes": num_episodes.result(),
-                "env_steps": env_steps.result(),
-                "replay_buffer_frames": replay_buffer.num_frames()} if not parallelization else {
+                "replay_buffer_frames": replay_buffer.num_frames()} if not parallel_environments else {
                 "replay_buffer_frames": replay_buffer.num_frames(),
             }
             if epsilon_greedy > 0.:
@@ -1166,8 +1211,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
         # save the final model
         save(os.path.join(log_name, 'step{:d}'.format(global_step.numpy())))
 
-        tf_env.close()
-        del tf_env
+        env.close()
+        del env
         return 0
 
     def training_step(
@@ -1490,8 +1535,10 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
         model = VariationalMarkovDecisionProcess(
             state_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
             label_shape=(tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
-            action_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
-            reward_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
+            action_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[
+                         1:],
+            reward_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[
+                         1:],
             encoder_network=tf_model.encoder_network,
             transition_network=tf_model.transition_network,
             reward_network=tf_model.reward_network,
@@ -1513,8 +1560,10 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
         model = VariationalMarkovDecisionProcess(
             state_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['state'].shape)[1:],
             label_shape=(tf_model.signatures['serving_default'].structured_input_signature[1]['label'].shape[-1] - 1,),
-            action_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[1:],
-            reward_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[1:],
+            action_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['action'].shape)[
+                         1:],
+            reward_shape=tuple(tf_model.signatures['serving_default'].structured_input_signature[1]['reward'].shape)[
+                         1:],
             encoder_network=tf_model.encoder_network,
             transition_network=tf_model.transition_network,
             reward_network=tf_model.reward_network,
