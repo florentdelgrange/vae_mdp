@@ -5,14 +5,15 @@ import tensorflow as tf
 
 class TransitionFrequencyEstimator:
     def __init__(self, latent_states: tf.Tensor, latent_actions: tf.Tensor, next_latent_states: tf.Tensor):
-        self.num_states = tf.shape(latent_states)[1]  # first axis is batch, second is latent state size
+        self.latent_state_size = tf.shape(latent_states)[1]  # first axis is batch, second is latent state size
+        self.num_states = 2 ** self.latent_state_size
         self.num_actions = tf.shape(latent_actions)[1]  # first axis is batch, second is a one-hot vector
 
         @tf.function
         def estimate_transition_tensor():
-            states = tf.reduce_sum(latent_states * 2 ** tf.range(self.num_states), axis=-1)
+            states = tf.reduce_sum(latent_states * 2 ** tf.range(self.latent_state_size), axis=-1)
             actions = tf.argmax(latent_actions, axis=-1)
-            next_states = tf.reduce_sum(next_latent_states * 2 ** tf.range(self.num_states), axis=-1)
+            next_states = tf.reduce_sum(next_latent_states * 2 ** tf.range(self.latent_state_size), axis=-1)
 
             # flat transition indices
             transitions = states * self.num_actions * self.num_states + actions * self.num_states + next_states
@@ -50,7 +51,7 @@ class TransitionFrequencyEstimator:
         self.transition_tensor = estimate_transition_tensor()
 
     def __call__(self, latent_state: tf.Tensor, latent_action: tf.Tensor):
-        state = tf.reduce_sum(latent_state * 2 ** tf.range(self.num_states), axis=-1)
+        state = tf.reduce_sum(latent_state * 2 ** tf.range(self.latent_state_size), axis=-1)
         action = tf.argmax(latent_action, axis=-1)
 
         @tf.function
@@ -61,7 +62,7 @@ class TransitionFrequencyEstimator:
         @tf.function
         def _prob(*value):
             next_latent_state = tf.concat(value, axis=-1)
-            next_state = tf.reduce_sum(next_latent_state * 2 ** tf.range(self.num_states), axis=-1)
+            next_state = tf.reduce_sum(next_latent_state * 2 ** tf.range(self.latent_state_size), axis=-1)
             return tf.map_fn(fn=_get_prob_value, elems=next_state)
 
         return namedtuple('next_state_transition_distribution', ['prob'])(_prob)
