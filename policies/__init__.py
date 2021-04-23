@@ -10,17 +10,24 @@ from tf_agents.trajectories.policy_step import PolicyStep
 
 tfd = tfp.distributions
 
+COLLECT_SPEC = 'collect_data_spec.pbtxt'
 
-class SavedTFPolicy(tf_agents.policies.tf_policy.Base):
+
+class SavedTFPolicy(tf_agents.policies.tf_policy.TFPolicy):
 
     def __init__(self, saved_policy_path, time_step_spec=None, action_spec=None):
         self.saved_policy = tf.compat.v2.saved_model.load(saved_policy_path)
-        spec_path = os.path.join(saved_policy_path, policy_saver.COLLECT_POLICY_SPEC)
-        policy_specs = tf_agents.specs.tensor_spec.from_pbtxt_file(spec_path)
+        spec_path = [os.path.join(saved_policy_path, policy_saver.POLICY_SPECS_PBTXT),
+                     os.path.join(saved_policy_path, COLLECT_SPEC)]
+        policy_specs = None
+        for path in spec_path:
+            if os.path.exists(path):
+                policy_specs = tf_agents.specs.tensor_spec.from_pbtxt_file(path)
+                break
 
-        if time_step_spec is None:
+        if time_step_spec is None and policy_specs is not None:
             time_step_spec = ts.time_step_spec(policy_specs['collect_data_spec'].observation)
-        if action_spec is None:
+        if action_spec is None and policy_specs is not None:
             action_spec = policy_specs['collect_data_spec'].action
 
         super().__init__(
