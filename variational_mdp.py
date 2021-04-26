@@ -933,6 +933,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             collect_steps_per_iteration: Optional[int] = None,
             replay_buffer_capacity: int = int(1e6),
             use_prioritized_replay_buffer: bool = True,
+            priority_exponent: int = 0.6,
             parallel_environments: bool = True,
             num_parallel_environments: int = 4,
             batch_size: int = 128,
@@ -1042,15 +1043,19 @@ class VariationalMarkovDecisionProcess(tf.Module):
                                                      policy.policy_step_spec,
                                                      env.time_step_spec())
         if use_prioritized_replay_buffer:
+
+            checkpoint_path = None if manager is None else os.path.join(manager.directory, 'reverb')
+            reverb_checkpointer = reverb.checkpointers.DefaultCheckpointer(checkpoint_path)
+
             table_name = 'prioritized_replay_buffer'
             table = reverb.Table(
                 table_name,
                 max_size=int(1e6),
-                sampler=reverb.selectors.Prioritized(priority_exponent=0.6),
-                remover=reverb.selectors.MaxHeap(),
+                sampler=reverb.selectors.Prioritized(priority_exponent=priority_exponent),
+                remover=reverb.selectors.Uniform(),
                 rate_limiter=reverb.rate_limiters.MinSize(1))
 
-            reverb_server = reverb.Server([table])
+            reverb_server = reverb.Server([table], checkpointer=reverb_checkpointer)
 
             replay_buffer = reverb_replay_buffer.ReverbReplayBuffer(
                 data_spec=policy.collect_data_spec,
@@ -1085,6 +1090,16 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 state_embedding_function=lambda state, label: tf.squeeze(
                     self.binary_encode(tf.expand_dims(state, axis=0), tf.expand_dims(label, axis=0)).mode()))
 
+            def close():
+                env.close()
+                add_batch.close()
+                reverb_server.stop()
+
+            def _manager_save(*args, **kwargs):
+                replay_buffer.py_client.checkpoint()
+                manager.save(*args, **kwargs)
+            manager.save = _manager_save
+
         else:
             replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
                 data_spec=trajectory_spec,
@@ -1095,6 +1110,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 env, policy, observers=[add_batch], num_steps=collect_steps_per_iteration)
             initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
                 env, policy, observers=[add_batch], num_steps=initial_collect_steps)
+
+            close = lambda: env.close()
 
         policy_evaluation_driver = None
         if policy_evaluation_num_episodes > 0:
@@ -1128,7 +1145,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 #  deterministic=False  # TF version >= 2.2.0
             )
 
-        dataset = dataset_generator().batch(batch_size=batch_size, drop_remainder=True)
+        dataset = dataset_generator(self._transition_generator).batch(batch_size=batch_size, drop_remainder=True)
         dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
 
         # aggressive training metrics
@@ -1211,8 +1228,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         # save the final model
         save(os.path.join(log_name, 'step{:d}'.format(global_step.numpy())))
 
-        env.close()
-        del env
+        close()
         return 0
 
     def training_step(
