@@ -77,7 +77,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  optimizer: Optional = None,
                  evaluation_memory_size: int = 5,
                  action_label_transition_network: Optional[Model] = None,
-                 action_transition_network: Optional[Model] = None):
+                 action_transition_network: Optional[Model] = None,
+                 importance_sampling_exponent: Optional[float] = 1.,
+                 importance_sampling_exponent_growth_rate: Optional[float] = 0.):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
 
@@ -96,7 +98,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self._entropy_regularizer_scale_factor = None
         self._kl_scale_factor = None
         self._initial_kl_scale_factor = None
-        self._decay_kl_scale_factor = None
+        self._kl_scale_factor_decay = None
+        self._initial_is_exponent = None
+        self._is_exponent_decay = None
+        self._is_exponent_growth_rate = None
 
         self.encoder_temperature = encoder_temperature
         self.prior_temperature = prior_temperature
@@ -108,6 +113,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.entropy_regularizer_decay_rate = entropy_regularizer_decay_rate
         self.kl_growth_rate = kl_annealing_growth_rate
         self.max_decoder_variance = max_decoder_variance
+        self.is_exponent = importance_sampling_exponent
+        self.is_exponent_growth_rate = importance_sampling_exponent_growth_rate
 
         self.scale_activation = multivariate_normal_raw_scale_diag_activation
         self.entropy_regularizer_scale_factor_min_value = tf.constant(entropy_regularizer_scale_factor_min_value)
@@ -508,15 +515,18 @@ class VariationalMarkovDecisionProcess(tf.Module):
             (self.encoder_temperature, self.encoder_temperature_decay_rate),
             (self.prior_temperature, self.prior_temperature_decay_rate),
             (self._entropy_regularizer_scale_factor, self.entropy_regularizer_decay_rate),
-            (self._decay_kl_scale_factor, self.kl_growth_rate)
+            (self._kl_scale_factor_decay, self.kl_growth_rate),
+            (self._is_exponent_decay, self._is_exponent_growth_rate)
         ]:
             if decay_rate.numpy().all() > 0:
                 var.assign(var * (1. - decay_rate))
 
-        if self.kl_growth_rate > 0:
-            self.kl_scale_factor.assign(
-                self._initial_kl_scale_factor + (1. - self._initial_kl_scale_factor) *
-                (1. - self._decay_kl_scale_factor))
+        for var, var_growth_rate, initial_var_value, decay in [
+            (self.kl_scale_factor, self.kl_growth_rate, self._initial_kl_scale_factor, self._kl_scale_factor_decay),
+            (self.is_exponent, self.is_exponent_growth_rate, self._initial_is_exponent, self._is_exponent_decay)
+        ]:
+            if var_growth_rate > 0:
+                var.assign(initial_var_value + (1. - initial_var_value) * (1. - decay))
 
     @tf.function
     def __call__(
@@ -751,6 +761,34 @@ class VariationalMarkovDecisionProcess(tf.Module):
             value, dtype=tf.float32, trainable=False, name='encoder_temperature')
 
     @property
+    def is_exponent(self):
+        return self._is_exponent
+
+    @is_exponent.setter
+    def is_exponent(self, value):
+        if self._is_exponent is None:
+            self._is_exponent = tf.Variable(
+                value, dtype=tf.float32, trainable=False, name='important_sampling_exponent')
+        else:
+            self._is_exponent.assign(value)
+        if self._initial_is_exponent is None:
+            self._initial_is_exponent = tf.Variable(value, dtype=tf.float32, trainable=False, name='init_is_exponent')
+        else:
+            self._initial_is_exponent.assign(value)
+
+    @property
+    def is_exponent_growth_rate(self):
+        return self._is_exponent_growth_rate
+
+    @is_exponent_growth_rate.setter
+    def is_exponent_growth_rate(self, value):
+        if self._is_exponent_decay is None:
+            self._is_exponent_decay = tf.Variable(1., dtype=tf.float32, trainable=False)
+        else:
+            self._is_exponent_decay.assign(1.)
+        self._is_exponent_growth_rate = tf.constant(value, dtype=tf.float32)
+
+    @property
     def encoder_temperature_decay_rate(self):
         return self._encoder_temperature_decay_rate
 
@@ -816,10 +854,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
             self._initial_kl_scale_factor = tf.Variable(self.kl_scale_factor, dtype=tf.float32, trainable=False)
         else:
             self._initial_kl_scale_factor.assign(self.kl_scale_factor)
-        if self._decay_kl_scale_factor is None:
-            self._decay_kl_scale_factor = tf.Variable(1., dtype=tf.float32, trainable=False)
+        if self._kl_scale_factor_decay is None:
+            self._kl_scale_factor_decay = tf.Variable(1., dtype=tf.float32, trainable=False)
         else:
-            self._decay_kl_scale_factor.assign(1.)
+            self._kl_scale_factor_decay.assign(1.)
         self._kl_growth_rate = tf.constant(value, dtype=tf.float32)
 
     @property
