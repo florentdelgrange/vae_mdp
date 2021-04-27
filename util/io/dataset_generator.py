@@ -139,7 +139,7 @@ class ErgodicMDPTransitionGenerator:
         self.cached_state = tf.Variable(self.reset_state, trainable=False)
         self.cached_label = tf.Variable(self.reset_state_label, trainable=False)
 
-        self.cached_priority = tf.Variable(1., trainable=False, dtype=tf.float64)
+        self.cached_sample_probability = tf.Variable(0., trainable=False, dtype=tf.float64)
 
         self.buckets = None
         self.step_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
@@ -206,13 +206,13 @@ class ErgodicMDPTransitionGenerator:
                 _label = label
 
             key = sample_info.key[0]
-            priority = self.update_bucket_priority(_state, _label, key)
+            self.update_bucket_priority(_state, _label, key)
 
-            if trajectory.is_boundary()[0]:
-                self.cached_priority.assign(priority)
-            priority = self.cached_priority if cache_hit else priority
+            if trajectory.is_boundary()[0]:  # next call will hit cache
+                self.cached_sample_probability.assign(sample_info.probability[0])
+            sample_probability = self.cached_sample_probability if cache_hit else sample_info.probability[0]
 
-            return state, label, action, reward, next_state, next_label, priority
+            return state, label, action, reward, next_state, next_label, sample_probability, sample_info.table_size[0]
         else:
             return state, label, action, reward, next_state, next_label
 
