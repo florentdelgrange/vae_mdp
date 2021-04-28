@@ -97,6 +97,7 @@ def map_rl_trajectory_to_vae_input(
 class ErgodicMDPTransitionGenerator:
     """
     Generates a dataset from 2-steps transitions contained in a replay buffer.
+    Note: the replay buffer should already contains at least one experience to initialize this generator.
     """
 
     def __init__(
@@ -142,9 +143,11 @@ class ErgodicMDPTransitionGenerator:
         self.cached_sample_probability = tf.Variable(0., trainable=False, dtype=tf.float64)
 
         self.buckets = None
+        self.latent_state_size = None
         self.step_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
-        self.latent_state_size = tf.shape(self.state_embedding_function(self.reset_state, self.reset_state_label))[-1]
         if self.prioritized_replay_buffer:
+            self.latent_state_size = tf.shape(
+                self.state_embedding_function(self.reset_state, self.reset_state_label))[-1]
             size = 2 ** self.latent_state_size
             self.buckets = tf.Variable(initial_value=tf.zeros(shape=(size,), dtype=tf.int32), trainable=False)
 
@@ -212,7 +215,7 @@ class ErgodicMDPTransitionGenerator:
                 self.cached_sample_probability.assign(sample_info.probability[0])
             sample_probability = self.cached_sample_probability if cache_hit else sample_info.probability[0]
 
-            return state, label, action, reward, next_state, next_label, sample_probability
+            return state, label, action, reward, next_state, next_label, tf.cast(sample_probability, dtype=tf.float32)
         else:
             return state, label, action, reward, next_state, next_label
 

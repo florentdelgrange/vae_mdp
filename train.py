@@ -1,3 +1,4 @@
+import functools
 import importlib
 import os
 
@@ -269,6 +270,27 @@ flags.DEFINE_bool(
     default=False,
     help='Decompose the VAE training in two phases: 1) state space abstraction, 2) action space + policy abstraction.'
 )
+flags.DEFINE_bool(
+    'prioritized_experience_replay',
+    default=False,
+    help='Use a prioritized experience replay buffer'
+)
+flags.DEFINE_float(
+    'priority_exponent',
+    default=.6,
+    help='Exponent parameter for the priority experience replay'
+)
+flags.DEFINE_float(
+    'importance_sampling_exponent',
+    default=0.4,
+    help='Exponent parameter of the importance sampling weights used with the prioritized experience replay buffer'
+)
+flags.DEFINE_float(
+    'importance_sampling_exponent_growth_rate',
+    default=1e-5,
+    help='Growth rate used for annealing the weighted importance sampling exponent parameter when using a prioritized'
+         'experience replay buffer.'
+)
 FLAGS = flags.FLAGS
 
 
@@ -360,6 +382,11 @@ def main(argv):
                 params['prior_temperature_decay_rate']
             )
         )
+    if params['prioritized_experience_replay']:
+        vae_name += '_PER-priority_exponent={:g}-WIS_exponent={:g}-WIS_growth_rate={:g}'.format(
+            params['priority_exponent'],
+            params['importance_sampling_exponent'],
+            params['importance_sampling_exponent_growth_rate'])
     if params['max_state_decoder_variance'] > 0:
         vae_name += '_max_state_decoder_variance={:g}'.format(params['max_state_decoder_variance'])
     if params['epsilon_greedy'] > 0:
@@ -478,7 +505,9 @@ def main(argv):
                 max_decoder_variance=(
                     None if params['max_state_decoder_variance'] == 0. else params['max_state_decoder_variance']
                 ),
-                full_optimization=not params['decompose_training'] and params['latent_policy']
+                full_optimization=not params['decompose_training'] and params['latent_policy'],
+                importance_sampling_exponent=params['importance_sampling_exponent'],
+                importance_sampling_exponent_growth_rate=params['importance_sampling_exponent_growth_rate']
             )
         else:
             vae = variational_mdp.load(params['load_vae'])
@@ -561,14 +590,10 @@ def main(argv):
                                             params['start_annealing_step']),
                                         reset_kl_scale_factor=(
                                             params['kl_annealing_scale_factor'] if phase == 1 and
-                                                                                   (params['action_discretizer'] or
-                                                                                    params['latent_policy']) else None),
+                                            (params['action_discretizer'] or params['latent_policy']) else None),
                                         reset_entropy_regularizer=(
                                             params['entropy_regularizer_scale_factor'] if phase == 1 and
-                                                                                          (params[
-                                                                                               'action_discretizer'] or
-                                                                                           params[
-                                                                                               'latent_policy']) else None),
+                                            (params['action_discretizer'] or params['latent_policy']) else None),
                                         logs=params['logs'],
                                         num_iterations=(
                                             params['max_steps'] if not params['decompose_training'] or phase == 1
@@ -580,15 +605,19 @@ def main(argv):
                                         eval_steps=int(1e3) if not params['do_not_eval'] else 0,
                                         policy_evaluation_num_episodes=(
                                             0 if not (params['action_discretizer'] or params['latent_policy'])
-                                                 or (phase == 0 and len(models) > 1) else 30),
+                                            or (phase == 0 and len(models) > 1) else 30),
                                         annealing_period=params['annealing_period'],
                                         aggressive_training=params['aggressive_training'],
                                         initial_collect_steps=params['initial_collect_steps'],
                                         discrete_action_space=(
-                                                not params['action_discretizer'] and params['latent_policy']))
+                                                not params['action_discretizer'] and params['latent_policy']),
+                                        use_prioritized_replay_buffer=params['prioritized_experience_replay'],
+                                        priority_exponent=params['priority_exponent'])
 
     return 0
 
 
 if __name__ == '__main__':
-    app.run(main)
+
+    tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))
+    #app.run(main)

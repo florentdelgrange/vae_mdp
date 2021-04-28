@@ -1,4 +1,5 @@
 import os
+from collections import namedtuple
 from typing import Tuple, Optional, Callable, Dict, Iterator
 import numpy as np
 import reverb
@@ -95,10 +96,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.full_optimization = full_optimization
         self._optimizer = optimizer
 
+        # initialize all tf variables
         self._entropy_regularizer_scale_factor = None
         self._kl_scale_factor = None
         self._initial_kl_scale_factor = None
         self._kl_scale_factor_decay = None
+        self._is_exponent = None
         self._initial_is_exponent = None
         self._is_exponent_decay = None
         self._is_exponent_growth_rate = None
@@ -742,7 +745,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         This allows monitoring if the latent space is effectively used by the VAE or if posterior collapse happens.
         """
         mean_bits_used = 0
-        s, l, _, _, _, _ = inputs
+        s, l = inputs[:2]
         if deterministic:
             mean = tf.reduce_mean(tf.cast(self.binary_encode(s, l).mode(), dtype=tf.float32), axis=0)
         else:
@@ -1133,24 +1136,19 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 observers=[add_batch],
                 max_steps=initial_collect_steps)
 
-            transition_generator = ErgodicMDPTransitionGenerator(
-                labeling_function=labeling_function,
-                replay_buffer=replay_buffer,
-                discrete_action=discrete_action_space,
-                num_discrete_actions=self.action_shape[0],
-                prioritized_replay_buffer=True,
-                state_embedding_function=lambda state, label: tf.squeeze(
-                    self.binary_encode(tf.expand_dims(state, axis=0), tf.expand_dims(label, axis=0)).mode()))
-
+            replay_buffer_num_frames = replay_buffer.num_frames
             def close():
                 env.close()
                 add_batch.close()
                 reverb_server.stop()
 
+            _manager = manager
+
             def _manager_save(*args, **kwargs):
                 replay_buffer.py_client.checkpoint()
-                manager.save(*args, **kwargs)
-            manager.save = _manager_save
+                _manager.save(*args, **kwargs)
+
+            manager = namedtuple('CustomCheckpointManager', ['save'])(_manager_save)
 
         else:
             replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
@@ -1160,11 +1158,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
             add_batch = replay_buffer.add_batch
             driver = dynamic_step_driver.DynamicStepDriver(
                 env, policy, observers=[add_batch], num_steps=collect_steps_per_iteration)
+            driver.run = common.function(driver.run)
             initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
                 env, policy, observers=[add_batch], num_steps=initial_collect_steps)
 
-            transition_generator = None
-
+            replay_buffer_num_frames = lambda: replay_buffer.num_frames().numpy()
             close = lambda: env.close()
 
         policy_evaluation_driver = None
@@ -1177,10 +1175,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 eval_env, self.get_latent_policy(), num_episodes=policy_evaluation_num_episodes)
             #  policy_evaluation_driver.run = common.function(policy_evaluation_driver.run)
 
-        driver.run = common.function(driver.run)
+        if replay_buffer.num_frames() == 0:
+            print("Initial collect steps...")
+            initial_collect_driver.run(env.current_time_step())
 
-        print("Initial collect steps...")
-        initial_collect_driver.run(env.current_time_step())
         print("Start training.")
 
         def dataset_generator(generator: Optional = None):
@@ -1198,6 +1196,18 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 num_parallel_calls=tf.data.experimental.AUTOTUNE,
                 #  deterministic=False  # TF version >= 2.2.0
             )
+
+        if use_prioritized_replay_buffer:
+            transition_generator = ErgodicMDPTransitionGenerator(
+                labeling_function=labeling_function,
+                replay_buffer=replay_buffer,
+                discrete_action=discrete_action_space,
+                num_discrete_actions=self.action_shape[0],
+                prioritized_replay_buffer=True,
+                state_embedding_function=lambda state, label: tf.squeeze(
+                    self.binary_encode(tf.expand_dims(state, axis=0), tf.expand_dims(label, axis=0)).mode()))
+        else:
+            transition_generator = None
 
         dataset = dataset_generator(transition_generator).batch(batch_size=batch_size, drop_remainder=True)
         dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
@@ -1217,12 +1227,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 tf.debugging.disable_check_numerics()
             state, label, action, reward, next_state, next_label = next(dataset_iterator)
             call = self.__call__.get_concrete_function(
-                tf.TensorSpec((None,) + tuple(tf.shape(state)[1:])),
-                tf.TensorSpec((None,) + tuple(tf.shape(label)[1:])),
-                tf.TensorSpec((None,) + tuple(tf.shape(action)[1:])),
-                tf.TensorSpec((None,) + tuple(tf.shape(reward)[1:])),
-                tf.TensorSpec((None,) + tuple(tf.shape(next_state)[1:])),
-                tf.TensorSpec((None,) + tuple(tf.shape(next_label)[1:])))
+                tf.TensorSpec(shape=(None,) + tuple(tf.shape(state)[1:]), dtype=tf.float32, name='state'),
+                tf.TensorSpec(shape=(None,) + tuple(tf.shape(label)[1:]), dtype=tf.float32, name='label'),
+                tf.TensorSpec(shape=(None,) + tuple(tf.shape(action)[1:]), dtype=tf.float32, name='action'),
+                tf.TensorSpec(shape=(None,) + tuple(tf.shape(reward)[1:]), dtype=tf.float32, name='reward'),
+                tf.TensorSpec(shape=(None,) + tuple(tf.shape(next_state)[1:]), dtype=tf.float32, name='next_state'),
+                tf.TensorSpec(shape=(None,) + tuple(tf.shape(next_label)[1:]), dtype=tf.float32, name='next_label'), )
             tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name), signatures=call, )
             if check_numerics:
                 tf.debugging.enable_check_numerics()
@@ -1232,7 +1242,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             driver.run(env.current_time_step())
 
             if tf.equal(global_step, 0):
-                save(os.path.join(log_name, 'base'))
+                # save(os.path.join(log_name, 'base'))
+                pass
 
             additional_training_metrics = {
                 "replay_buffer_frames": replay_buffer.num_frames()} if not parallel_environments else {
@@ -1244,16 +1255,17 @@ class VariationalMarkovDecisionProcess(tf.Module):
             loss = self.training_step(
                 dataset_batch=next(dataset_iterator), batch_size=batch_size,
                 annealing_period=annealing_period, global_step=global_step,
-                dataset_size=replay_buffer.num_frames().numpy(), display_progressbar=display_progressbar,
+                dataset_size=replay_buffer.num_frames(), display_progressbar=display_progressbar,
                 start_step=start_step, epoch=0, progressbar=progressbar, dataset_generator=dataset_generator,
                 save_model_interval=save_model_interval,
-                eval_ratio=eval_steps * batch_size / replay_buffer.num_frames(),
+                eval_ratio=eval_steps * batch_size / replay_buffer_num_frames(),
                 save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
                 log_interval=log_interval, logs=logs, start_annealing_step=start_annealing_step,
                 additional_metrics=additional_training_metrics,
                 eval_policy_driver=policy_evaluation_driver,
                 aggressive_training=aggressive_training and global_step.numpy() < aggressive_training_steps,
                 aggressive_update=aggressive_inference_optimization,
+                prioritized_experience_replay=use_prioritized_replay_buffer
             )
 
             if checkpoint is not None and tf.equal(tf.math.mod(global_step, log_interval), 0):
@@ -1291,7 +1303,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             eval_ratio, save_directory, log_name, train_summary_writer, log_interval, logs,
             start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None,
             eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
-            aggressive_training=False, aggressive_update=True
+            aggressive_training=False, aggressive_update=True, prioritized_experience_replay=False
     ):
         if additional_metrics is None:
             additional_metrics = {}
@@ -1319,6 +1331,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             metrics_key_values.append(('t_2', self.prior_temperature))
             metrics_key_values.append(('entropy_regularizer_scale_factor', self.entropy_regularizer_scale_factor))
             metrics_key_values.append(('kl_annealing_scale_factor', self.kl_scale_factor))
+        if prioritized_experience_replay:
+            metrics_key_values.append(('wis_exponent', self.is_exponent))
         if progressbar is not None:
             if dataset_size is not None and progressbar.target is not None and display_progressbar and \
                     (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):

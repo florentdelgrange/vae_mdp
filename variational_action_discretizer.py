@@ -50,6 +50,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             full_optimization: bool = False,
             reconstruction_mixture_components: int = 1,
             action_regularizer_scaling: float = 1e-1,
+            importance_sampling_exponent: Optional[float] = None,
+            importance_sampling_exponent_growth_rate: Optional[float] = None
     ):
 
         super().__init__(
@@ -72,7 +74,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             mixture_components=vae_mdp.mixture_components,
             multivariate_normal_raw_scale_diag_activation=vae_mdp.scale_activation,
             multivariate_normal_full_covariance=vae_mdp.full_covariance,
-            pre_loaded_model=True)
+            pre_loaded_model=True,
+            importance_sampling_exponent=vae_mdp.is_exponent,
+            importance_sampling_exponent_growth_rate=vae_mdp.is_exponent_growth_rate)
 
         if encoder_temperature is None:
             encoder_temperature = 1. / (number_of_discrete_actions - 1)
@@ -96,6 +100,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.encoder_temperature_decay_rate = tf.constant(encoder_temperature_decay_rate, dtype=tf.float32)
         self.prior_temperature_decay_rate = tf.constant(prior_temperature_decay_rate, dtype=tf.float32)
         self._action_regularizer_scaling = tf.constant(action_regularizer_scaling, dtype=tf.float32)
+        if importance_sampling_exponent is not None:
+            self.is_exponent = importance_sampling_exponent
+        if importance_sampling_exponent_growth_rate is not None:
+            self.is_exponent_growth_rate = importance_sampling_exponent_growth_rate
 
         def clone_model(model: tf.keras.Model, copy_name: str = ''):
             model = model_from_json(model.to_json(), custom_objects={'leaky_relu': tf.nn.leaky_relu})
@@ -774,7 +782,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         )
 
     def mean_latent_bits_used(self, inputs, eps=1e-3, deterministic=True):
-        state, label, action, reward, next_state, next_label = inputs
+        state, label, action, reward, next_state, next_label = inputs[:6]
         latent_state = tf.cast(self.binary_encode(state, label).sample(), tf.float32)
         mean = tf.reduce_mean(self.discrete_action_encoding(latent_state, action).probs_parameter(), axis=0)
         check = lambda x: 1 if 1 - eps > x > eps else 0
@@ -917,14 +925,16 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             action: tf.Tensor,
             reward: tf.Tensor,
             next_state: tf.Tensor,
-            next_label: tf.Tensor
+            next_label: tf.Tensor,
+            sample_probability: Optional[tf.Tensor] = None,
     ):
         if self.full_optimization:
             return self._compute_apply_gradients(
-                state, label, action, reward, next_state, next_label, self.trainable_variables)
+                state, label, action, reward, next_state, next_label, self.trainable_variables, sample_probability)
         else:
             return self._compute_apply_gradients(
-                state, label, action, reward, next_state, next_label, self.action_discretizer_variables)
+                state, label, action, reward, next_state, next_label,
+                self.action_discretizer_variables, sample_probability)
 
     def estimate_local_losses_from_samples(
             self,
