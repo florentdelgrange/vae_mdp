@@ -772,7 +772,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
         else:
             self._is_exponent.assign(value)
         if self._initial_is_exponent is None:
-            self._initial_is_exponent = tf.Variable(value, dtype=tf.float32, trainable=False, name='init_is_exponent')
+            self._initial_is_exponent = tf.Variable(
+                value, dtype=tf.float32, trainable=False, name='initial_importance_sampling_exponent')
         else:
             self._initial_is_exponent.assign(value)
 
@@ -881,7 +882,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             next_state: tf.Tensor,
             next_label: tf.Tensor,
             sample_probability: Optional[tf.Tensor] = None,
-            replay_buffer_size: Optional[tf.Tensor] = None
     ):
         output = self(state, label, action, reward, next_state, next_label)
         distortion, rate, entropy_regularizer = output['distortion'], output['rate'], output['entropy_regularizer']
@@ -889,9 +889,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
         beta = self.kl_scale_factor
 
         # Importance sampling weights (is) for prioritized experience replay
-        if sample_probability is not None and replay_buffer_size is not None:
-            is_weights = (replay_buffer_size * sample_probability) ** (-1. * self.is_exponent)
-            is_weights = is_weights / tf.reduce_max(is_weights)
+        if sample_probability is not None:
+            is_weights = (tf.reduce_min(sample_probability) / sample_probability) ** self.is_exponent
         else:
             is_weights = 1.
 
@@ -900,11 +899,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
         )
 
     def _compute_apply_gradients(
-            self, state, label, action, reward, next_state, next_label, trainable_variables,
-            sample_probability=None, replay_buffer_size=None):
+            self, state, label, action, reward, next_state, next_label, trainable_variables, sample_probability=None):
         with tf.GradientTape() as tape:
             loss = self.compute_loss(
-                state, label, action, reward, next_state, next_label, sample_probability, replay_buffer_size)
+                state, label, action, reward, next_state, next_label, sample_probability)
 
         gradients = tape.gradient(loss, trainable_variables)
 
@@ -926,11 +924,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             next_state: tf.Tensor,
             next_label: tf.Tensor,
             sample_probability: Optional[tf.Tensor] = None,
-            replay_buffer_size: Optional[tf.Tensor] = None
     ):
         return self._compute_apply_gradients(
-            state, label, action, reward, next_state, next_label, self.trainable_variables,
-            sample_probability, replay_buffer_size)
+            state, label, action, reward, next_state, next_label, self.trainable_variables, sample_probability)
 
     @tf.function
     def inference_update(
@@ -942,11 +938,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             next_state: tf.Tensor,
             next_label: tf.Tensor,
             sample_probability: Optional[tf.Tensor] = None,
-            replay_buffer_size: Optional[tf.Tensor] = None
     ):
         return self._compute_apply_gradients(
-            state, label, action, reward, next_state, next_label, self.inference_variables,
-            sample_probability, replay_buffer_size)
+            state, label, action, reward, next_state, next_label, self.inference_variables, sample_probability)
 
     @tf.function
     def latent_policy_update(
@@ -958,11 +952,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
             next_state: tf.Tensor,
             next_label: tf.Tensor,
             sample_probability: Optional[tf.Tensor] = None,
-            replay_buffer_size: Optional[tf.Tensor] = None
     ):
         return self._compute_apply_gradients(
             state, label, action, reward, next_state, next_label,
-            self.latent_policy_network.trainable_variables, sample_probability, replay_buffer_size)
+            self.latent_policy_network.trainable_variables, sample_probability)
 
     @tf.function
     def generator_update(
@@ -974,11 +967,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             next_state: tf.Tensor,
             next_label: tf.Tensor,
             sample_probability: Optional[tf.Tensor] = None,
-            replay_buffer_size: Optional[tf.Tensor] = None
     ):
         return self._compute_apply_gradients(
-            state, label, action, reward, next_state, next_label, self.generator_variables,
-            sample_probability, replay_buffer_size)
+            state, label, action, reward, next_state, next_label, self.generator_variables, sample_probability)
 
     def train_from_policy(
             self,

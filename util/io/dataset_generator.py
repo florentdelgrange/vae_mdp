@@ -212,7 +212,7 @@ class ErgodicMDPTransitionGenerator:
                 self.cached_sample_probability.assign(sample_info.probability[0])
             sample_probability = self.cached_sample_probability if cache_hit else sample_info.probability[0]
 
-            return state, label, action, reward, next_state, next_label, sample_probability, sample_info.table_size[0]
+            return state, label, action, reward, next_state, next_label, sample_probability
         else:
             return state, label, action, reward, next_state, next_label
 
