@@ -991,6 +991,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             checkpoint: Optional[tf.train.Checkpoint] = None,
             manager: Optional[tf.train.CheckpointManager] = None,
             log_interval: int = 80,
+            checkpoint_interval: int = 1000,
             eval_steps: int = int(1e3),
             save_model_interval: int = int(1e4),
             log_name: str = 'vae_training',
@@ -1262,7 +1263,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 prioritized_experience_replay=use_prioritized_replay_buffer
             )
 
-            if checkpoint is not None and tf.equal(tf.math.mod(global_step, log_interval), 0):
+            if checkpoint is not None and tf.equal(tf.math.mod(global_step, checkpoint_interval), 0):
                 manager.save()
 
             if aggressive_training and global_step.numpy() < aggressive_training_steps:
