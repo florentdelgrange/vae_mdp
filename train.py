@@ -414,40 +414,14 @@ def main(argv):
 
     def generate_network_components(name=''):
 
-        if name != '':
-            name += '_'
+        network_components = []
+        for component_name in ['encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy']:
+            x = Sequential(name="{}_{}_network_body".format(name, component_name))
+            for i, units in enumerate(params[component_name + '_layers']):
+                x.add(Dense(units, activation=activation, name="{}_{}_{}".format(name, component_name, i)))
+            network_components.append(x)
 
-        # Encoder body
-        q = Sequential(name="{}encoder_network_body".format(name))
-        for i, units in enumerate(params['encoder_layers']):
-            q.add(Dense(units, activation=activation, name="{}encoder_{}".format(name, i)))
-
-        # Transition network body
-        p_t = Sequential(name="{}transition_network_body".format(name))
-        for i, units in enumerate(params['transition_layers']):
-            p_t.add(Dense(units, activation=activation, name='{}transition_{}'.format(name, i)))
-
-        # Label transition network
-        p_l_t = Sequential(name="{}label_transition_network_body".format(name))
-        for i, units in enumerate(params['label_transition_layers']):
-            p_t.add(Dense(units, activation=activation, name='{}label_transition_{}'.format(name, i)))
-
-        # Reward network body
-        p_r = Sequential(name="{}reward_network_body".format(name))
-        for i, units in enumerate(params['reward_layers']):
-            p_r.add(Dense(units, activation=activation, name='{}reward_{}'.format(name, i)))
-
-        # Decoder network body
-        p_decode = Sequential(name="{}decoder_network_body".format(name))
-        for i, units in enumerate(params['decoder_layers']):
-            p_decode.add(Dense(units, activation=activation, name='{}decoder_{}'.format(name, i)))
-
-        # Policy network body
-        latent_policy = Sequential(name="{}policy_network_body".format(name))
-        for i, units in enumerate(params['discrete_policy_layers']):
-            latent_policy.add(Dense(units, activation=activation, name='{}discrete_policy_{}'.format(name, i)))
-
-        return q, p_t, p_l_t, p_r, p_decode, latent_policy
+        return network_components
 
     if params['env_suite'] != '':
         try:
