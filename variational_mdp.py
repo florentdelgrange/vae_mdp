@@ -51,10 +51,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  transition_network: Model,
                  reward_network: Model,
                  decoder_network: Model,
-                 label_transition_network: Model = Sequential(
-                     [Dense(units=256, activation='relu'),
-                      Dense(units=256, activation='relu')],
-                     name='label_transition_network_body'),
+                 label_transition_network: Model,
                  latent_policy_network: Optional[Model] = None,
                  latent_state_size: int = 12,
                  encoder_temperature: float = 2. / 3,
@@ -133,8 +130,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.evaluation_memory = tf.Variable([-1. * np.inf] * evaluation_memory_size, trainable=False)
 
         if not pre_loaded_model:
-            label_transition_network._name = 'label_transition_network_core'
-            transition_network._name = 'transition_network_core'
 
             # Encoder network
             encoder = encoder_network(state)
@@ -1059,7 +1054,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             stateful_metrics=list(self.loss_metrics.keys()) + [
                 'loss', 't_1', 't_2', 'entropy_regularizer_scale_factor', 'step', "num_episodes", "env_steps",
                 "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv", 'state_rate',
-                "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used'],
+                "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used', 'wis_exponent'],
             interval=0.1) if display_progressbar else None
 
         discrete_action_space = discrete_action_space and (self.latent_policy_network is not None)
@@ -1225,7 +1220,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         def save(model_name: str):
             if check_numerics:
                 tf.debugging.disable_check_numerics()
-            state, label, action, reward, next_state, next_label = next(dataset_iterator)
+            state, label, action, reward, next_state, next_label = next(dataset_iterator)[:6]
             call = self.__call__.get_concrete_function(
                 tf.TensorSpec(shape=(None,) + tuple(tf.shape(state)[1:]), dtype=tf.float32, name='state'),
                 tf.TensorSpec(shape=(None,) + tuple(tf.shape(label)[1:]), dtype=tf.float32, name='label'),
@@ -1242,8 +1237,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             driver.run(env.current_time_step())
 
             if tf.equal(global_step, 0):
-                # save(os.path.join(log_name, 'base'))
-                pass
+                save(os.path.join(log_name, 'base'))
 
             additional_training_metrics = {
                 "replay_buffer_frames": replay_buffer.num_frames()} if not parallel_environments else {

@@ -31,10 +31,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             transition_network: Model,
             reward_network: Model,
             latent_policy_network: Model,
-            action_label_transition_network: Model = Sequential(
-                [Dense(units=256, activation='relu'),
-                 Dense(units=256, activation='relu')],
-                name='label_transition_network_body'),
+            action_label_transition_network: Model,
             pre_processing_network: Model = Sequential(
                 [Dense(units=256, activation='relu'),
                  Dense(units=256, activation='relu')],
