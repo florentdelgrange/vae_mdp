@@ -155,7 +155,7 @@ class ErgodicMDPTransitionGenerator:
         assert self.prioritized_replay_buffer
         self.step_counter.assign_add(1)
         latent_state = self.state_embedding_function(state, label)
-        index = tf.reduce_sum(latent_state * 2 * tf.range(self.latent_state_size), axis=-1)
+        index = tf.reduce_sum(latent_state * 2 ** tf.range(self.latent_state_size), axis=-1)
         self.buckets[index].assign(self.buckets[index] + 1)
         priority = 1. - self.buckets[index] / self.step_counter
         self.replay_buffer.update_priorities(tf.expand_dims(key, axis=0), tf.expand_dims(priority, axis=0))
