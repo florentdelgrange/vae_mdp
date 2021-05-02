@@ -21,12 +21,18 @@ labeling_functions = {
         ], axis=-1),
     'Pendulum-v0':  # safe labels
         lambda observation: tf.stack([
-            # easy: |theta| < 90
-            tf.logical_and(observation[..., 0] > 0., tf.abs(observation[..., 1]) < tf.math.sin(math.pi / 2)),
-            # soft: |theta| < 30
-            tf.logical_and(observation[..., 0] > 0., tf.abs(observation[..., 1]) < tf.math.sin(math.pi / 6)),
-            # hard: |theta| < 20
-            tf.logical_and(observation[..., 0] > 0., tf.abs(observation[..., 1]) < tf.math.sin(math.pi / 9)),
+            # soft: cos(θ) < cos(π / 6 rad) = cos(2 π - π / 6) = cos(30°) = cos(-30°)
+            observation[..., 0] <= tf.math.cos(math.pi / 6),
+            # hard: cos(θ) < cos(π / 9 rad) = cos(2 π - π / 9) = cos(20°) = cos(-20°)
+            observation[..., 0] <= tf.math.cos(math.pi / 9),
+            # first quadrant -- up right
+            tf.logical_and(observation[..., 0] >= 0., observation[..., 1] >= 0.),
+            # second quadrant -- down left
+            tf.logical_and(observation[..., 0] < 0., observation[..., 1] >= 0.),
+            # third quadrant -- down right
+            tf.logical_and(observation[..., 0] < 0., observation[..., 1] < 0.),
+            # fourth quadrant -- up right
+            tf.logical_and(observation[..., 0] >= 0., observation[..., 1] < 0.),
         ], axis=-1),
     'CartPole-v0':  # safe labels
         lambda observation: tf.stack([
