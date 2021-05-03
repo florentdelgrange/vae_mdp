@@ -347,8 +347,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             #  'decoder_variance': tf.keras.metrics.Mean(name='decoder_variance')
         }
 
-        self._transition_generator = None
-
     def reset_metrics(self):
         for value in self.loss_metrics.values():
             value.reset_states()
@@ -1133,18 +1131,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 max_steps=initial_collect_steps)
 
             replay_buffer_num_frames = replay_buffer.num_frames
+
             def close():
                 env.close()
                 add_batch.close()
                 reverb_server.stop()
-
-            _manager = manager
-
-            def _manager_save(*args, **kwargs):
-                replay_buffer.py_client.checkpoint()
-                _manager.save(*args, **kwargs)
-
-            manager = namedtuple('CustomCheckpointManager', ['save'])(_manager_save)
 
         else:
             replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
@@ -1202,6 +1193,26 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 prioritized_replay_buffer=True,
                 state_embedding_function=lambda state, label: tf.squeeze(
                     self.binary_encode(tf.expand_dims(state, axis=0), tf.expand_dims(label, axis=0)).mode()))
+
+            if manager is not None:
+                checkpoint_path = os.path.join(manager.directory, 'transition_generator')
+                transition_generator_checkpointer = tf.train.Checkpoint(
+                    buckets=transition_generator.buckets, step_counter=transition_generator.step_counter)
+                transition_generator_manager = tf.train.CheckpointManager(
+                    checkpoint=transition_generator_checkpointer, directory=checkpoint_path, max_to_keep=1)
+                transition_generator_checkpointer.restore(transition_generator_manager.latest_checkpoint)
+
+                model_manager = manager
+
+                def _manager_save(*args, **kwargs):
+                    replay_buffer.py_client.checkpoint()
+                    transition_generator_manager.save(*args, **kwargs)
+                    model_manager.save(*args, **kwargs)
+
+                manager = namedtuple('CustomCheckpointManager', ['save'])(_manager_save)
+
+                tf.print(transition_generator.buckets, summarize=-1)
+
         else:
             transition_generator = None
 

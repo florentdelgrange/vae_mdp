@@ -107,7 +107,7 @@ class ErgodicMDPTransitionGenerator:
             discrete_action: bool = False,
             num_discrete_actions: int = 0,
             prioritized_replay_buffer: bool = False,
-            state_embedding_function: Optional[Callable[[tf.Tensor, tf.Tensor], tf.Tensor]] = None
+            state_embedding_function: Optional[Callable[[tf.Tensor, tf.Tensor], tf.Tensor]] = None,
     ):
         assert not discrete_action or num_discrete_actions > 0
         assert not prioritized_replay_buffer or state_embedding_function is not None
