@@ -1211,8 +1211,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
                 manager = namedtuple('CustomCheckpointManager', ['save'])(_manager_save)
 
-                tf.print(transition_generator.buckets, summarize=-1)
-
         else:
             transition_generator = None
 
