@@ -1248,10 +1248,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 additional_training_metrics['epsilon_greedy'] = epsilon_greedy
 
             loss = self.training_step(
-                dataset_batch=next(dataset_iterator), batch_size=batch_size,
+                dataset_iterator=dataset_iterator, batch_size=batch_size,
                 annealing_period=annealing_period, global_step=global_step,
                 dataset_size=replay_buffer.num_frames(), display_progressbar=display_progressbar,
-                start_step=start_step, epoch=0, progressbar=progressbar, dataset_generator=dataset_generator,
+                start_step=start_step, epoch=0, progressbar=progressbar,
                 save_model_interval=save_model_interval,
                 eval_ratio=eval_steps * batch_size / replay_buffer_num_frames(),
                 save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
@@ -1293,13 +1293,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
         return 0
 
     def training_step(
-            self, dataset_batch, batch_size, annealing_period, global_step, dataset_size,
-            display_progressbar, start_step, epoch, progressbar, dataset_generator, save_model_interval,
+            self, dataset_iterator, batch_size, annealing_period, global_step, dataset_size,
+            display_progressbar, start_step, epoch, progressbar, save_model_interval,
             eval_ratio, save_directory, log_name, train_summary_writer, log_interval, logs,
             start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None,
             eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
             aggressive_training=False, aggressive_update=True, prioritized_experience_replay=False
     ):
+        dataset_batch = next(dataset_iterator)
+
         if additional_metrics is None:
             additional_metrics = {}
         if not aggressive_training and not self.latent_policy_training_phase:
@@ -1341,7 +1343,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         # eval, save and log
         eval_steps = int(1e3) if dataset_size is None else int(dataset_size * eval_ratio) // batch_size
         if global_step.numpy() % save_model_interval == 0:
-            self.eval_and_save(dataset=dataset_generator(),
+            self.eval_and_save(dataset_iterator=dataset_iterator,
                                batch_size=batch_size, eval_steps=eval_steps,
                                global_step=global_step, save_directory=save_directory, log_name=log_name,
                                train_summary_writer=train_summary_writer,
@@ -1358,7 +1360,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
     def eval_and_save(
             self,
-            dataset: tf.data.Dataset,
+            dataset_iterator,
             batch_size: int,
             eval_steps: int,
             global_step: tf.Variable,
@@ -1369,15 +1371,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
     ):
         eval_elbo = tf.metrics.Mean()
         if eval_steps > 0:
-            eval_set = dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
             eval_progressbar = Progbar(
                 target=(eval_steps + 1) * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
 
             tf.print("\nEvalutation over {} steps".format(eval_steps))
             data = {'state': None, 'action': None}
-            for step, x in enumerate(eval_set):
-                if step > eval_steps:
-                    break
+            for step in range(eval_steps):
+                x = next(dataset_iterator)[:-1]
 
                 elbo, latent_states, latent_actions = self.eval(*x)
                 for value in ('state', 'action'):
@@ -1424,7 +1424,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     _checkpoint()
                     break
 
-        del dataset
         return eval_elbo
 
     def eval_policy(
