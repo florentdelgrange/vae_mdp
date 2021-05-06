@@ -25,6 +25,7 @@ from tf_agents.trajectories.policy_step import PolicyStep
 from tf_agents.utils import common
 
 from util.io.dataset_generator import ErgodicMDPTransitionGenerator
+from util.replay_buffer_tools import PriorityBuckets
 from verification.local_losses import estimate_local_losses_from_samples
 
 tfd = tfp.distributions
@@ -128,6 +129,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         # to save only the N best last models learned
         self.evaluation_memory = tf.Variable([-1. * np.inf] * evaluation_memory_size, trainable=False)
+
+        self.buckets = None
 
         if not pre_loaded_model:
 
@@ -532,7 +535,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             action: tf.Tensor,
             reward: tf.Tensor,
             next_state: tf.Tensor,
-            next_label: tf.Tensor
+            next_label: tf.Tensor,
+            sample_key: Optional[tf.Tensor]
     ):
         if self.latent_policy_training_phase:
             return self.latent_policy_training(state, label, action, reward, next_state, next_label)
@@ -581,6 +585,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
             enforce_latent_space_spreading=(
                     self.marginal_entropy_regularizer_ratio > 0. and not self.latent_policy_training_phase),
             latent_states=next_latent_state)
+
+        # bucketing
+        if self.buckets is not None and sample_key is not None:
+            self.buckets.update_priority(keys=sample_key, latent_states=tf.cast(tf.round(latent_state), tf.int32))
 
         # metrics
         self.loss_metrics['ELBO'](-1 * (distortion + rate))
@@ -877,9 +885,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
             reward: tf.Tensor,
             next_state: tf.Tensor,
             next_label: tf.Tensor,
+            sample_key: Optional[tf.Tensor] = None,
             sample_probability: Optional[tf.Tensor] = None,
     ):
-        output = self(state, label, action, reward, next_state, next_label)
+        output = self(state, label, action, reward, next_state, next_label, sample_key)
         distortion, rate, entropy_regularizer = output['distortion'], output['rate'], output['entropy_regularizer']
         alpha = self.entropy_regularizer_scale_factor
         beta = self.kl_scale_factor
@@ -895,10 +904,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
         )
 
     def _compute_apply_gradients(
-            self, state, label, action, reward, next_state, next_label, trainable_variables, sample_probability=None):
+            self, state, label, action, reward, next_state, next_label, trainable_variables,
+            sample_key=None, sample_probability=None):
         with tf.GradientTape() as tape:
             loss = self.compute_loss(
-                state, label, action, reward, next_state, next_label, sample_probability)
+                state, label, action, reward, next_state, next_label,
+                sample_key=sample_key, sample_probability=sample_probability)
 
         gradients = tape.gradient(loss, trainable_variables)
 
@@ -919,10 +930,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
             reward: tf.Tensor,
             next_state: tf.Tensor,
             next_label: tf.Tensor,
+            sample_key: Optional[tf.Tensor] = None,
             sample_probability: Optional[tf.Tensor] = None,
     ):
         return self._compute_apply_gradients(
-            state, label, action, reward, next_state, next_label, self.trainable_variables, sample_probability)
+            state, label, action, reward, next_state, next_label, self.trainable_variables,
+            sample_key, sample_probability)
 
     @tf.function
     def inference_update(
@@ -933,10 +946,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
             reward: tf.Tensor,
             next_state: tf.Tensor,
             next_label: tf.Tensor,
+            sample_key: Optional[tf.Tensor] = None,
             sample_probability: Optional[tf.Tensor] = None,
     ):
         return self._compute_apply_gradients(
-            state, label, action, reward, next_state, next_label, self.inference_variables, sample_probability)
+            state, label, action, reward, next_state, next_label, self.inference_variables,
+            sample_key, sample_probability)
 
     @tf.function
     def latent_policy_update(
@@ -947,11 +962,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
             reward: tf.Tensor,
             next_state: tf.Tensor,
             next_label: tf.Tensor,
+            sample_key: Optional[tf.Tensor] = None,
             sample_probability: Optional[tf.Tensor] = None,
     ):
         return self._compute_apply_gradients(
             state, label, action, reward, next_state, next_label,
-            self.latent_policy_network.trainable_variables, sample_probability)
+            self.latent_policy_network.trainable_variables, sample_key, sample_probability)
 
     @tf.function
     def generator_update(
@@ -962,10 +978,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
             reward: tf.Tensor,
             next_state: tf.Tensor,
             next_label: tf.Tensor,
+            sample_key: Optional[tf.Tensor] = None,
             sample_probability: Optional[tf.Tensor] = None,
     ):
         return self._compute_apply_gradients(
-            state, label, action, reward, next_state, next_label, self.generator_variables, sample_probability)
+            state, label, action, reward, next_state, next_label,
+            self.generator_variables, sample_key, sample_probability)
 
     def train_from_policy(
             self,
@@ -1101,7 +1119,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 table_name,
                 max_size=int(1e6),
                 sampler=reverb.selectors.Prioritized(priority_exponent=priority_exponent),
-                remover=reverb.selectors.Uniform(),
+                remover=reverb.selectors.Fifo(),
                 rate_limiter=reverb.rate_limiters.MinSize(1))
 
             reverb_server = reverb.Server([table], checkpointer=reverb_checkpointer)
@@ -1112,12 +1130,34 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 table_name=table_name,
                 local_server=reverb_server)
 
+            self.buckets = PriorityBuckets(replay_buffer=None, latent_state_size=self.latent_state_size)
+            self.buckets.replay_buffer = replay_buffer
+
+            if manager is not None:
+                checkpoint_path = os.path.join(manager.directory, 'priority_buckets')
+                bucket_checkpointer = tf.train.Checkpoint(
+                    buckets=self.buckets.buckets,
+                    step_counter=self.buckets.step_counter,
+                    max_priority=self.buckets.max_priority)
+                bucket_manager = tf.train.CheckpointManager(
+                    checkpoint=bucket_checkpointer, directory=checkpoint_path, max_to_keep=1)
+                bucket_checkpointer.restore(bucket_manager.latest_checkpoint)
+
+                model_manager = manager
+
+                def _manager_save(*args, **kwargs):
+                    replay_buffer.py_client.checkpoint()
+                    bucket_manager.save(*args, **kwargs)
+                    model_manager.save(*args, **kwargs)
+
+                manager = namedtuple('CustomCheckpointManager', ['save'])(_manager_save)
+
             add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
                 py_client=replay_buffer.py_client,
                 table_name=table_name,
                 sequence_length=2,
                 stride_length=1,
-                priority=1.)
+                priority=self.buckets.max_priority)
 
             driver = py_driver.PyDriver(
                 env=env,
@@ -1184,35 +1224,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 #  deterministic=False  # TF version >= 2.2.0
             )
 
-        if use_prioritized_replay_buffer:
-            transition_generator = ErgodicMDPTransitionGenerator(
-                labeling_function=labeling_function,
-                replay_buffer=replay_buffer,
-                discrete_action=discrete_action_space,
-                num_discrete_actions=self.action_shape[0],
-                prioritized_replay_buffer=True,
-                state_embedding_function=lambda state, label: tf.squeeze(
-                    self.binary_encode(tf.expand_dims(state, axis=0), tf.expand_dims(label, axis=0)).mode()))
-
-            if manager is not None:
-                checkpoint_path = os.path.join(manager.directory, 'transition_generator')
-                transition_generator_checkpointer = tf.train.Checkpoint(
-                    buckets=transition_generator.buckets, step_counter=transition_generator.step_counter)
-                transition_generator_manager = tf.train.CheckpointManager(
-                    checkpoint=transition_generator_checkpointer, directory=checkpoint_path, max_to_keep=1)
-                transition_generator_checkpointer.restore(transition_generator_manager.latest_checkpoint)
-
-                model_manager = manager
-
-                def _manager_save(*args, **kwargs):
-                    replay_buffer.py_client.checkpoint()
-                    transition_generator_manager.save(*args, **kwargs)
-                    model_manager.save(*args, **kwargs)
-
-                manager = namedtuple('CustomCheckpointManager', ['save'])(_manager_save)
-
-        else:
-            transition_generator = None
+        transition_generator = ErgodicMDPTransitionGenerator(
+            labeling_function=labeling_function,
+            replay_buffer=replay_buffer,
+            discrete_action=discrete_action_space,
+            num_discrete_actions=self.action_shape[0],
+            prioritized_replay_buffer=use_prioritized_replay_buffer)
 
         dataset = dataset_generator(transition_generator).batch(batch_size=batch_size, drop_remainder=True)
         dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))

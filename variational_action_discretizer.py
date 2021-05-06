@@ -554,10 +554,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             action: tf.Tensor,
             reward: tf.Tensor,
             next_state: tf.Tensor,
-            next_label: tf.Tensor
+            next_label: tf.Tensor,
+            sample_key: Optional[tf.Tensor] = None,
     ):
         if self.full_optimization:
-            return self._full_optimization_call(state, label, action, reward, next_state, next_label)
+            return self._full_optimization_call(state, label, action, reward, next_state, next_label, sample_key)
 
         if self.relaxed_state_encoding:
             logistic_latent_state = self.relaxed_encoding(state, self._state_vae.encoder_temperature).sample()
@@ -612,6 +613,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         entropy_regularizer = self.entropy_regularizer(latent_state, action)
 
+        # bucketing
+        if self.buckets is not None and sample_key is not None:
+            self.buckets.update_priority(keys=sample_key, latent_states=tf.cast(tf.round(latent_state), tf.int32))
+
         # metrics
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
         self.loss_metrics['action_mse'](action, action_distribution.sample())
@@ -644,7 +649,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             action: tf.Tensor,
             reward: tf.Tensor,
             next_state: tf.Tensor,
-            next_label: tf.Tensor
+            next_label: tf.Tensor,
+            sample_key: Optional[tf.Tensor] = None
     ):
         # sampling from encoder distributions
         latent_state_encoder = self._state_vae.relaxed_encoding(state, self._state_vae.encoder_temperature)
@@ -687,6 +693,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         entropy_regularizer = self.entropy_regularizer(
             latent_state, action, state=state,
             enforce_latent_state_space_spreading=(self.marginal_entropy_regularizer_ratio > 0.))
+
+        # bucketing
+        if self.buckets is not None and sample_key is not None:
+            self.buckets.update_priority(keys=sample_key, latent_states=tf.cast(tf.round(latent_state), tf.int32))
 
         # metrics
         action_sample, reward_sample, next_state_sample = reconstruction_distribution.sample()
@@ -923,15 +933,17 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             reward: tf.Tensor,
             next_state: tf.Tensor,
             next_label: tf.Tensor,
+            sample_key: Optional[tf.Tensor] = None,
             sample_probability: Optional[tf.Tensor] = None,
     ):
         if self.full_optimization:
             return self._compute_apply_gradients(
-                state, label, action, reward, next_state, next_label, self.trainable_variables, sample_probability)
+                state, label, action, reward, next_state, next_label,
+                self.trainable_variables, sample_key, sample_probability)
         else:
             return self._compute_apply_gradients(
                 state, label, action, reward, next_state, next_label,
-                self.action_discretizer_variables, sample_probability)
+                sample_key, self.action_discretizer_variables, sample_probability)
 
     def estimate_local_losses_from_samples(
             self,

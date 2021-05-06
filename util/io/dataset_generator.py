@@ -107,17 +107,14 @@ class ErgodicMDPTransitionGenerator:
             discrete_action: bool = False,
             num_discrete_actions: int = 0,
             prioritized_replay_buffer: bool = False,
-            state_embedding_function: Optional[Callable[[tf.Tensor, tf.Tensor], tf.Tensor]] = None,
     ):
         assert not discrete_action or num_discrete_actions > 0
-        assert not prioritized_replay_buffer or state_embedding_function is not None
 
         self.labeling_function = labeling_function
         self.discrete_action = discrete_action
         self.num_discrete_actions = num_discrete_actions
         self._cache_hit = tf.Variable(False, dtype=tf.bool, trainable=False)
         self.prioritized_replay_buffer = prioritized_replay_buffer
-        self.state_embedding_function = state_embedding_function
         self.replay_buffer = replay_buffer
 
         state, state_label, action, reward, next_state, next_state_label = map_rl_trajectory_to_vae_input(
@@ -141,26 +138,6 @@ class ErgodicMDPTransitionGenerator:
         self.cached_label = tf.Variable(self.reset_state_label, trainable=False)
 
         self.cached_sample_probability = tf.Variable(0., trainable=False, dtype=tf.float64)
-
-        self.buckets = None
-        self.latent_state_size = None
-        self.step_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
-        if self.prioritized_replay_buffer:
-            self.latent_state_size = tf.shape(
-                self.state_embedding_function(self.reset_state, self.reset_state_label))[-1]
-            size = 2 ** self.latent_state_size
-            self.buckets = tf.Variable(initial_value=tf.zeros(shape=(size,), dtype=tf.int32), trainable=False)
-
-    def update_bucket_priority(self, state: tf.Tensor, label: tf.Tensor, key):
-        assert self.prioritized_replay_buffer
-        self.step_counter.assign_add(1)
-        latent_state = self.state_embedding_function(state, label)
-        index = tf.reduce_sum(latent_state * 2 ** tf.range(self.latent_state_size), axis=-1)
-        self.buckets[index].assign(self.buckets[index] + 1)
-        # priority = 1. - self.buckets[index] / self.step_counter
-        priority = (self.buckets[index] / self.step_counter) ** -.5
-        self.replay_buffer.update_priorities(tf.expand_dims(key, axis=0), tf.expand_dims(priority, axis=0))
-        return priority
 
     def cache_hit(self):
         self._cache_hit.assign(False)
@@ -198,25 +175,15 @@ class ErgodicMDPTransitionGenerator:
             cache_hit, self.cache_hit, lambda: self.process_transition(trajectory))
 
         if self.prioritized_replay_buffer:
-            if cache_hit:
-                _state = trajectory.observation[0, ...]
-                labels = tf.cast(self.labeling_function(trajectory.observation), tf.float32)
-                if tf.rank(labels) == 1:
-                    labels = tf.expand_dims(labels, axis=-1)
-                _label = labels[0, ...]
-                _label = tf.concat([_label, self.reset_label - 1.], axis=-1)
-            else:
-                _state = state
-                _label = label
 
-            key = sample_info.key[0]
-            self.update_bucket_priority(_state, _label, key)
+            key = tf.cond(cache_hit, lambda: tf.uint64.max, lambda: sample_info.key[0])
 
             if trajectory.is_boundary()[0]:  # next call will hit cache
                 self.cached_sample_probability.assign(sample_info.probability[0])
             sample_probability = self.cached_sample_probability if cache_hit else sample_info.probability[0]
+            sample_probability = tf.cast(sample_probability, dtype=tf.float32)
 
-            return state, label, action, reward, next_state, next_label, tf.cast(sample_probability, dtype=tf.float32)
+            return state, label, action, reward, next_state, next_label, key, sample_probability
         else:
             return state, label, action, reward, next_state, next_label
 
