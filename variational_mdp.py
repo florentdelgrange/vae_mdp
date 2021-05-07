@@ -1434,7 +1434,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             tf.print("\nEvalutation over {} steps".format(eval_steps))
             data = {'state': None, 'action': None}
             for step in range(eval_steps):
-                x = next(dataset_iterator)[:-1]
+                x = next(dataset_iterator)[:6]
 
                 elbo, latent_states, latent_actions = self.eval(*x)
                 for value in ('state', 'action'):
