@@ -616,6 +616,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         # bucketing
         if self.buckets is not None and sample_key is not None:
             self.buckets.update_priority(keys=sample_key, latent_states=tf.cast(tf.round(latent_state), tf.int32))
+        if self.priority_loss_handler is not None and sample_key is not None:
+            self.priority_loss_handler.update_priority(keys=sample_key, loss=(distortion + rate))
 
         # metrics
         self.loss_metrics['ELBO'](-1. * (distortion + rate))
@@ -697,6 +699,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         # bucketing
         if self.buckets is not None and sample_key is not None:
             self.buckets.update_priority(keys=sample_key, latent_states=tf.cast(tf.round(latent_state), tf.int32))
+        if self.priority_loss_handler is not None and sample_key is not None:
+            self.priority_loss_handler.update_priority(keys=sample_key, loss=(distortion + rate))
 
         # metrics
         action_sample, reward_sample, next_state_sample = reconstruction_distribution.sample()

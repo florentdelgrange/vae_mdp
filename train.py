@@ -291,6 +291,12 @@ flags.DEFINE_float(
     help='Growth rate used for annealing the weighted importance sampling exponent parameter when using a prioritized'
          'experience replay buffer.'
 )
+flags.DEFINE_bool(
+    'buckets_based_priority',
+    default=True,
+    help='If set, the priority of the replay buffer use a bucket based priority scheme (where each bucket corresponds'
+         'to a discrete latent state). If not, the loss is used '
+)
 FLAGS = flags.FLAGS
 
 
@@ -387,6 +393,10 @@ def main(argv):
             params['priority_exponent'],
             params['importance_sampling_exponent'],
             params['importance_sampling_exponent_growth_rate'])
+        if params['buckets_based_priority']:
+            vae_name += '_bucket_based_priorities'
+        else:
+            vae_name += 'loss_based_priorities'
     if params['max_state_decoder_variance'] > 0:
         vae_name += '_max_state_decoder_variance={:g}'.format(params['max_state_decoder_variance'])
     if params['epsilon_greedy'] > 0:
@@ -438,12 +448,12 @@ def main(argv):
 
     state_shape, action_shape, reward_shape, label_shape = (
         shape if shape != () else (1,) for shape in (
-            environment.observation_spec().shape,
-            environment.action_spec().shape,
-            environment.time_step_spec().reward.shape,
-            tuple(reinforcement_learning.labeling_functions[environment_name](
-                environment.reset().observation).shape[1:])
-        )
+        environment.observation_spec().shape,
+        environment.action_spec().shape,
+        environment.time_step_spec().reward.shape,
+        tuple(reinforcement_learning.labeling_functions[environment_name](
+            environment.reset().observation).shape[1:])
+    )
     )
 
     time_step_spec = tensor_spec.from_spec(environment.time_step_spec())
@@ -564,10 +574,14 @@ def main(argv):
                                             params['start_annealing_step']),
                                         reset_kl_scale_factor=(
                                             params['kl_annealing_scale_factor'] if phase == 1 and
-                                            (params['action_discretizer'] or params['latent_policy']) else None),
+                                                                                   (params['action_discretizer'] or
+                                                                                    params['latent_policy']) else None),
                                         reset_entropy_regularizer=(
                                             params['entropy_regularizer_scale_factor'] if phase == 1 and
-                                            (params['action_discretizer'] or params['latent_policy']) else None),
+                                                                                          (params[
+                                                                                               'action_discretizer'] or
+                                                                                           params[
+                                                                                               'latent_policy']) else None),
                                         logs=params['logs'],
                                         num_iterations=(
                                             params['max_steps'] if not params['decompose_training'] or phase == 1
@@ -579,19 +593,19 @@ def main(argv):
                                         eval_steps=int(1e3) if not params['do_not_eval'] else 0,
                                         policy_evaluation_num_episodes=(
                                             0 if not (params['action_discretizer'] or params['latent_policy'])
-                                            or (phase == 0 and len(models) > 1) else 30),
+                                                 or (phase == 0 and len(models) > 1) else 30),
                                         annealing_period=params['annealing_period'],
                                         aggressive_training=params['aggressive_training'],
                                         initial_collect_steps=params['initial_collect_steps'],
                                         discrete_action_space=(
                                                 not params['action_discretizer'] and params['latent_policy']),
                                         use_prioritized_replay_buffer=params['prioritized_experience_replay'],
-                                        priority_exponent=params['priority_exponent'])
+                                        priority_exponent=params['priority_exponent'],
+                                        buckets_based_priorities=params['buckets_based_priority'])
 
     return 0
 
 
 if __name__ == '__main__':
-
     tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))
-    #app.run(main)
+    # app.run(main)

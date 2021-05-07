@@ -26,7 +26,7 @@ from tf_agents.trajectories.trajectory import Trajectory
 from tf_agents.utils import common
 
 from util.io.dataset_generator import ErgodicMDPTransitionGenerator
-from util.replay_buffer_tools import PriorityBuckets
+from util.replay_buffer_tools import PriorityBuckets, LossPriority, PriorityHandler
 from verification.local_losses import estimate_local_losses_from_samples
 
 tfd = tfp.distributions
@@ -132,6 +132,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.evaluation_memory = tf.Variable([-1. * np.inf] * evaluation_memory_size, trainable=False)
 
         self.buckets = None
+        self.priority_loss_handler = None
 
         if not pre_loaded_model:
 
@@ -590,6 +591,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
         # bucketing
         if self.buckets is not None and sample_key is not None:
             self.buckets.update_priority(keys=sample_key, latent_states=tf.cast(tf.round(latent_state), tf.int32))
+        if self.priority_loss_handler is not None and sample_key is not None:
+            self.priority_loss_handler.update_priority(keys=sample_key, loss=(distortion + rate))
 
         # metrics
         self.loss_metrics['ELBO'](-1 * (distortion + rate))
@@ -1000,6 +1003,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             collect_steps_per_iteration: Optional[int] = None,
             replay_buffer_capacity: int = int(1e6),
             use_prioritized_replay_buffer: bool = True,
+            buckets_based_priorities: bool = True,
             priority_exponent: int = 0.6,
             parallel_environments: bool = True,
             num_parallel_environments: int = 4,
@@ -1119,7 +1123,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             table = reverb.Table(
                 table_name,
                 max_size=int(1e6),
-                sampler=reverb.selectors.Prioritized(priority_exponent=priority_exponent),
+                sampler=reverb.selectors.Prioritized(
+                    priority_exponent=priority_exponent if buckets_based_priorities else 1.),
                 remover=reverb.selectors.Fifo(),
                 rate_limiter=reverb.rate_limiters.MinSize(1))
 
@@ -1131,34 +1136,23 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 table_name=table_name,
                 local_server=reverb_server)
 
-            self.buckets = PriorityBuckets(replay_buffer=None, latent_state_size=self.latent_state_size)
-            self.buckets.replay_buffer = replay_buffer
-
-            if manager is not None:
-                checkpoint_path = os.path.join(manager.directory, 'priority_buckets')
-                bucket_checkpointer = tf.train.Checkpoint(
-                    buckets=self.buckets.buckets,
-                    step_counter=self.buckets.step_counter,
-                    max_priority=self.buckets.max_priority)
-                bucket_manager = tf.train.CheckpointManager(
-                    checkpoint=bucket_checkpointer, directory=checkpoint_path, max_to_keep=1)
-                bucket_checkpointer.restore(bucket_manager.latest_checkpoint)
-
-                model_manager = manager
-
-                def _manager_save(*args, **kwargs):
-                    replay_buffer.py_client.checkpoint()
-                    bucket_manager.save(*args, **kwargs)
-                    model_manager.save(*args, **kwargs)
-
-                manager = namedtuple('CustomCheckpointManager', ['save'])(_manager_save)
+            if buckets_based_priorities:
+                self.buckets = PriorityBuckets(replay_buffer=replay_buffer, latent_state_size=self.latent_state_size)
+                priority_handler: PriorityHandler = self.buckets
+            else:
+                self.priority_loss_handler = LossPriority(
+                    replay_buffer=replay_buffer,
+                    epoch_steps=10000 * batch_size,
+                    max_priority=10.,
+                    smoothness=priority_exponent)
+                priority_handler = self.priority_loss_handler
 
             _add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
                 py_client=replay_buffer.py_client,
                 table_name=table_name,
                 sequence_length=2,
                 stride_length=1,
-                priority=self.buckets.max_priority)
+                priority=priority_handler.max_priority)
 
             reset_trajectory = Trajectory(
                 step_type=ts.StepType.MID,
@@ -1196,6 +1190,18 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 max_steps=initial_collect_steps)
 
             replay_buffer_num_frames = replay_buffer.num_frames
+
+            if manager is not None:
+
+                priority_handler.load_or_initialize_checkpoint(manager.directory)
+                model_manager = manager
+
+                def _manager_save(*args, **kwargs):
+                    replay_buffer.py_client.checkpoint()
+                    priority_handler.checkpoint(*args, **kwargs)
+                    model_manager.save(*args, **kwargs)
+
+                manager = namedtuple('CustomCheckpointManager', ['save'])(_manager_save)
 
             def close():
                 env.close()
