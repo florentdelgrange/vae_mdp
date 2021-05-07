@@ -14,8 +14,6 @@ class PriorityBuckets:
         self.max_priority = tf.Variable(initial_value=1., dtype=tf.float64)
 
     def update_priority(self, keys: tf.Tensor, latent_states: tf.Tensor, value: Optional = None):
-        keys = keys[keys < tf.uint64.max]
-        latent_states = latent_states[keys < tf.uint64.max]
         batch_size = tf.shape(latent_states)[0]
         self.step_counter.assign_add(batch_size)
 

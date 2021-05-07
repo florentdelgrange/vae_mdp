@@ -22,6 +22,7 @@ from tf_agents.metrics import tf_metrics
 from tf_agents.replay_buffers import tf_uniform_replay_buffer, reverb_replay_buffer, reverb_utils
 from tf_agents.trajectories import trajectory
 from tf_agents.trajectories.policy_step import PolicyStep
+from tf_agents.trajectories.trajectory import Trajectory
 from tf_agents.utils import common
 
 from util.io.dataset_generator import ErgodicMDPTransitionGenerator
@@ -1152,12 +1153,36 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
                 manager = namedtuple('CustomCheckpointManager', ['save'])(_manager_save)
 
-            add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
+            _add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
                 py_client=replay_buffer.py_client,
                 table_name=table_name,
                 sequence_length=2,
                 stride_length=1,
                 priority=self.buckets.max_priority)
+
+            reset_trajectory = Trajectory(
+                step_type=ts.StepType.MID,
+                observation=np.zeros(shape=self.state_shape, dtype=np.float32),
+                action=(np.zeros(shape=self.action_shape, dtype=np.float32)
+                        if not discrete_action_space else tf.zeros(shape=(), dtype=np.int32)),
+                policy_info=(),
+                next_step_type=ts.StepType.MID,
+                reward=(np.zeros(shape=(), dtype=np.float32)
+                        if self.reward_shape == (1, ) else np.zeros(shape=self.reward_shape, dtype=np.float32)),
+                discount=())
+
+            def add_batch(trajectory: Trajectory):
+                if trajectory.is_first():
+                    _add_batch(trajectory.replace(step_type=ts.StepType.MID))
+                elif trajectory.is_last():
+                    _add_batch(trajectory.replace(next_step_type=ts.StepType.MID))
+                elif trajectory.is_boundary():
+                    _add_batch(trajectory.replace(next_step_type=ts.StepType.MID))
+                    _add_batch(
+                        reset_trajectory.replace(policy_info=trajectory.policy_info, discount=trajectory.discount))
+                else:
+                    _add_batch(trajectory)
+            add_batch.close = _add_batch.close
 
             driver = py_driver.PyDriver(
                 env=env,

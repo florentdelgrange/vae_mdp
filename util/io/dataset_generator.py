@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, Any
 
 import h5py
 import os
@@ -97,7 +97,8 @@ def map_rl_trajectory_to_vae_input(
 class ErgodicMDPTransitionGenerator:
     """
     Generates a dataset from 2-steps transitions contained in a replay buffer.
-    Note: the replay buffer should already contains at least one experience to initialize this generator.
+    Note 1: the replay buffer should already contains at least one experience to initialize this generator.
+    Note 2: we assume the ergodicity to be handled outside this generator when using a prioritized replay buffer.
     """
 
     def __init__(
@@ -113,7 +114,6 @@ class ErgodicMDPTransitionGenerator:
         self.labeling_function = labeling_function
         self.discrete_action = discrete_action
         self.num_discrete_actions = num_discrete_actions
-        self._cache_hit = tf.Variable(False, dtype=tf.bool, trainable=False)
         self.prioritized_replay_buffer = prioritized_replay_buffer
         self.replay_buffer = replay_buffer
 
@@ -134,12 +134,17 @@ class ErgodicMDPTransitionGenerator:
         self.reset_action = tf.zeros(shape=tf.shape(action), dtype=tf.float32)
         self.reset_reward = tf.zeros(shape=tf.shape(reward), dtype=tf.float32)
 
-        self.cached_state = tf.Variable(self.reset_state, trainable=False)
-        self.cached_label = tf.Variable(self.reset_state_label, trainable=False)
-
-        self.cached_sample_probability = tf.Variable(0., trainable=False, dtype=tf.float64)
+        if prioritized_replay_buffer:
+            self.cached_state = None
+            self.cached_label = None
+            self._cache_hit = tf.constant(False)
+        else:
+            self.cached_state = tf.Variable(self.reset_state, trainable=False)
+            self.cached_label = tf.Variable(self.reset_state_label, trainable=False)
+            self._cache_hit = tf.Variable(False, dtype=tf.bool, trainable=False)
 
     def cache_hit(self):
+        assert not self.prioritized_replay_buffer
         self._cache_hit.assign(False)
         transition = (self.reset_state,
                       self.reset_state_label,
@@ -155,37 +160,39 @@ class ErgodicMDPTransitionGenerator:
             labeling_function=self.labeling_function,
             discrete_action=self.discrete_action,
             num_discrete_actions=self.num_discrete_actions)
-        new_state_label = tf.concat([state_label, self.reset_label - 1.], axis=-1)
-        new_next_state_label = tf.concat([next_state_label, self.reset_label - 1.], axis=-1)
+
+        def detect_reset_state_label(state, state_label):
+            if self.prioritized_replay_buffer and tf.reduce_all(tf.equal(state, self.reset_state)):
+                return self.reset_state_label
+            else:
+                return tf.concat([state_label, self.reset_label - 1.], axis=-1)
+
+        new_state_label = detect_reset_state_label(state, state_label)
+        new_next_state_label = detect_reset_state_label(next_state, next_state_label)
 
         def last_transition():
-            self._cache_hit.assign(True)
-            self.cached_state.assign(next_state)
-            self.cached_label.assign(new_next_state_label)
+            if not self.prioritized_replay_buffer:
+                self._cache_hit.assign(True)
+                self.cached_state.assign(next_state)
+                self.cached_label.assign(new_next_state_label)
             return state, new_state_label, action, reward, self.reset_state, self.reset_state_label
 
         return tf.cond(
-            trajectory.is_boundary()[0],
+            trajectory.is_boundary()[0] and not self.prioritized_replay_buffer,
             last_transition,
             lambda: (state, new_state_label, action, reward, next_state, new_next_state_label))
 
     def __call__(self, trajectory: Trajectory, sample_info=None):
-        cache_hit = tf.identity(self._cache_hit)
-        state, label, action, reward, next_state, next_label = tf.cond(
-            cache_hit, self.cache_hit, lambda: self.process_transition(trajectory))
-
         if self.prioritized_replay_buffer:
-
-            key = tf.cond(cache_hit, lambda: tf.uint64.max, lambda: sample_info.key[0])
-
-            if trajectory.is_boundary()[0]:  # next call will hit cache
-                self.cached_sample_probability.assign(sample_info.probability[0])
-            sample_probability = self.cached_sample_probability if cache_hit else sample_info.probability[0]
-            sample_probability = tf.cast(sample_probability, dtype=tf.float32)
-
+            state, label, action, reward, next_state, next_label = self.process_transition(trajectory)
+            key = sample_info.key[0]
+            sample_probability = tf.cast(sample_info.probability[0], tf.float32)
             return state, label, action, reward, next_state, next_label, key, sample_probability
         else:
-            return state, label, action, reward, next_state, next_label
+            if self._cache_hit:
+                return self.cache_hit()
+            else:
+                return self.process_transition(trajectory)
 
 
 class DictionaryDatasetGenerator:
