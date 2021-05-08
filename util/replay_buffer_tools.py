@@ -6,7 +6,6 @@ import os
 class PriorityHandler(ABC):
 
     def __init__(self):
-        self.step_counter = None
         self.max_priority = None
 
     @abstractmethod
@@ -27,16 +26,16 @@ class PriorityHandler(ABC):
 
 class LossPriority(PriorityHandler):
 
-    def __init__(self, replay_buffer, epoch_steps: int = 10000, max_priority: tf.float64 = 10.,
-                 smoothness: tf.float32 = 1.):
+    def __init__(self, replay_buffer, max_priority: tf.float64 = 10.):
         super().__init__()
         self.replay_buffer = replay_buffer
         self.step_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
         self.max_priority = tf.Variable(initial_value=max_priority, dtype=tf.float64, name='max_priority')
-        self.epoch_steps = epoch_steps
-        self.smoothness = tf.constant(smoothness, dtype=tf.float64)
-        self.max_loss = tf.Variable(0., trainable=False, dtype=tf.float64)
-        self.min_loss = tf.Variable(0., trainable=False, dtype=tf.float64)
+        self.smoothness = tf.constant(1., dtype=tf.float64)
+        # self.max_loss = tf.Variable(-10., trainable=False, dtype=tf.float64)
+        # self.min_loss = tf.Variable(10., trainable=False, dtype=tf.float64)
+        self.max_loss = tf.keras.metrics.Mean(name='max_loss', dtype=tf.float64)
+        self.min_loss = tf.keras.metrics.Mean(name='min_loss', dtype=tf.float64)
 
         self._checkpointer = None
         self._manager = None
@@ -47,34 +46,19 @@ class LossPriority(PriorityHandler):
         self.step_counter.assign_add(batch_size)
         loss = tf.cast(loss, tf.float64)
 
-        def update_loss_bounds():
-            max_loss = tf.reduce_max(loss)
-            min_loss = tf.reduce_min(loss)
-            if self.step_counter < self.epoch_steps:
-                if self.max_loss < max_loss:
-                    self.max_loss.assign(max_loss)
-                if self.min_loss < min_loss:
-                    self.min_loss.assign(min_loss)
-            elif self.step_counter % self.epoch_steps < batch_size:
-                n = tf.cast(self.step_counter // self.epoch_steps, tf.float64)
-                self.max_loss.assign((self.max_loss * (n - 1) + max_loss) / n)
-                self.min_loss.assign((self.min_loss * (n - 1) + min_loss) / n)
-
-        if self.step_counter < self.epoch_steps or self.step_counter % self.epoch_steps < batch_size:
-            update_loss_bounds()
+        self.max_loss(tf.reduce_max(loss))
+        self.min_loss(tf.reduce_min(loss))
 
         L = self.max_priority
-        x0 = (self.max_loss - self.min_loss) / 2.
-        k = self.smoothness
+        x0 = (self.max_loss.result() - self.min_loss.result()) / 2.
+        k = L / (self.max_loss.result() - self.min_loss.result())
+        priorities = L / (1. + tf.exp(-k * (loss - x0)))
 
-        self.replay_buffer.update_priorities(keys=keys, priorities=L / (1. + tf.exp(-k * (loss - x0))))
+        self.replay_buffer.update_priorities(keys=keys, priorities=priorities)
 
     def load_or_initialize_checkpoint(self, dir_path: str):
         checkpoint_path = os.path.join(dir_path, 'loss_priority')
-        self._checkpointer = tf.train.Checkpoint(
-            max_loss=self.max_loss,
-            min_loss=self.min_loss,
-            step_counter=self.step_counter)
+        self._checkpointer = tf.train.Checkpoint(max_loss=self.max_loss, min_loss=self.min_loss)
         self._manager = tf.train.CheckpointManager(
             checkpoint=self._checkpointer, directory=checkpoint_path, max_to_keep=1)
         self._checkpointer.restore(self._manager.latest_checkpoint)

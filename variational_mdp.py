@@ -1076,7 +1076,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
             stateful_metrics=list(self.loss_metrics.keys()) + [
                 'loss', 't_1', 't_2', 'entropy_regularizer_scale_factor', 'step', "num_episodes", "env_steps",
                 "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv", 'state_rate',
-                "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used', 'wis_exponent'],
+                "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used', 'wis_exponent',
+                'priority_logistic_smoothness', 'priority_logistic_mean',
+                'priority_logistic_max', 'priority_logistic_min'
+            ],
             interval=0.1) if display_progressbar else None
 
         discrete_action_space = discrete_action_space and (self.latent_policy_network is not None)
@@ -1123,8 +1126,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             table = reverb.Table(
                 table_name,
                 max_size=int(1e6),
-                sampler=reverb.selectors.Prioritized(
-                    priority_exponent=priority_exponent if buckets_based_priorities else 1.),
+                sampler=reverb.selectors.Prioritized(priority_exponent=priority_exponent),
                 remover=reverb.selectors.Fifo(),
                 rate_limiter=reverb.rate_limiters.MinSize(1))
 
@@ -1142,9 +1144,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             else:
                 self.priority_loss_handler = LossPriority(
                     replay_buffer=replay_buffer,
-                    epoch_steps=10000 * batch_size,
-                    max_priority=10.,
-                    smoothness=priority_exponent)
+                    max_priority=10.,)
                 priority_handler = self.priority_loss_handler
 
             _add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
@@ -1303,6 +1303,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
             }
             if epsilon_greedy > 0.:
                 additional_training_metrics['epsilon_greedy'] = epsilon_greedy
+            if use_prioritized_replay_buffer and not buckets_based_priorities:
+                diff = (priority_handler.max_loss.result() - priority_handler.min_loss.result())
+                additional_training_metrics['priority_logistic_smoothness'] = priority_handler.max_priority / diff
+                additional_training_metrics['priority_logistic_mean'] = diff / 2
+                additional_training_metrics['priority_logistic_max'] = priority_handler.max_loss.result()
+                additional_training_metrics['priority_logistic_min'] = priority_handler.min_loss.result()
 
             loss = self.training_step(
                 dataset_iterator=dataset_iterator, batch_size=batch_size,
