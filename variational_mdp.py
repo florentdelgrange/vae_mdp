@@ -135,6 +135,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.priority_loss_handler = None
 
         if not pre_loaded_model:
+            label_transition_network._name = 'label_transition_network_core'
+            transition_network._name = 'transition_network_core'
 
             # Encoder network
             encoder = encoder_network(state)
