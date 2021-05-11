@@ -299,8 +299,8 @@ flags.DEFINE_bool(
 )
 flags.DEFINE_integer(
     'collect_steps_per_iteration',
-    help='Collect steps per iteration',
-    default=1
+    help='Collect steps per iteration. If set to a value <= 0, then collect_steps is set to batch_size / 8',
+    default=0
 )
 FLAGS = flags.FLAGS
 
@@ -318,6 +318,9 @@ def main(argv):
     if params['dataset_path'] == '':
         for param in ('policy_path', 'environment'):
             check_missing_argument(param)
+
+    if params['collect_steps_per_iteration'] <= 0:
+        params['collect_steps_per_iteration'] = params['batch_size'] // 8
 
     relaxed_state_encoder_temperature = params['relaxed_state_encoder_temperature']
     relaxed_state_prior_temperature = params['relaxed_state_prior_temperature']
