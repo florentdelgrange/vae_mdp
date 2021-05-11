@@ -75,6 +75,11 @@ flags.DEFINE_float(
         help='learning rate',
         default=1e-3
 )
+flags.DEFINE_integer(
+    'collect_steps_per_iteration',
+    help='Collect steps per iteration',
+    default=1
+)
 FLAGS = flags.FLAGS
 
 
