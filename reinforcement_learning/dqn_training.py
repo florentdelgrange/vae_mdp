@@ -75,6 +75,11 @@ flags.DEFINE_float(
         help='learning rate',
         default=1e-3
 )
+flags.DEFINE_integer(
+    'collect_steps_per_iteration',
+    help='Collect steps per iteration',
+    default=1
+)
 FLAGS = flags.FLAGS
 
 
@@ -145,7 +150,7 @@ class DQNLearner:
                 img = PIL.Image.fromarray(self.py_env.render())
                 img.show()
             self.tf_env = tf_py_environment.TFPyEnvironment(self.py_env)
-            self.eval_env = self.tf_env
+            self.eval_env = tf_py_environment.TFPyEnvironment(env_suite.load(env_name))
 
         self.observation_spec = self.tf_env.observation_spec()
         self.action_spec = self.tf_env.action_spec()
@@ -194,7 +199,7 @@ class DQNLearner:
             replay_buffer=self.replay_buffer,
             global_step=self.global_step
         )
-        self.policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'policy')
+        self.policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'dql_policy')
         self.policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
 
         self.num_episodes = tf_metrics.NumberOfEpisodes()
@@ -235,19 +240,6 @@ class DQNLearner:
             q_network=self.q_network,
             emit_log_probability=True,
         )
-
-        #  class QBoltzmann(boltzmann_policy.BoltzmannPolicy):
-
-        #      def __init__(self, policy, temperature):
-        #          super().__init__(policy, temperature)
-
-        #      def _action(self, time_step, policy_state=(), seed=None):
-        #          policy_step = self.distribution(time_step, policy_state)
-        #          distribution = policy_step.action
-        #          tf.print("distribution used: ", distribution.probs_parameter())
-        #          return PolicyStep(distribution.sample(), policy_step.state, policy_step.info)
-
-        #  policy = QBoltzmann(policy, temperature=temperature)
 
         policy = boltzmann_policy.BoltzmannPolicy(policy, temperature)
 
@@ -292,8 +284,9 @@ class DQNLearner:
         else:
             progressbar = None
 
-        print("Initialize replay buffer...")
-        self.initial_collect_driver.run()
+        if self.replay_buffer.num_frames() < self.initial_collect_steps:
+            print("Initialize replay buffer...")
+            self.initial_collect_driver.run()
 
         print("Start training...")
 
@@ -375,7 +368,8 @@ def main(argv):
         permissive_policy_temperatures=params['permissive_policy_temperature'],
         learning_rate=params['learning_rate'],
         network_fc_layer_params=params['network_layers'],
-        batch_size=params['batch_size']
+        batch_size=params['batch_size'],
+        parallelization=params['num_parallel_env'] > 1,
     )
     if params['permissive_policy_saver']:
         for temperature in params['permissive_policy_temperature']:
