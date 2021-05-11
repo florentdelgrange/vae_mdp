@@ -2,6 +2,7 @@ import math
 import os
 import sys
 from typing import Tuple, Callable, Optional, List
+import functools
 import threading
 import datetime
 from absl import app
@@ -15,6 +16,7 @@ from tensorflow.python.keras.utils.generic_utils import Progbar
 from tf_agents.agents import CategoricalDqnAgent
 from tf_agents.agents.dqn import dqn_agent
 
+import tf_agents
 from tf_agents.drivers import dynamic_step_driver
 from tf_agents.drivers import dynamic_episode_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment
@@ -57,6 +59,21 @@ flags.DEFINE_multi_float(
     'permissive_policy_temperature',
     help='Temperature of the support of permissive policies produced.',
     default=[]
+)
+flags.DEFINE_multi_integer(
+        'network_layers',
+        help='number of units per MLP layers',
+        default=[100, 50]
+)
+flags.DEFINE_integer(
+        'batch_size',
+        help='batch_size',
+        default=64
+)
+flags.DEFINE_float(
+        'learning_rate',
+        help='learning rate',
+        default=1e-3
 )
 FLAGS = flags.FLAGS
 
@@ -340,6 +357,7 @@ class DQNLearner:
 def main(argv):
     del argv
     params = FLAGS.flag_values_dict()
+    print(params)
     tf.random.set_seed(params['seed'])
     try:
         import importlib
@@ -354,7 +372,10 @@ def main(argv):
         num_iterations=params['steps'],
         num_parallel_environments=params['num_parallel_env'],
         save_directory_location=params['save_dir'],
-        permissive_policy_temperatures=params['permissive_policy_temperature']
+        permissive_policy_temperatures=params['permissive_policy_temperature'],
+        learning_rate=params['learning_rate'],
+        network_fc_layer_params=params['network_layers'],
+        batch_size=params['batch_size']
     )
     if params['permissive_policy_saver']:
         for temperature in params['permissive_policy_temperature']:
@@ -365,4 +386,5 @@ def main(argv):
 
 
 if __name__ == '__main__':
-    app.run(main)
+    tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))
+    #app.run(main)
