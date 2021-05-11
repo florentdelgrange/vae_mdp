@@ -1315,7 +1315,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             loss = self.training_step(
                 dataset_iterator=dataset_iterator, batch_size=batch_size,
                 annealing_period=annealing_period, global_step=global_step,
-                dataset_size=replay_buffer.num_frames(), display_progressbar=display_progressbar,
+                dataset_size=replay_buffer_num_frames(), display_progressbar=display_progressbar,
                 start_step=start_step, epoch=0, progressbar=progressbar,
                 save_model_interval=save_model_interval,
                 eval_ratio=eval_steps * batch_size / replay_buffer_num_frames(),
