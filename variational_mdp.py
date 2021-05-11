@@ -1235,7 +1235,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 eval_env, self.get_latent_policy(), num_episodes=policy_evaluation_num_episodes)
             #  policy_evaluation_driver.run = common.function(policy_evaluation_driver.run)
 
-        if replay_buffer.num_frames() == 0:
+        if replay_buffer.num_frames() < initial_collect_steps:
             print("Initial collect steps...")
             initial_collect_driver.run(env.current_time_step())
 
@@ -1476,13 +1476,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 os.path.join(save_directory, 'training_checkpoints', log_name, 'ckpt-{:d}'.format(global_step.numpy())))
             self.attach_optimizer(optimizer)
 
-        if eval_policy_driver:
+        if eval_policy_driver and eval_steps > 0:
             for i in tf.range(tf.shape(self.evaluation_memory)[0]):
                 if self.evaluation_memory[i] <= avg_rewards:
                     self.evaluation_memory[i].assign(avg_rewards)
                     _checkpoint()
                     break
-        else:
+        elif eval_steps > 0:
             for i in tf.range(tf.shape(self.evaluation_memory)[0]):
                 if self.evaluation_memory[i] <= eval_elbo:
                     self.evaluation_memory[i].assign(eval_elbo)
