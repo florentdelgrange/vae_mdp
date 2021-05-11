@@ -84,7 +84,7 @@ def map_rl_trajectory_to_vae_input(
     label = labels[0, ...]
     action = trajectory.action[0, ...]
     if discrete_action:
-        action = tf.one_hot(indices=action, depth=num_discrete_actions, dtype=tf.float32)
+        action = tf.one_hot(indices=action, depth=tf.cast(num_discrete_actions, dtype=tf.int32), dtype=tf.float32)
     reward = trajectory.reward[0, ...]
     if tf.rank(reward) == 0:
         reward = tf.expand_dims(reward, axis=-1)

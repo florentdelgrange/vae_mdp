@@ -540,7 +540,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             reward: tf.Tensor,
             next_state: tf.Tensor,
             next_label: tf.Tensor,
-            sample_key: Optional[tf.Tensor]
+            sample_key: Optional[tf.Tensor] = None
     ):
         if self.latent_policy_training_phase:
             return self.latent_policy_training(state, label, action, reward, next_state, next_label)
@@ -1160,7 +1160,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 step_type=ts.StepType.MID,
                 observation=np.zeros(shape=self.state_shape, dtype=np.float32),
                 action=(np.zeros(shape=self.action_shape, dtype=np.float32)
-                        if not discrete_action_space else tf.zeros(shape=(), dtype=np.int32)),
+                        if not discrete_action_space else np.zeros(shape=(), dtype=np.int64)),
                 policy_info=(),
                 next_step_type=ts.StepType.MID,
                 reward=(np.zeros(shape=(), dtype=np.float32)
@@ -1247,7 +1247,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     labeling_function,
                     replay_buffer,
                     discrete_action=discrete_action_space,
-                    num_discrete_actions=self.action_shape[0])
+                    num_discrete_actions=tf.cast(self.action_shape[0]))
             return replay_buffer.as_dataset(
                 num_parallel_calls=tf.data.experimental.AUTOTUNE,
                 num_steps=2
