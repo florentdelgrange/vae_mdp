@@ -164,7 +164,7 @@ class CategoricalDQNLearner:
                 img = PIL.Image.fromarray(self.py_env.render())
                 img.show()
             self.tf_env = tf_py_environment.TFPyEnvironment(self.py_env)
-            self.eval_env = self.tf_env
+            self.eval_env = tf_py_environment.TFPyEnvironment(env_suite.load(env_name))
 
         self.observation_spec = self.tf_env.observation_spec()
         self.action_spec = self.tf_env.action_spec()
