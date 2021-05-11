@@ -297,6 +297,11 @@ flags.DEFINE_bool(
     help='If set, the priority of the replay buffer use a bucket based priority scheme (where each bucket corresponds'
          'to a discrete latent state). If not, the loss is used '
 )
+flags.DEFINE_integer(
+    'collect_steps_per_iteration',
+    help='Collect steps per iteration',
+    default=1
+)
 FLAGS = flags.FLAGS
 
 
@@ -601,7 +606,8 @@ def main(argv):
                                                 not params['action_discretizer'] and params['latent_policy']),
                                         use_prioritized_replay_buffer=params['prioritized_experience_replay'],
                                         priority_exponent=params['priority_exponent'],
-                                        buckets_based_priorities=params['buckets_based_priority'])
+                                        buckets_based_priorities=params['buckets_based_priority'],
+                                        collect_steps_per_iteration=params['collect_steps_per_iteration'])
 
     return 0
 
