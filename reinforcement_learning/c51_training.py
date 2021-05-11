@@ -52,16 +52,6 @@ flags.DEFINE_float(
 flags.DEFINE_string(
     'save_dir', help='Save directory location', default='.'
 )
-flags.DEFINE_boolean(
-    'permissive_policy_saver',
-    help="Set this flag to save permissive policies of the current agent's policy, according to given temperatures.",
-    default=False
-)
-flags.DEFINE_multi_float(
-    'permissive_policy_temperature',
-    help='Temperature of the support of permissive policies produced.',
-    default=[]
-)
 flags.DEFINE_multi_integer(
     'network_layers',
     help='number of units per MLP layers',
@@ -129,7 +119,6 @@ class CategoricalDQNLearner:
             batch_size: int = 64,
             debug: bool = False,
             save_directory_location: str = '.',
-            permissive_policy_temperatures: Optional[List[float]] = None
     ):
 
         if collect_steps_per_iteration is None:
@@ -157,7 +146,6 @@ class CategoricalDQNLearner:
         self.num_parallel_environments = num_parallel_environments
 
         self.batch_size = batch_size
-        self.permissive_policy_temperatures = permissive_policy_temperatures
 
         if parallelization:
             self.tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
@@ -222,7 +210,8 @@ class CategoricalDQNLearner:
             num_steps=n_step_update + 1).prefetch(tf.data.experimental.AUTOTUNE)
         self.iterator = iter(self.dataset)
 
-        self.checkpoint_dir = os.path.join(save_directory_location, 'saves', env_name, 'dql_training_checkpoint')
+        self.checkpoint_dir = os.path.join(
+            save_directory_location, 'saves', env_name, 'categorical_dql_training_checkpoint')
         self.train_checkpointer = common.Checkpointer(
             ckpt_dir=self.checkpoint_dir,
             max_to_keep=1,
@@ -231,7 +220,7 @@ class CategoricalDQNLearner:
             replay_buffer=self.replay_buffer,
             global_step=self.global_step
         )
-        self.policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'policy')
+        self.policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'categorical_dqn_policy')
         self.policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
 
         self.num_episodes = tf_metrics.NumberOfEpisodes()
@@ -258,38 +247,6 @@ class CategoricalDQNLearner:
             print("Checkpoint loaded! global_step={}".format(self.global_step.numpy()))
         if not os.path.exists(self.policy_dir):
             os.makedirs(self.policy_dir)
-
-    def permissive_policy(self, temperature):
-        permissive_policy_dir = os.path.join(
-            self.save_directory_location,
-            'policy',
-            'permissive_policy_temperature={:g}'.format(temperature)
-        )
-
-        policy = q_policy.QPolicy(
-            self.tf_env.time_step_spec(),
-            self.tf_env.action_spec(),
-            q_network=self.categorical_q_network,
-            emit_log_probability=True,
-        )
-
-        #  class QBoltzmann(boltzmann_policy.BoltzmannPolicy):
-
-        #      def __init__(self, policy, temperature):
-        #          super().__init__(policy, temperature)
-
-        #      def _action(self, time_step, policy_state=(), seed=None):
-        #          policy_step = self.distribution(time_step, policy_state)
-        #          distribution = policy_step.action
-        #          tf.print("distribution used: ", distribution.probs_parameter())
-        #          return PolicyStep(distribution.sample(), policy_step.state, policy_step.info)
-
-        #  policy = QBoltzmann(policy, temperature=temperature)
-
-        policy = boltzmann_policy.BoltzmannPolicy(policy, temperature)
-
-        stochastic_policy_saver = policy_saver.PolicySaver(policy)
-        stochastic_policy_saver.save(permissive_policy_dir)
 
     def train_and_eval(self, display_progressbar: bool = True, display_interval: float = 0.1):
 
@@ -329,8 +286,9 @@ class CategoricalDQNLearner:
         else:
             progressbar = None
 
-        print("Initialize replay buffer...")
-        self.initial_collect_driver.run()
+        if self.replay_buffer.num_frames() < self.initial_collect_steps:
+            print("Initialize replay buffer...")
+            self.initial_collect_driver.run()
 
         print("Start training...")
 
@@ -353,9 +311,6 @@ class CategoricalDQNLearner:
             if step % self.log_interval == 0:
                 self.train_checkpointer.save(self.global_step)
                 self.policy_saver.save(self.policy_dir)
-                if self.permissive_policy_temperatures is not None:
-                    for temperature in self.permissive_policy_temperatures:
-                        self.permissive_policy(temperature=temperature)
                 with self.train_summary_writer.as_default():
                     tf.summary.scalar('loss', train_loss, step=step)
                     tf.summary.scalar('training average returns', self.avg_return.result(), step=step)
@@ -408,7 +363,6 @@ def main(argv):
         num_iterations=params['steps'],
         num_parallel_environments=params['num_parallel_env'],
         save_directory_location=params['save_dir'],
-        permissive_policy_temperatures=params['permissive_policy_temperature'],
         collect_steps_per_iteration=params['collect_steps_per_iteration'],
         min_q_value=params['min_q_value'],
         max_q_value=params['max_q_value'],
@@ -416,10 +370,6 @@ def main(argv):
         n_step_update=params['n_step_update'],
         parallelization=params['num_parallel_env'] > 1,
     )
-    if params['permissive_policy_saver']:
-        for temperature in params['permissive_policy_temperature']:
-            learner.permissive_policy(temperature)
-        return 0
     learner.train_and_eval()
     return 0
 
