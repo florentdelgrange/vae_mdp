@@ -430,7 +430,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                             logits=self.action_transition_network([latent_state, latent_action, _next_label])))
                 ])
         else:
-            latent_action = tf.stack([latent_action for _ in range(self.latent_state_size)], axis=1)
+            # latent_action = tf.stack([latent_action for _ in range(self.latent_state_size)], axis=1)
 
             if log_latent_action:
                 action_categorical = tfd.Categorical(logits=latent_action)
@@ -443,7 +443,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         tfd.Bernoulli(logits=self.action_label_transition_network(latent_state)[_latent_action])),
                     lambda _next_label: tfd.Independent(
                         tfd.Logistic(
-                            loc=(self.action_transition_network(latent_state, _next_label)[_latent_action]
+                            loc=(self.action_transition_network([latent_state, _next_label])[_latent_action]
                                  / self._state_vae.prior_temperature),
                             scale=1. / self._state_vae.prior_temperature))
                 ]) for _latent_action in range(self.number_of_discrete_actions)]
@@ -453,9 +453,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         tfd.Bernoulli(logits=self.action_label_transition_network(latent_state)[_latent_action])),
                     lambda _next_label: tfd.Independent(
                         tfd.Bernoulli(
-                            logits=self.action_transition_network(latent_state, _next_label)[_latent_action]))
+                            logits=self.action_transition_network([latent_state, _next_label])[_latent_action]))
                 ]) for _latent_action in range(self.number_of_discrete_actions)]
 
+            print(action_categorical)
+            print(components)
             return tfd.Mixture(cat=action_categorical, components=components)
 
     def reward_probability_distribution(
@@ -524,6 +526,13 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         loc=action_mean,
                         scale_diag=self.scale_activation(action_raw_covariance),
                     )
+                )
+            elif tf.reduce_all(tf.abs(tf.argmax(latent_action, axis=-1) - 1.) <= epsilon):
+                # then all actions are one-hot
+                _latent_action = tf.argmax(latent_action, axis=-1)
+                tfd.MultivariateNormalDiag(
+                    loc=action_mean[:, _latent_action, ...],
+                    scale_diag=self.scale_activation(action_raw_covariance[:, _latent_action, ...])
                 )
             else:
                 return tfd.MixtureSameFamily(
