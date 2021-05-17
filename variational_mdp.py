@@ -590,7 +590,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     self.marginal_entropy_regularizer_ratio > 0. and not self.latent_policy_training_phase),
             latent_states=next_latent_state)
 
-        # bucketing
+        # priority support
         if self.buckets is not None and sample_key is not None:
             self.buckets.update_priority(keys=sample_key, latent_states=tf.cast(tf.round(latent_state), tf.int32))
         if self.priority_loss_handler is not None and sample_key is not None:
@@ -1014,7 +1014,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             checkpoint: Optional[tf.train.Checkpoint] = None,
             manager: Optional[tf.train.CheckpointManager] = None,
             log_interval: int = 80,
-            checkpoint_interval: int = 1000,
+            checkpoint_interval: int = 250,
             eval_steps: int = int(1e3),
             save_model_interval: int = int(1e4),
             log_name: str = 'vae_training',
