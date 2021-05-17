@@ -1,8 +1,11 @@
+import functools
 import os
 import sys
 from typing import Tuple, Callable, Optional
 import threading
 import datetime
+
+import tf_agents
 from absl import app
 from absl import flags
 
@@ -59,6 +62,11 @@ flags.DEFINE_string(
 )
 flags.DEFINE_float(
     'seed', help='set seed', default=42
+)
+flags.DEFINE_integer(
+    'collect_steps_per_iteration',
+    help='Collect steps per iteration',
+    default=1
 )
 FLAGS = flags.FLAGS
 
@@ -472,6 +480,7 @@ def main(argv):
         num_iterations=params['steps'],
         num_parallel_environments=params['num_parallel_env'],
         save_directory_location=params['save_dir'],
+        collect_steps_per_iteration=params['collect_steps_per_iteration']
     )
     if params['permissive_policy_saver']:
         for variance_multiplier in params['variance']:
@@ -482,4 +491,5 @@ def main(argv):
 
 
 if __name__ == '__main__':
-    app.run(main)
+    # app.run(main)
+    tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))
