@@ -55,6 +55,12 @@ labeling_functions = {
             tf.cast(observation[..., 6], dtype=tf.bool),  # left leg ground contact
             tf.cast(observation[..., 7], dtype=tf.bool)   # right leg ground contact
         ], axis=-1),
+    'MountainCar-v0': lambda observation: tf.stack([
+        observation[..., 0] >= 0.5,  # has reached the goal
+        observation[..., 0] >= -.5,  # right-hand side -- positive slope
+        observation[..., 1] >= 0.,  # is going forward
+    ], axis=-1)
 }
 
 labeling_functions['LunarLanderContinuous-v2'] = labeling_functions['LunarLander-v2']
+labeling_functions['MountainCarContinuous-v0'] = labeling_functions['MountainCar-v0']
