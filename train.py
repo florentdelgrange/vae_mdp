@@ -144,7 +144,7 @@ flags.DEFINE_bool(
 flags.DEFINE_bool(
     "action_discretizer",
     default=False,
-    help="Discretize the action space via a VAE already trained. Require the flag --load_vae to be set."
+    help="If set, the (continuous) action space of the environment is also discretized."
 )
 flags.DEFINE_bool(
     "one_output_per_action",
@@ -158,7 +158,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_bool(
     "full_vae_optimization",
-    default=False,
+    default=True,
     help='Set whether the ELBO is optimized over the whole VAE or if the optimization is only focused on the'
          'state or action discretizer part of the VAE.'
 )
