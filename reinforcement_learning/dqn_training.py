@@ -80,6 +80,16 @@ flags.DEFINE_integer(
     help='Collect steps per iteration',
     default=1
 )
+flags.DEFINE_integer(
+    'target_update_period',
+    help="Period for update of the target networks",
+    default=20
+)
+flags.DEFINE_float(
+    'gamma',
+    help='discount_factor',
+    default=0.99
+)
 FLAGS = flags.FLAGS
 
 
@@ -94,6 +104,7 @@ class DQNLearner:
             replay_buffer_capacity: int = int(1e6),
             network_fc_layer_params: Tuple[int, ...] = (100, 50),
             gamma: float = 0.99,
+            target_update_period: int = 20,
             learning_rate: float = 1e-3,
             log_interval: int = 2500,
             num_eval_episodes: int = 30,
@@ -169,7 +180,9 @@ class DQNLearner:
             optimizer=optimizer,
             td_errors_loss_fn=common.element_wise_squared_loss,
             train_step_counter=self.global_step,
-            # emit_log_probability=True
+            target_update_period=target_update_period,
+            gamma=gamma
+        # emit_log_probability=True
         )
 
         self.tf_agent.initialize()
@@ -183,14 +196,13 @@ class DQNLearner:
             max_length=replay_buffer_capacity)
 
         # Dataset generates trajectories with shape [Bx2x...]
-        # Because SAC needs the current and the next state to perform the critic network updates
         self.dataset = self.replay_buffer.as_dataset(
             num_parallel_calls=num_parallel_environments,
             sample_batch_size=batch_size,
             num_steps=2).prefetch(3)
         self.iterator = iter(self.dataset)
 
-        self.checkpoint_dir = os.path.join(save_directory_location, 'saves', env_name, 'dql_training_checkpoint')
+        self.checkpoint_dir = os.path.join(save_directory_location, 'saves', env_name, 'dqn_training_checkpoint')
         self.train_checkpointer = common.Checkpointer(
             ckpt_dir=self.checkpoint_dir,
             max_to_keep=1,
@@ -199,7 +211,7 @@ class DQNLearner:
             replay_buffer=self.replay_buffer,
             global_step=self.global_step
         )
-        self.policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'dql_policy')
+        self.policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'dqn_policy')
         self.policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
 
         self.num_episodes = tf_metrics.NumberOfEpisodes()
@@ -370,6 +382,9 @@ def main(argv):
         network_fc_layer_params=params['network_layers'],
         batch_size=params['batch_size'],
         parallelization=params['num_parallel_env'] > 1,
+        target_update_period=params['target_update_period'],
+        gamma=params['gamma'],
+        collect_steps_per_iteration=params['collect_steps_per_iteration']
     )
     if params['permissive_policy_saver']:
         for temperature in params['permissive_policy_temperature']:
