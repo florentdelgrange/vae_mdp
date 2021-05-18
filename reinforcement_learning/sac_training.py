@@ -15,7 +15,7 @@ import imageio
 import tensorflow as tf
 from tensorflow.python.keras.utils.generic_utils import Progbar
 
-from tf_agents.agents.sac import sac_agent
+from tf_agents.agents.sac import sac_agent, tanh_normal_projection_network
 from tf_agents.agents.ddpg import critic_network
 
 from tf_agents.drivers import dynamic_step_driver
@@ -67,6 +67,16 @@ flags.DEFINE_integer(
     'collect_steps_per_iteration',
     help='Collect steps per iteration',
     default=1
+)
+flags.DEFINE_integer(
+    'batch_size',
+    help='Batch size',
+    default=64
+)
+flags.DEFINE_float(
+    'reward_scale_factor',
+    help='scale factor for rewards',
+    default=1.
 )
 FLAGS = flags.FLAGS
 
@@ -127,14 +137,13 @@ class SACLearner:
                  parallelization: bool = True,
                  num_parallel_environments: int = 4,
                  batch_size: int = 256,
-                 # labeling_function: Callable = labeling_functions['HumanoidBulletEnv-v0'],
                  eval_video: bool = False,
                  debug: bool = False,
                  save_directory_location: str = '.',
                  save_exploration_dataset: bool = False):
 
         if collect_steps_per_iteration is None:
-            collect_steps_per_iteration = batch_size
+            collect_steps_per_iteration = batch_size // 8
         if parallelization:
             replay_buffer_capacity = replay_buffer_capacity // num_parallel_environments
             collect_steps_per_iteration = max(1, collect_steps_per_iteration // num_parallel_environments)
@@ -196,7 +205,10 @@ class SACLearner:
             (self.observation_spec, self.action_spec),
             observation_fc_layer_params=None,
             action_fc_layer_params=None,
-            joint_fc_layer_params=critic_joint_fc_layer_params)
+            joint_fc_layer_params=critic_joint_fc_layer_params,
+            kernel_initializer='glorot_uniform',
+            last_kernel_initializer='glorot_uniform'
+        )
 
         # The output of the actor network is a normal distribution
         def normal_projection_net(action_spec, init_means_output_factor=0.1, std_transform_multiplier=1.):
@@ -214,7 +226,8 @@ class SACLearner:
             self.observation_spec,
             self.action_spec,
             fc_layer_params=actor_fc_layer_params,
-            continuous_projection_net=normal_projection_net)
+            # continuous_projection_net=normal_projection_net)
+            continuous_projection_net=tanh_normal_projection_network.TanhNormalProjectionNetwork)
 
         self.global_step = tf.compat.v1.train.get_or_create_global_step()
         self.tf_agent = sac_agent.SacAgent(
@@ -227,7 +240,7 @@ class SACLearner:
             alpha_optimizer=tf.compat.v1.train.AdamOptimizer(learning_rate=alpha_learning_rate),
             target_update_tau=target_update_tau,
             target_update_period=target_update_period,
-            td_errors_loss_fn=tf.compat.v1.losses.mean_squared_error,
+            td_errors_loss_fn=tf.math.squared_difference,
             gamma=gamma,
             reward_scale_factor=reward_scale_factor,
             gradient_clipping=gradient_clipping,
@@ -259,7 +272,7 @@ class SACLearner:
             replay_buffer=self.replay_buffer,
             global_step=self.global_step
         )
-        self.stochastic_policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'policy')
+        self.stochastic_policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'sac_policy')
         self.stochastic_policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
 
         self.num_episodes = tf_metrics.NumberOfEpisodes()
@@ -480,7 +493,9 @@ def main(argv):
         num_iterations=params['steps'],
         num_parallel_environments=params['num_parallel_env'],
         save_directory_location=params['save_dir'],
-        collect_steps_per_iteration=params['collect_steps_per_iteration']
+        collect_steps_per_iteration=params['collect_steps_per_iteration'],
+        batch_size=params['batch_size'],
+        reward_scale_factor=params['reward_scale_factor']
     )
     if params['permissive_policy_saver']:
         for variance_multiplier in params['variance']:
