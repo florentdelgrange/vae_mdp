@@ -5,6 +5,7 @@ from typing import Tuple, Callable, Optional
 import threading
 import datetime
 
+import reverb
 import tf_agents
 from absl import app
 from absl import flags
@@ -18,17 +19,16 @@ from tensorflow.python.keras.utils.generic_utils import Progbar
 from tf_agents.agents.sac import sac_agent, tanh_normal_projection_network
 from tf_agents.agents.ddpg import critic_network
 
-from tf_agents.drivers import dynamic_step_driver
+from tf_agents.drivers import dynamic_step_driver, py_driver
 from tf_agents.drivers import dynamic_episode_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment
-from tf_agents.metrics import tf_metrics, tf_metric
+from tf_agents.metrics import tf_metrics, tf_metric, py_metrics
 from tf_agents.networks import actor_distribution_network
 from tf_agents.networks import normal_projection_network
-from tf_agents.replay_buffers import tf_uniform_replay_buffer
+from tf_agents.replay_buffers import tf_uniform_replay_buffer, reverb_replay_buffer, reverb_utils
 from tf_agents.utils import common
-from tf_agents.policies import policy_saver
+from tf_agents.policies import policy_saver, py_tf_eager_policy
 import tf_agents.trajectories.time_step as ts
-
 
 path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, path + '/../')
@@ -78,6 +78,11 @@ flags.DEFINE_float(
     help='scale factor for rewards',
     default=1.
 )
+flags.DEFINE_bool(
+    'prioritized_experience_replay',
+    help="use priority-based replay buffer (with Deepmind's reverb)",
+    default=False
+)
 FLAGS = flags.FLAGS
 
 
@@ -85,6 +90,7 @@ class NumberOfSafetyViolations(tf_metric.TFStepMetric):
     """
     Experimental
     """
+
     def __init__(self, labeling_function, name='NumberOfSafetyViolations'):
         super(NumberOfSafetyViolations, self).__init__(name=name, prefix='Metrics')
         self._n = common.create_variable(name='num_violations', initial_value=0., trainable=False, dtype=tf.float32)
@@ -114,33 +120,38 @@ class NumberOfSafetyViolations(tf_metric.TFStepMetric):
 
 
 class SACLearner:
-    def __init__(self,
-                 env_name: str,
-                 env_suite,
-                 num_iterations: int = int(3e6),
-                 initial_collect_steps: int = int(1e4),
-                 collect_steps_per_iteration: int = 1,
-                 replay_buffer_capacity: int = int(1e6),
-                 critic_learning_rate: float = 3e-4,
-                 actor_learning_rate: float = 3e-4,
-                 alpha_learning_rate: float = 3e-4,
-                 target_update_tau: float = 5e-3,
-                 target_update_period: int = 1,
-                 gamma: float = 0.99,
-                 reward_scale_factor: float = 20.0,
-                 gradient_clipping=None,
-                 actor_fc_layer_params: Tuple[int, ...] = (256, 256),
-                 critic_joint_fc_layer_params: Tuple[int, ...] = (256, 256),
-                 log_interval: int = 2500,
-                 num_eval_episodes: int = 30,
-                 eval_interval: int = int(1e4),
-                 parallelization: bool = True,
-                 num_parallel_environments: int = 4,
-                 batch_size: int = 256,
-                 eval_video: bool = False,
-                 debug: bool = False,
-                 save_directory_location: str = '.',
-                 save_exploration_dataset: bool = False):
+    def __init__(
+            self,
+            env_name: str,
+            env_suite,
+            num_iterations: int = int(3e6),
+            initial_collect_steps: int = int(1e4),
+            collect_steps_per_iteration: int = 1,
+            replay_buffer_capacity: int = int(1e6),
+            critic_learning_rate: float = 3e-4,
+            actor_learning_rate: float = 3e-4,
+            alpha_learning_rate: float = 3e-4,
+            target_update_tau: float = 5e-3,
+            target_update_period: int = 1,
+            gamma: float = 0.99,
+            reward_scale_factor: float = 20.0,
+            gradient_clipping=None,
+            actor_fc_layer_params: Tuple[int, ...] = (256, 256),
+            critic_joint_fc_layer_params: Tuple[int, ...] = (256, 256),
+            log_interval: int = 2500,
+            num_eval_episodes: int = 30,
+            eval_interval: int = int(1e4),
+            parallelization: bool = True,
+            num_parallel_environments: int = 4,
+            batch_size: int = 64,
+            eval_video: bool = False,
+            debug: bool = False,
+            save_directory_location: str = '.',
+            save_exploration_dataset: bool = False,
+            prioritized_experience_replay: bool = False,
+            priority_exponent: float = 0.6
+    ):
+        self.parallelization = parallelization and not prioritized_experience_replay
 
         if collect_steps_per_iteration is None:
             collect_steps_per_iteration = batch_size // 8
@@ -173,14 +184,15 @@ class SACLearner:
         self.num_eval_episodes = num_eval_episodes
         self.eval_interval = eval_interval
 
-        self.parallelization = parallelization
         self.num_parallel_environments = num_parallel_environments
 
         self.batch_size = batch_size
 
         self.eval_video = eval_video
 
-        if parallelization:
+        self.prioritized_experience_replay = prioritized_experience_replay
+
+        if self.parallelization:
             self.tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
                 [lambda: env_suite.load(env_name)] * num_parallel_environments))
             self.tf_env.reset()
@@ -250,15 +262,77 @@ class SACLearner:
         # define the policy from the learning agent
         self.collect_policy = self.tf_agent.collect_policy
 
-        self.replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
-            data_spec=self.tf_agent.collect_data_spec,
-            batch_size=self.tf_env.batch_size,
-            max_length=replay_buffer_capacity)
+        self.max_priority = tf.Variable(0., trainable=False, name='max_priority', dtype=tf.float64)
+        if self.prioritized_experience_replay:
+            checkpoint_path = os.path.join(save_directory_location, 'saves', env_name, 'reverb')
+            reverb_checkpointer = reverb.checkpointers.DefaultCheckpointer(checkpoint_path)
+
+            table_name = 'prioritized_replay_buffer'
+            table = reverb.Table(
+                table_name,
+                max_size=int(1e6),
+                sampler=reverb.selectors.Prioritized(priority_exponent=priority_exponent),
+                remover=reverb.selectors.Fifo(),
+                rate_limiter=reverb.rate_limiters.MinSize(1))
+
+            reverb_server = reverb.Server([table], checkpointer=reverb_checkpointer)
+
+            self.replay_buffer = reverb_replay_buffer.ReverbReplayBuffer(
+                data_spec=self.tf_agent.collect_data_spec,
+                sequence_length=2,
+                table_name=table_name,
+                local_server=reverb_server)
+
+            _add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
+                py_client=self.replay_buffer.py_client,
+                table_name=table_name,
+                sequence_length=2,
+                stride_length=1,
+                priority=self.max_priority)
+
+
+            self.num_episodes = py_metrics.NumberOfEpisodes()
+            self.env_steps = py_metrics.EnvironmentSteps()
+            self.avg_return = py_metrics.AverageReturnMetric()
+            observers = [self.num_episodes, self.env_steps, self.avg_return, _add_batch]
+
+            self.driver = py_driver.PyDriver(
+                env=self.py_env,
+                policy=py_tf_eager_policy.PyTFEagerPolicy(self.collect_policy, use_tf_function=True),
+                observers=observers,
+                max_steps=collect_steps_per_iteration)
+            self.initial_collect_driver = py_driver.PyDriver(
+                env=self.py_env,
+                policy=py_tf_eager_policy.PyTFEagerPolicy(self.collect_policy, use_tf_function=True),
+                observers=[_add_batch],
+                max_steps=initial_collect_steps)
+
+        else:
+            self.replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
+                data_spec=self.tf_agent.collect_data_spec,
+                batch_size=self.tf_env.batch_size,
+                max_length=replay_buffer_capacity)
+
+            self.num_episodes = tf_metrics.NumberOfEpisodes()
+            self.env_steps = tf_metrics.EnvironmentSteps()
+            self.avg_return = tf_metrics.AverageReturnMetric(batch_size=self.tf_env.batch_size)
+            #  self.safety_violations = NumberOfSafetyViolations(self.labeling_function)
+
+            observers = [self.num_episodes, self.env_steps] if not parallelization else []
+            observers += [self.avg_return, self.replay_buffer.add_batch]
+            # A driver executes the agent's exploration loop and allows the observers to collect exploration information
+            self.driver = dynamic_step_driver.DynamicStepDriver(
+                self.tf_env, self.collect_policy, observers=observers, num_steps=collect_steps_per_iteration)
+            self.initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
+                self.tf_env,
+                self.collect_policy,
+                observers=[self.replay_buffer.add_batch],
+                num_steps=initial_collect_steps)
 
         # Dataset generates trajectories with shape [Bx2x...]
         # Because SAC needs the current and the next state to perform the critic network updates
         self.dataset = self.replay_buffer.as_dataset(
-            num_parallel_calls=3,
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
             sample_batch_size=batch_size,
             num_steps=2).prefetch(3)
         self.iterator = iter(self.dataset)
@@ -270,23 +344,11 @@ class SACLearner:
             agent=self.tf_agent,
             policy=self.collect_policy,
             replay_buffer=self.replay_buffer,
-            global_step=self.global_step
+            global_step=self.global_step,
+            observers=observers
         )
         self.stochastic_policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'sac_policy')
         self.stochastic_policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
-
-        self.num_episodes = tf_metrics.NumberOfEpisodes()
-        self.env_steps = tf_metrics.EnvironmentSteps()
-        self.avg_return = tf_metrics.AverageReturnMetric(batch_size=self.tf_env.batch_size)
-        #  self.safety_violations = NumberOfSafetyViolations(self.labeling_function)
-
-        observers = [self.num_episodes, self.env_steps] if not parallelization else []
-        observers += [self.avg_return, self.replay_buffer.add_batch]
-        # A driver executes the agent's exploration loop and allows the observers to collect exploration information
-        self.driver = dynamic_step_driver.DynamicStepDriver(
-            self.tf_env, self.collect_policy, observers=observers, num_steps=collect_steps_per_iteration)
-        self.initial_collect_driver = dynamic_step_driver.DynamicStepDriver(
-            self.tf_env, self.collect_policy, observers=[self.replay_buffer.add_batch], num_steps=initial_collect_steps)
 
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         train_log_dir = os.path.join(
@@ -329,7 +391,8 @@ class SACLearner:
     def train_and_eval(self, display_progressbar: bool = True, display_interval: float = 0.1):
         # Optimize by wrapping some of the code in a graph using TF function.
         self.tf_agent.train = common.function(self.tf_agent.train)
-        self.driver.run = common.function(self.driver.run)
+        if not self.prioritized_experience_replay:
+            self.driver.run = common.function(self.driver.run)
 
         metrics = [
             # 'avg_safety_violations_per_episode',
@@ -337,10 +400,11 @@ class SACLearner:
             'avg_eval_episode_length',
             'eval_safety_violations',
             'replay_buffer_frames',
-            'training_avg_returns'
+            'training_avg_returns',
+            'loss'
         ]
         if not self.parallelization:
-            metrics += ['num_episodes', 'env_steps']
+            metrics += ['num_episodes', 'env_steps', 'loss']
 
         class AbstractLoss:
             def __init__(self):
@@ -390,8 +454,13 @@ class SACLearner:
 
             # Use data from the buffer and update the agent's network.
             # experience = replay_buffer.gather_all()
-            experience, _ = next(self.iterator)
+            experience, info = next(self.iterator)
             train_loss = self.tf_agent.train(experience)
+
+            if self.prioritized_experience_replay:
+                if train_loss.extra.critic_loss > self.max_priority:
+                    self.max_priority.assign(train_loss.extra.critic_loss)
+                self.replay_buffer.update_priorities(keys=info.key, priorities=train_loss.extra.critic_loss)
 
             step = self.tf_agent.train_step_counter.numpy()
 
@@ -399,6 +468,8 @@ class SACLearner:
 
             if step % self.log_interval == 0:
                 self.train_checkpointer.save(self.global_step)
+                if self.prioritized_experience_replay:
+                    self.replay_buffer.py_client.checkpoint()
                 self.stochastic_policy_saver.save(self.stochastic_policy_dir)
                 with self.train_summary_writer.as_default():
                     tf.summary.scalar('loss', train_loss.loss, step=step)
@@ -422,14 +493,15 @@ class SACLearner:
         #  num_safety_violations = NumberOfSafetyViolations(labeling_function=self.labeling_function)
         if self.eval_video:
             self.evaluate_policy_video(saved_policy,
-                                       observers=[avg_eval_return, avg_eval_episode_length], #, num_safety_violations],
+                                       observers=[avg_eval_return, avg_eval_episode_length],
+                                       # , num_safety_violations],
                                        step=str(step))
         else:
             self.eval_env.reset()
             dynamic_episode_driver.DynamicEpisodeDriver(
                 self.eval_env,
                 saved_policy,
-                [avg_eval_return, avg_eval_episode_length],  #, num_safety_violations],
+                [avg_eval_return, avg_eval_episode_length],  # , num_safety_violations],
                 num_episodes=self.num_eval_episodes
             ).run()
 
