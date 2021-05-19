@@ -93,6 +93,26 @@ flags.DEFINE_float(
     help='priority exponent for computing the probabilities of the samples from the prioritized replay buffer',
     default=0.6
 )
+flags.DEFINE_float(
+    'gamma',
+    help='discount factor',
+    default=0.99
+)
+flags.DEFINE_float(
+    'learning_rate',
+    help='optimizer learning rate',
+    default=3e-4
+)
+flags.DEFINE_float(
+    'target_update_tau',
+    help='target update tau',
+    default=5e-3
+)
+flags.DEFINE_integer(
+    'replay_buffer_size',
+    help='replay buffer size',
+    default=int(1e6)
+)
 FLAGS = flags.FLAGS
 
 
@@ -282,7 +302,7 @@ class SACLearner:
             table_name = 'prioritized_replay_buffer'
             table = reverb.Table(
                 table_name,
-                max_size=int(1e6),
+                max_size=replay_buffer_capacity,
                 sampler=reverb.selectors.Prioritized(priority_exponent=priority_exponent),
                 remover=reverb.selectors.Fifo(),
                 rate_limiter=reverb.rate_limiters.MinSize(1))
@@ -435,6 +455,7 @@ class SACLearner:
     def train_and_eval(self, display_progressbar: bool = True, display_interval: float = 0.1):
         # Optimize by wrapping some of the code in a graph using TF function.
         self.tf_agent.train = common.function(self.tf_agent.train)
+        self._compute_priorities = common.function(self._compute_priorities)
         if not self.prioritized_experience_replay:
             self.driver.run = common.function(self.driver.run)
 
@@ -622,6 +643,12 @@ def main(argv):
         reward_scale_factor=params['reward_scale_factor'],
         prioritized_experience_replay=params['prioritized_experience_replay'],
         priority_exponent=params['priority_exponent'],
+        gamma=params['gamma'],
+        critic_learning_rate = params['learning_rate'],
+        actor_learning_rate = params['learning_rate'],
+        alpha_learning_rate = params['learning_rate'],
+        target_update_tau = params['target_update_tau'],
+        replay_buffer_capacity=params['replay_buffer_size']
     )
     if params['permissive_policy_saver']:
         for variance_multiplier in params['variance']:
