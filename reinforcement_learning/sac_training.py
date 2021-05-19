@@ -1,8 +1,10 @@
 import functools
 import os
 import sys
+from collections import namedtuple
 from typing import Tuple, Callable, Optional
 import threading
+import timeit
 import datetime
 
 import reverb
@@ -26,9 +28,12 @@ from tf_agents.metrics import tf_metrics, tf_metric, py_metrics
 from tf_agents.networks import actor_distribution_network
 from tf_agents.networks import normal_projection_network
 from tf_agents.replay_buffers import tf_uniform_replay_buffer, reverb_replay_buffer, reverb_utils
+from tf_agents.trajectories.trajectory import experience_to_transitions
 from tf_agents.utils import common
 from tf_agents.policies import policy_saver, py_tf_eager_policy
 import tf_agents.trajectories.time_step as ts
+from tf_agents.agents import data_converter
+from tf_agents.utils.nest_utils import batch_nested_tensors
 
 path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, path + '/../')
@@ -82,6 +87,11 @@ flags.DEFINE_bool(
     'prioritized_experience_replay',
     help="use priority-based replay buffer (with Deepmind's reverb)",
     default=False
+)
+flags.DEFINE_float(
+    'priority_exponent',
+    help='priority exponent for computing the probabilities of the samples from the prioritized replay buffer',
+    default=0.6
 )
 FLAGS = flags.FLAGS
 
@@ -242,6 +252,8 @@ class SACLearner:
             continuous_projection_net=tanh_normal_projection_network.TanhNormalProjectionNetwork)
 
         self.global_step = tf.compat.v1.train.get_or_create_global_step()
+
+        self.td_errors_loss_fn = tf.math.squared_difference
         self.tf_agent = sac_agent.SacAgent(
             self.tf_env.time_step_spec(),
             self.action_spec,
@@ -252,7 +264,7 @@ class SACLearner:
             alpha_optimizer=tf.compat.v1.train.AdamOptimizer(learning_rate=alpha_learning_rate),
             target_update_tau=target_update_tau,
             target_update_period=target_update_period,
-            td_errors_loss_fn=tf.math.squared_difference,
+            td_errors_loss_fn=self.td_errors_loss_fn,
             gamma=gamma,
             reward_scale_factor=reward_scale_factor,
             gradient_clipping=gradient_clipping,
@@ -283,13 +295,12 @@ class SACLearner:
                 table_name=table_name,
                 local_server=reverb_server)
 
-            _add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
+            _add_batch = reverb_utils.ReverbAddTrajectoryObserver(
                 py_client=self.replay_buffer.py_client,
                 table_name=table_name,
                 sequence_length=2,
                 stride_length=1,
                 priority=self.max_priority)
-
 
             self.num_episodes = py_metrics.NumberOfEpisodes()
             self.env_steps = py_metrics.EnvironmentSteps()
@@ -388,6 +399,39 @@ class SACLearner:
 
         self.actor_net._projection_networks = actual_projection_networks
 
+    def _compute_priorities(self, experience):
+        assert self.prioritized_experience_replay
+
+        _start_time = timeit.default_timer()
+        transitions = experience_to_transitions(experience, squeeze_time_dim=True)
+        _start_time = timeit.default_timer()
+        time_steps, policy_steps, next_time_steps = transitions
+        actions = policy_steps.action
+
+        next_actions, next_log_pis = self.tf_agent._actions_and_log_probs(next_time_steps)
+        target_input = (next_time_steps.observation, next_actions)
+        target_q_values1, unused_network_state1 = self.tf_agent._target_critic_network_1(
+            target_input, next_time_steps.step_type, training=False)
+        target_q_values2, unused_network_state2 = self.tf_agent._target_critic_network_2(
+            target_input, next_time_steps.step_type, training=False)
+        target_q_values = (
+                tf.minimum(target_q_values1, target_q_values2) -
+                tf.exp(self.tf_agent._log_alpha) * next_log_pis)
+
+        td_targets = tf.stop_gradient(
+            self.reward_scale_factor * next_time_steps.reward +
+            self.gamma * next_time_steps.discount * target_q_values)
+
+        pred_input = (time_steps.observation, actions)
+        pred_td_targets1, _ = self.tf_agent._critic_network_1(
+            pred_input, time_steps.step_type, training=False)
+        pred_td_targets2, _ = self.tf_agent._critic_network_2(
+            pred_input, time_steps.step_type, training=False)
+        critic_loss1 = self.td_errors_loss_fn(td_targets, pred_td_targets1)
+        critic_loss2 = self.td_errors_loss_fn(td_targets, pred_td_targets2)
+        loss = critic_loss1 + critic_loss2
+        return tf.cast(loss, dtype=tf.float64)
+
     def train_and_eval(self, display_progressbar: bool = True, display_interval: float = 0.1):
         # Optimize by wrapping some of the code in a graph using TF function.
         self.tf_agent.train = common.function(self.tf_agent.train)
@@ -406,11 +450,7 @@ class SACLearner:
         if not self.parallelization:
             metrics += ['num_episodes', 'env_steps', 'loss']
 
-        class AbstractLoss:
-            def __init__(self):
-                self.loss = 0.
-
-        train_loss = AbstractLoss()
+        train_loss = namedtuple('loss', ['loss'])(0.)
 
         # load the checkpoint
         if os.path.exists(self.checkpoint_dir):
@@ -440,8 +480,11 @@ class SACLearner:
         else:
             progressbar = None
 
+        env = self.tf_env if not self.prioritized_experience_replay else self.py_env
+
         print("Initialize replay buffer...")
-        self.initial_collect_driver.run()
+        if tf.math.less(self.replay_buffer.num_frames(), self.initial_collect_steps):
+            self.initial_collect_driver.run(env.current_time_step())
 
         print("Start training...")
 
@@ -450,17 +493,26 @@ class SACLearner:
         for _ in range(self.global_step.numpy(), self.num_iterations):
 
             # Collect a few steps using collect_policy and save to the replay buffer.
-            self.driver.run()
+            self.driver.run(env.current_time_step())
 
             # Use data from the buffer and update the agent's network.
-            # experience = replay_buffer.gather_all()
             experience, info = next(self.iterator)
-            train_loss = self.tf_agent.train(experience)
-
             if self.prioritized_experience_replay:
-                if train_loss.extra.critic_loss > self.max_priority:
-                    self.max_priority.assign(train_loss.extra.critic_loss)
-                self.replay_buffer.update_priorities(keys=info.key, priorities=train_loss.extra.critic_loss)
+                assert (tf.reduce_all(info.key[:, 0, ...] == info.key[:, 1, ...]))
+                assert (tf.reduce_all(info.probability[:, 0, ...] == info.probability[:, 1, ...]))
+
+                priorities = self._compute_priorities(experience)
+                self.replay_buffer.update_priorities(keys=info.key[:, 0, ...], priorities=priorities)
+                is_weights = tf.cast(
+                    tf.stop_gradient(tf.reduce_min(info.probability[:, 0, ...])) / info.probability[:, 0, ...],
+                    dtype=tf.float32)
+
+                if tf.reduce_max(priorities) > self.max_priority:
+                    self.max_priority.assign(tf.reduce_max(priorities))
+            else:
+                is_weights = None
+
+            train_loss = self.tf_agent.train(experience, weights=is_weights)
 
             step = self.tf_agent.train_step_counter.numpy()
 
@@ -567,7 +619,9 @@ def main(argv):
         save_directory_location=params['save_dir'],
         collect_steps_per_iteration=params['collect_steps_per_iteration'],
         batch_size=params['batch_size'],
-        reward_scale_factor=params['reward_scale_factor']
+        reward_scale_factor=params['reward_scale_factor'],
+        prioritized_experience_replay=params['prioritized_experience_replay'],
+        priority_exponent=params['priority_exponent'],
     )
     if params['permissive_policy_saver']:
         for variance_multiplier in params['variance']:
