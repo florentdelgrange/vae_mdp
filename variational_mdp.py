@@ -901,7 +901,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         # Importance sampling weights (is) for prioritized experience replay
         if sample_probability is not None:
-            is_weights = (tf.reduce_min(sample_probability) / sample_probability) ** self.is_exponent
+            is_weights = (tf.stop_gradient(tf.reduce_min(sample_probability)) / sample_probability) ** self.is_exponent
         else:
             is_weights = 1.
 
