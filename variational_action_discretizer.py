@@ -622,20 +622,23 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         entropy_regularizer = self.entropy_regularizer(latent_state, action)
 
-        # bucketing
-        if self.buckets is not None and sample_key is not None:
-            self.buckets.update_priority(keys=sample_key, latent_states=tf.cast(tf.round(latent_state), tf.int32))
-        if self.priority_loss_handler is not None and sample_key is not None:
-            self.priority_loss_handler.update_priority(keys=sample_key, loss=(distortion + rate))
+        # priority support
+        if self.priority_handler is not None and sample_key is not None:
+            tf.stop_gradient(
+                self.priority_handler.update_priority(
+                    keys=sample_key,
+                    latent_states=tf.stop_gradient(tf.cast(tf.round(latent_state), tf.int32)),
+                    loss=tf.stop_gradient(distortion + rate)))
 
         # metrics
-        self.loss_metrics['ELBO'](-1. * (distortion + rate))
-        self.loss_metrics['action_mse'](action, action_distribution.sample())
-        self.loss_metrics['reward_mse'](reward, reward_distribution.sample())
+        self.loss_metrics['ELBO'](tf.stop_gradient(-1. * (distortion + rate)))
+        self.loss_metrics['action_mse'](action, tf.stop_gradient(action_distribution.sample()))
+        self.loss_metrics['reward_mse'](reward, tf.stop_gradient(reward_distribution.sample()))
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
-        self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-        self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
+        self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
+        self.loss_metrics['entropy_regularizer'](
+            tf.stop_gradient(self.entropy_regularizer_scale_factor * entropy_regularizer))
         # if self.one_output_per_action:
         #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
 
@@ -705,35 +708,40 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             latent_state, action, state=state,
             enforce_latent_state_space_spreading=(self.marginal_entropy_regularizer_ratio > 0.))
 
-        # bucketing
-        if self.buckets is not None and sample_key is not None:
-            self.buckets.update_priority(keys=sample_key, latent_states=tf.cast(tf.round(latent_state), tf.int32))
-        if self.priority_loss_handler is not None and sample_key is not None:
-            self.priority_loss_handler.update_priority(keys=sample_key, loss=(distortion + rate))
+        # priority support
+        if self.priority_handler is not None and sample_key is not None:
+            tf.stop_gradient(
+                self.priority_handler.update_priority(
+                    keys=sample_key,
+                    latent_states=tf.stop_gradient(tf.cast(tf.round(latent_state), tf.int32)),
+                    loss=tf.stop_gradient(distortion + rate)))
 
         # metrics
         action_sample, reward_sample, next_state_sample = reconstruction_distribution.sample()
-        self.loss_metrics['ELBO'](-1. * (distortion + rate))
+        self.loss_metrics['ELBO'](tf.stop_gradient(-1. * (distortion + rate)))
         self.loss_metrics['action_mse'](action, action_sample)
         self.loss_metrics['reward_mse'](reward, reward_sample)
         self.loss_metrics['state_mse'](next_state, next_state_sample)
         self.loss_metrics['state_rate'](state_encoder_rate)
         # self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(next_state, next_label).entropy())
-        self.loss_metrics['action_encoder_entropy'](self.discrete_action_encoding(latent_state, action).entropy())
+        self.loss_metrics['action_encoder_entropy'](
+            tf.stop_gradient(self.discrete_action_encoding(latent_state, action).entropy()))
         #  self.loss_metrics['state_decoder_variance'](state_distribution.variance())
         self.loss_metrics['action_rate'](action_encoder_rate)
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
-        self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-        self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
+        self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
+        self.loss_metrics['entropy_regularizer'](
+            tf.stop_gradient(self.entropy_regularizer_scale_factor * entropy_regularizer))
         self.loss_metrics['t_1_state'].reset_states()
         self.loss_metrics['t_1_state'](self._state_vae.encoder_temperature)
         self.loss_metrics['t_2_state'].reset_states()
         self.loss_metrics['t_2_state'](self._state_vae.prior_temperature)
         self.loss_metrics['transition_log_probs'](
-            self.discrete_latent_transition_probability_distribution(
-                tf.round(latent_state), tf.round(tf.exp(log_latent_action))
-            ).log_prob(next_label, tf.round(tf.sigmoid(next_logistic_latent_state))))
+            tf.stop_gradient(
+                self.discrete_latent_transition_probability_distribution(
+                    tf.round(latent_state), tf.stop_gradient(tf.round(tf.exp(log_latent_action)))
+                ).log_prob(next_label, tf.round(tf.sigmoid(next_logistic_latent_state)))))
 
         return {'distortion': distortion, 'rate': rate, 'entropy_regularizer': entropy_regularizer}
 

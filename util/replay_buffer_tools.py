@@ -9,19 +9,16 @@ class PriorityHandler(ABC):
         self.max_priority = None
 
     @abstractmethod
-    def update_priority(self, key, value):
+    def update_priority(self, key, value, **kwargs):
         return NotImplemented
-        pass
 
     @abstractmethod
     def load_or_initialize_checkpoint(self, dir_path: str):
-        raise NotImplementedError()
-        pass
+        return NotImplemented
 
     @abstractmethod
     def checkpoint(self, *args, **kwargs):
-        raise NotImplementedError()
-        pass
+        return NotImplementedError()
 
 
 class LossPriority(PriorityHandler):
@@ -40,7 +37,7 @@ class LossPriority(PriorityHandler):
         self._checkpointer = None
         self._manager = None
 
-    def update_priority(self, keys: tf.Tensor, loss: tf.Tensor):
+    def update_priority(self, keys: tf.Tensor, loss: tf.Tensor, **kwargs):
 
         batch_size = tf.shape(loss)[0]
         self.step_counter.assign_add(batch_size)
@@ -55,6 +52,7 @@ class LossPriority(PriorityHandler):
         priorities = L / (1. + tf.exp(-k * (loss - x0)))
 
         self.replay_buffer.update_priorities(keys=keys, priorities=priorities)
+        return priorities
 
     def load_or_initialize_checkpoint(self, dir_path: str):
         checkpoint_path = os.path.join(dir_path, 'loss_priority')
@@ -83,7 +81,7 @@ class PriorityBuckets(PriorityHandler):
         self._checkpointer = None
         self._manager = None
 
-    def update_priority(self, keys: tf.Tensor, latent_states: tf.Tensor):
+    def update_priority(self, keys: tf.Tensor, latent_states: tf.Tensor, **kwargs):
         batch_size = tf.shape(latent_states)[0]
         self.step_counter.assign_add(batch_size)
 
@@ -102,6 +100,7 @@ class PriorityBuckets(PriorityHandler):
             self.max_priority.assign(batch_max_priority)
 
         self.replay_buffer.update_priorities(keys, priorities)
+        return priorities
 
     def load_or_initialize_checkpoint(self, dir_path: str):
         checkpoint_path = os.path.join(dir_path, 'priority_buckets')

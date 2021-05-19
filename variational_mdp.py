@@ -131,8 +131,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         # to save only the N best last models learned
         self.evaluation_memory = tf.Variable([-1. * np.inf] * evaluation_memory_size, trainable=False)
 
-        self.buckets = None
-        self.priority_loss_handler = None
+        self.priority_handler = None
 
         if not pre_loaded_model:
             label_transition_network._name = 'label_transition_network_core'
@@ -591,24 +590,29 @@ class VariationalMarkovDecisionProcess(tf.Module):
             latent_states=next_latent_state)
 
         # priority support
-        if self.buckets is not None and sample_key is not None:
-            self.buckets.update_priority(keys=sample_key, latent_states=tf.cast(tf.round(latent_state), tf.int32))
-        if self.priority_loss_handler is not None and sample_key is not None:
-            self.priority_loss_handler.update_priority(keys=sample_key, loss=(distortion + rate))
+        if self.priority_handler is not None and sample_key is not None:
+            tf.stop_gradient(
+                self.priority_handler.update_priority(
+                    keys=sample_key,
+                    latent_states=tf.stop_gradient(tf.cast(tf.round(latent_state), tf.int32)),
+                    loss=tf.stop_gradient(distortion + rate)))
 
         # metrics
-        self.loss_metrics['ELBO'](-1 * (distortion + rate))
+        self.loss_metrics['ELBO'](tf.stop_gradient(-1 * (distortion + rate)))
         reconstruction_sample = reconstruction_distribution.sample()
         self.loss_metrics['state_mse'](next_state, reconstruction_sample[-1])
         self.loss_metrics['reward_mse'](reward, reconstruction_sample[-2])
         #  self.loss_metrics['decoder_variance'](state_distribution.variance())
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
-        self.loss_metrics['annealed_rate'](self.kl_scale_factor * rate)
-        self.loss_metrics['entropy_regularizer'](self.entropy_regularizer_scale_factor * entropy_regularizer)
+        self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
+        self.loss_metrics['entropy_regularizer'](
+            tf.stop_gradient(self.entropy_regularizer_scale_factor * entropy_regularizer))
         self.loss_metrics['transition_log_probs'](
-            self.discrete_latent_transition_probability_distribution(tf.round(latent_state), action).log_prob(
-                next_label, tf.round(tf.sigmoid(next_logistic_latent_state))))
+            tf.stop_gradient(
+                self.discrete_latent_transition_probability_distribution(tf.stop_gradient(tf.round(latent_state)),
+                                                                         action).log_prob(
+                    next_label, tf.round(tf.sigmoid(next_logistic_latent_state)))))
 
         if 'action_mse' in self.loss_metrics:
             self.loss_metrics['action_mse'](action, reconstruction_sample[0])
@@ -643,7 +647,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         for metric_label in ('encoder_entropy', 'state_encoder_entropy'):
             if metric_label in self.loss_metrics:
-                self.loss_metrics[metric_label](tfd.Independent(tfd.Bernoulli(logits=logits)).entropy())
+                self.loss_metrics[metric_label](
+                    tf.stop_gradient(tfd.Independent(tfd.Bernoulli(logits=logits)).entropy()))
 
         #  if enforce_latent_space_spreading:
         batch_size = tf.shape(logits)[0]
@@ -662,13 +667,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             latent_states = latent_states[..., self.atomic_props_dims:]
         latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
         marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states))
-        #  regularizer = ((1. - self.marginal_entropy_regularizer_ratio) * regularizer +
-        #                 self.marginal_entropy_regularizer_ratio *
-        #                 (tf.abs(self.entropy_regularizer_scale_factor) / self.entropy_regularizer_scale_factor)
-        #                 * marginal_entropy_regularizer)
 
         if 'marginal_encoder_entropy' in self.loss_metrics:
-            self.loss_metrics['marginal_encoder_entropy'](-1. * marginal_entropy_regularizer)
+            self.loss_metrics['marginal_encoder_entropy'](tf.stop_gradient(-1. * marginal_entropy_regularizer))
 
         return marginal_entropy_regularizer
 
@@ -1141,13 +1142,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 local_server=reverb_server)
 
             if buckets_based_priorities:
-                self.buckets = PriorityBuckets(replay_buffer=replay_buffer, latent_state_size=self.latent_state_size)
-                priority_handler: PriorityHandler = self.buckets
+                self.priority_handler = PriorityBuckets(
+                    replay_buffer=replay_buffer,
+                    latent_state_size=self.latent_state_size)
+                priority_handler: PriorityHandler = self.priority_handler
             else:
-                self.priority_loss_handler = LossPriority(
+                self.priority_handler = LossPriority(
                     replay_buffer=replay_buffer,
                     max_priority=10.,)
-                priority_handler = self.priority_loss_handler
+                priority_handler: PriorityHandler = self.priority_handler
 
             _add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
                 py_client=replay_buffer.py_client,
