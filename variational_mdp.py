@@ -1283,6 +1283,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
         def save(model_name: str):
             if check_numerics:
                 tf.debugging.disable_check_numerics()
+
+            _priority_handler = self.priority_handler
+            self.priority_handler = None
+
             state, label, action, reward, next_state, next_label = next(dataset_iterator)[:6]
             call = self.__call__.get_concrete_function(
                 tf.TensorSpec(shape=(None,) + tuple(tf.shape(state)[1:]), dtype=tf.float32, name='state'),
@@ -1292,6 +1296,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 tf.TensorSpec(shape=(None,) + tuple(tf.shape(next_state)[1:]), dtype=tf.float32, name='next_state'),
                 tf.TensorSpec(shape=(None,) + tuple(tf.shape(next_label)[1:]), dtype=tf.float32, name='next_label'), )
             tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name), signatures=call, )
+
+            self.priority_handler = _priority_handler
             if check_numerics:
                 tf.debugging.enable_check_numerics()
 
