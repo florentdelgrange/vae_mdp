@@ -9,10 +9,10 @@ class TransitionFrequencyEstimator:
         self.num_states = 2 ** self.latent_state_size
         self.num_actions = tf.shape(latent_actions)[1]  # first axis is batch, second is a one-hot vector
 
-        @tf.function
+        #@tf.function
         def estimate_transition_tensor():
             states = tf.reduce_sum(latent_states * 2 ** tf.range(self.latent_state_size), axis=-1)
-            actions = tf.argmax(latent_actions, axis=-1)
+            actions = tf.cast(tf.argmax(latent_actions, axis=-1), dtype=tf.int32)
             next_states = tf.reduce_sum(next_latent_states * 2 ** tf.range(self.latent_state_size), axis=-1)
 
             # flat transition indices
@@ -22,17 +22,20 @@ class TransitionFrequencyEstimator:
                                     (transitions // self.num_states) % self.num_actions,  # action index
                                     transitions % self.num_states],  # next state index
                                    axis=-1)
+            transitions = tf.cast(transitions, dtype=tf.int64)
             transition_counter = tf.sparse.SparseTensor(
-                indices=transitions, values=count, dense_shape=(self.num_states, self.num_actions, self.num_states))
+                indices=transitions,
+                values=count,
+                dense_shape=(self.num_states, self.num_actions, self.num_states))
             transition_counter = tf.sparse.reorder(transition_counter)
             state_action_pair_counter = tf.sparse.reduce_sum(transition_counter, axis=-1, output_is_sparse=True)
 
-            probs = tf.Variable(transition_counter.values)
+            probs = tf.Variable(tf.cast(transition_counter.values, dtype=tf.float64), trainable=False)
             indices = transition_counter.indices[..., :-1]
-            j = tf.Variable(0)
+            j = tf.Variable(0, trainable=False)
             for i in tf.range(tf.shape(probs)[0]):
                 if tf.reduce_all(indices[i] == state_action_pair_counter.indices[j], axis=-1):
-                    probs[i].assign(probs[i] / state_action_pair_counter.values[j])
+                    probs[i].assign(transition_counter.values[i] / state_action_pair_counter.values[j])
                 else:
                     j.assign_add(1)  # works only if indices are ordered
 
@@ -46,9 +49,12 @@ class TransitionFrequencyEstimator:
             #      axis=0)
 
             return tf.sparse.SparseTensor(
-                indices=transitions, values=probs, dense_shape=(self.num_states, self.num_actions, self.num_states))
+                indices=transitions,
+                values=probs,
+                dense_shape=(self.num_states, self.num_actions, self.num_states))
 
         self.transition_tensor = estimate_transition_tensor()
+        tf.print(self.transition_tensor)
 
     def __call__(self, latent_state: tf.Tensor, latent_action: tf.Tensor):
         state = tf.reduce_sum(latent_state * 2 ** tf.range(self.latent_state_size), axis=-1)

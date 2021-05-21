@@ -1672,10 +1672,14 @@ class VariationalMarkovDecisionProcess(tf.Module):
             latent_policy=self.get_latent_policy(),
             latent_state_size=self.latent_state_size,
             number_of_discrete_actions=self.number_of_discrete_actions,
-            state_embedding_function=lambda state, label: self.binary_encode(state, label).mode(),
+            state_embedding_function=lambda state, label: self.binary_encode(
+                state, tf.cast(label, dtype=tf.float32) if label is not None else label).mode(),
             action_embedding_function=lambda _, action: action,
             latent_reward_function=lambda latent_state, action, next_latent_state: (
-                self.reward_probability_distribution(latent_state, action, next_latent_state).mode()),
+                self.reward_probability_distribution(
+                    tf.cast(latent_state, dtype=tf.float32),
+                    action,
+                    tf.cast(next_latent_state, dtype=tf.float32)).mode()),
             labeling_function=labeling_function,
             latent_transition_function=self.discrete_latent_transition_probability_distribution,
             estimate_transition_function_from_samples=estimate_transition_function_from_samples)

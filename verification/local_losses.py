@@ -42,17 +42,25 @@ def estimate_local_losses_from_samples(
         labeling_function=labeling_function,
         latent_policy=latent_policy,
         state_embedding_function=state_embedding_function)
-    policy_step_spec = policy_step.PolicyStep(action=latent_environment.action_spec(), state=(), info=())
+    # policy_step_spec = policy_step.PolicyStep(action=latent_environment.action_spec(), state=(), info=())
     trajectory_spec = trajectory.from_transition(
-        latent_environment.time_step_spec(), policy_step_spec, latent_environment.time_step_spec())
+        time_step=latent_environment.time_step_spec(),
+        action_step=policy.policy_step_spec,
+        next_time_step=latent_environment.time_step_spec())
     # replay_buffer
     replay_buffer = TFUniformReplayBuffer(
         data_spec=trajectory_spec,
         batch_size=latent_environment.batch_size,
         max_length=steps,
         dataset_drop_remainder=True,
-        # set the window shift is one to gather all transitions when the batch size corresponds to max_length
+        # set the window shift to one to gather all transitions when the batch size corresponds to max_length
         dataset_window_shift=1)
+    # initialize driver
+    driver = DynamicStepDriver(latent_environment, policy, num_steps=steps, observers=[replay_buffer.add_batch])
+    driver.run = common.function(driver.run)
+    # collect environment steps
+    driver.run()
+
     # retrieve dataset from the replay buffer
     generator = ErgodicMDPTransitionGenerator(
         labeling_function,
@@ -70,16 +78,11 @@ def estimate_local_losses_from_samples(
         batch_size=replay_buffer.num_frames(),
         drop_remainder=False)
     dataset_iterator = iter(dataset)
-    # initialize driver
-    driver = DynamicStepDriver(latent_environment, policy, num_steps=steps, observers=[replay_buffer.add_batch])
-    driver.run = common.function(driver.run)
-    # collect environment steps
-    driver.run()
 
     state, label, latent_action, reward, next_state, next_label = next(dataset_iterator)
     latent_state = state_embedding_function(state, label)
     next_latent_state_no_label = state_embedding_function(next_state, None)
-    next_latent_state = tf.concat([next_label, next_latent_state_no_label], axis=-1)
+    next_latent_state = tf.concat([tf.cast(next_label, dtype=tf.int32), next_latent_state_no_label], axis=-1)
     local_reward_loss = estimate_local_reward_loss(
         state, label, latent_action, reward, next_state, next_label,
         latent_reward_function, latent_state, next_latent_state)
