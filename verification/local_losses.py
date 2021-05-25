@@ -26,7 +26,7 @@ def estimate_local_losses_from_samples(
         action_embedding_function: Callable[[tf.Tensor, tf.Tensor], tf.Tensor],
         latent_reward_function: Callable[[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor],
         labeling_function: Callable[[tf.Tensor], tf.Tensor],
-        latent_transition_function: Optional[Callable[[tf.Tensor, tf.Tensor], tfd.Distribution]] = None,
+        latent_transition_function: Callable[[tf.Tensor, tf.Tensor], tfd.Distribution] = None,
         estimate_transition_function_from_samples: bool = False
 ):
     if latent_transition_function is None and not estimate_transition_function_from_samples:
@@ -89,7 +89,8 @@ def estimate_local_losses_from_samples(
 
     if estimate_transition_function_from_samples:
         latent_transition_function = TransitionFrequencyEstimator(
-            latent_state, latent_action, next_latent_state)
+            latent_state, latent_action, next_latent_state, backup_transition_function=latent_transition_function)
+        driver.run()
 
     local_probability_loss = estimate_local_probability_loss(
         state, label, latent_action, next_state, next_label,
@@ -142,5 +143,7 @@ def estimate_local_probability_loss(
     if next_latent_state_no_label is None:
         next_latent_state_no_label = state_embedding_function(next_state, None)
 
+    next_label = tf.cast(next_label, tf.float32)
+    next_latent_state_no_label = tf.cast(next_latent_state_no_label, tf.float32)
     latent_transition_distribution = latent_transition_function(latent_state, latent_action)
     return tf.reduce_mean(1. - latent_transition_distribution.prob(next_label, next_latent_state_no_label))

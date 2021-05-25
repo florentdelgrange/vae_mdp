@@ -473,7 +473,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(self.latent_policy_network(latent_state)),
                 components_distribution=tfd.Independent(
-                    tfd.Bernoulli(tf.transpose(self.action_label_transition_network(latent_state), perm=[0, 2, 1])),
+                    tfd.Bernoulli(tf.transpose(self.action_label_transition_network(latent_state), perm=[0, 2, 1]),
+                                  dtype=tf.float32),
                     reinterpreted_batch_ndims=1)
             ), lambda _next_label: tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(self.latent_policy_network(latent_state)),
@@ -493,7 +494,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             return tfd.Independent(tfd.Bernoulli(logits=next_latent_state_logits))
         else:
             return tfd.JointDistributionSequential([
-                tfd.Independent(tfd.Bernoulli(logits=self.label_transition_network([latent_state, action]))),
+                tfd.Independent(tfd.Bernoulli(logits=self.label_transition_network([latent_state, action]),
+                                              dtype=tf.float32)),
                 lambda _next_label: tfd.Independent(
                     tfd.Bernoulli(logits=self.transition_network([latent_state, action, _next_label])))
             ])
@@ -1681,7 +1683,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     action,
                     tf.cast(next_latent_state, dtype=tf.float32)).mode()),
             labeling_function=labeling_function,
-            latent_transition_function=self.discrete_latent_transition_probability_distribution,
+            latent_transition_function=(
+                lambda latent_state, action:
+                self.discrete_latent_transition_probability_distribution(
+                    latent_state=tf.cast(latent_state, tf.float32),
+                    action=action)),
             estimate_transition_function_from_samples=estimate_transition_function_from_samples)
 
 
