@@ -12,6 +12,7 @@ from tf_agents.environments import tf_environment, tf_py_environment
 from tf_agents.trajectories import time_step as ts
 
 import variational_mdp
+from util.io import dataset_generator
 from variational_mdp import VariationalMarkovDecisionProcess
 from variational_mdp import epsilon
 from verification.local_losses import estimate_local_losses_from_samples
@@ -420,7 +421,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             if relaxed_state_encoding:
                 return tfd.JointDistributionSequential([
                     tfd.Independent(
-                        tfd.Bernoulli(logits=self.action_label_transition_network([latent_state, latent_action]))),
+                        tfd.Bernoulli(logits=self.action_label_transition_network([latent_state, latent_action]),
+                                      dtype=tf.float32)),
                     lambda _next_label: tfd.Independent(
                         tfd.Logistic(
                             loc=(self.action_transition_network([latent_state, latent_action, _next_label])
@@ -430,7 +432,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             else:
                 return tfd.JointDistributionSequential([
                     tfd.Independent(
-                        tfd.Bernoulli(logits=self.action_label_transition_network([latent_state, latent_action]))),
+                        tfd.Bernoulli(logits=self.action_label_transition_network([latent_state, latent_action]),
+                                      dtype=tf.float32)),
                     lambda _next_label: tfd.Independent(
                         tfd.Bernoulli(
                             logits=self.action_transition_network([latent_state, latent_action, _next_label])))
@@ -448,7 +451,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     tfd.MixtureSameFamily(
                         mixture_distribution=action_categorical,
                         components_distribution=tfd.Independent(
-                            tfd.Bernoulli(logits=self.action_label_transition_network(latent_state)),
+                            tfd.Bernoulli(logits=self.action_label_transition_network(latent_state), dtype=tf.float32),
                             reinterpreted_batch_ndims=1),
                         allow_nan_stats=False),
                     lambda _next_label: tfd.MixtureSameFamily(
@@ -466,7 +469,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     tfd.MixtureSameFamily(
                         mixture_distribution=action_categorical,
                         components_distribution=tfd.Independent(
-                            tfd.Bernoulli(logits=self.action_label_transition_network(latent_state)),
+                            tfd.Bernoulli(logits=self.action_label_transition_network(latent_state), dtype=tf.float32),
                             reinterpreted_batch_ndims=1)),
                     lambda _next_label: tfd.MixtureSameFamily(
                         mixture_distribution=action_categorical,
@@ -477,7 +480,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 ])
 
     def reward_probability_distribution(
-            self, latent_state, latent_action, next_latent_state, log_latent_action: bool = False
+            self, latent_state, latent_action, next_latent_state, log_latent_action: bool = False,
+            disable_mixture_distribution: bool = False
     ) -> tfd.Distribution:
 
         if not self.one_output_per_action:
@@ -496,17 +500,30 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
             [reward_mean, reward_raw_covariance] = self.action_reward_network([latent_state, next_latent_state])
 
-            return tfd.MixtureSameFamily(
-                mixture_distribution=action_categorical,
-                components_distribution=tfd.MultivariateNormalDiag(
-                    loc=reward_mean,
-                    scale_diag=self.scale_activation(reward_raw_covariance) + epsilon
-                ),
-            )
+            if not log_latent_action and disable_mixture_distribution:
+                # all actions are assumed to be given one-hot
+                _latent_action = tf.cast(tf.stop_gradient(tf.argmax(latent_action, axis=-1)), dtype=tf.int32)
+                return tfd.MultivariateNormalDiag(
+                    loc=tf.stop_gradient(tf.map_fn(
+                        fn=lambda i: reward_mean[i, _latent_action[i], ...],
+                        elems=tf.range(tf.shape(_latent_action)[0]),
+                        fn_output_signature=tf.float32)),
+                    scale_diag=tf.stop_gradient(tf.map_fn(
+                        fn=lambda i: self.scale_activation(reward_raw_covariance[i, _latent_action[i], ...]),
+                        elems=tf.range(tf.shape(_latent_action)[0]),
+                        fn_output_signature=tf.float32)))
+            else:
+                return tfd.MixtureSameFamily(
+                    mixture_distribution=action_categorical,
+                    components_distribution=tfd.MultivariateNormalDiag(
+                        loc=reward_mean,
+                        scale_diag=self.scale_activation(reward_raw_covariance)
+                    ),
+                )
 
     def decode_action(
             self, latent_state: tf.Tensor, latent_action: tf.Tensor, log_latent_action: bool = False,
-            do_not_use_mixture_distribution: bool = False
+            disable_mixture_distribution: bool = False
     ) -> tfd.Distribution:
 
         if not self.one_output_per_action:
@@ -537,10 +554,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             [action_mean, action_raw_covariance, cat_logits] = self.action_decoder_network(latent_state)
 
             if self.mixture_components == 1:
-                # if tf.math.logical_and(tf.constant(not log_latent_action, dtype=tf.bool), tf.stop_gradient(
-                #         tf.reduce_all(tf.abs(tf.reduce_max(latent_action, axis=-1) - 1.) <= epsilon))):
-                if not log_latent_action and do_not_use_mixture_distribution:
-                    # then all actions are one-hot
+                if not log_latent_action and disable_mixture_distribution:
+                    # all actions are assumed to be given one-hot
                     _latent_action = tf.cast(tf.stop_gradient(tf.argmax(latent_action, axis=-1)), dtype=tf.int32)
                     return tfd.MultivariateNormalDiag(
                         loc=tf.stop_gradient(tf.map_fn(
@@ -559,17 +574,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                             scale_diag=self.scale_activation(action_raw_covariance),
                         )
                     )
-                #  return tf.cond(not log_latent_action and tf.stop_gradient(
-                #      tf.reduce_all(tf.abs(tf.reduce_max(latent_action, axis=-1) - 1.) <= epsilon)),
-                #                 lambda: tfd.MultivariateNormalDiag(
-                #                     loc=action_mean[:, tf.argmax(latent_action, axis=-1), ...],
-                #                     scale_diag=self.scale_activation(
-                #                         action_raw_covariance[:, tf.argmax(latent_action, axis=-1), ...])),
-                #                 lambda: tfd.MixtureSameFamily(
-                #                     mixture_distribution=action_categorical,
-                #                     components_distribution=tfd.MultivariateNormalDiag(
-                #                         loc=action_mean,
-                #                         scale_diag=self.scale_activation(action_raw_covariance), )))
             else:
                 return tfd.MixtureSameFamily(
                     mixture_distribution=action_categorical,
@@ -900,7 +904,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
                 self.embed_observation = variational_action_discretizer.get_state_vae().binary_encode
                 self.embed_latent_action = lambda state, action: variational_action_discretizer.decode_action(
-                    state, action, do_not_use_mixture_distribution=True)
+                    state, action, disable_mixture_distribution=True)
                 self.tf_env = tf_env
                 self._labeling_function = labeling_function
                 self.observation_shape, self.action_shape, self.reward_shape = [
@@ -914,18 +918,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 else:
                     self._get_embedding = lambda distribution: distribution.sample()
                 self.deterministic_embedding_functions = deterministic_embedding_functions
-
-            def labeling_function(self, state: tf.Tensor):
-                label = tf.cast(self._labeling_function(state), dtype=tf.float32)
-                # take into account the reset label
-                label = tf.cond(
-                    tf.rank(label) == 1,
-                    lambda: tf.expand_dims(label, axis=-1),
-                    lambda: label)
-                return tf.concat(
-                    [label, tf.zeros(shape=tf.concat([tf.shape(label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
-                                     dtype=tf.float32)],
-                    axis=-1)
+                self.labeling_function = dataset_generator.ergodic_batched_labeling_function(labeling_function)
 
             def _current_time_step(self):
                 if self._current_latent_state is None:
@@ -1011,9 +1004,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             steps: int,
             labeling_function: Callable[[tf.Tensor], tf.Tensor],
             estimate_transition_function_from_samples: bool = False,
+            assert_estimated_transition_function_distribution: bool = False
     ):
         if self.latent_policy_network is None:
             raise ValueError('This VAE is not built for policy abstraction.')
+
+        _labeling_function = dataset_generator.ergodic_batched_labeling_function(labeling_function)
 
         return estimate_local_losses_from_samples(
             environment=environment,
@@ -1021,13 +1017,29 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             latent_policy=self.get_latent_policy(),
             latent_state_size=self.latent_state_size,
             number_of_discrete_actions=self.number_of_discrete_actions,
-            state_embedding_function=lambda state, label: self.binary_encode(state, label).mode(),
+            state_embedding_function=lambda state, label: self.binary_encode(
+                state, tf.cast(label, dtype=tf.float32) if label is not None else label).mode(),
             action_embedding_function=lambda state, latent_action: self.decode_action(
-                self.binary_encode(state, labeling_function(state)).mode(), latent_action).mode(),
+                latent_state=tf.cast(
+                    self.binary_encode(state, _labeling_function(state)).mode(),
+                    dtype=tf.float32),
+                latent_action=tf.cast(
+                    tf.one_hot(latent_action, depth=self.number_of_discrete_actions),
+                    dtype=tf.float32),
+                disable_mixture_distribution=True).mode(),
             latent_reward_function=lambda latent_state, latent_action, next_latent_state: (
-                self.reward_probability_distribution(latent_state, latent_action, next_latent_state).mode()),
+                self.reward_probability_distribution(
+                    latent_state=tf.cast(latent_state, dtype=tf.float32),
+                    latent_action=tf.cast(latent_action, dtype=tf.float32),
+                    next_latent_state=tf.cast(next_latent_state, dtype=tf.float32),
+                    disable_mixture_distribution=True).mode()),
             labeling_function=labeling_function,
-            latent_transition_function=self.discrete_latent_transition_probability_distribution,
+            latent_transition_function=(
+                lambda latent_state, latent_action:
+                self.discrete_latent_transition_probability_distribution(
+                    latent_state=tf.cast(latent_state, tf.float32),
+                    latent_action=tf.math.log(latent_action + epsilon),
+                    log_latent_action=True)),
             estimate_transition_function_from_samples=estimate_transition_function_from_samples)
 
 

@@ -27,8 +27,38 @@ def estimate_local_losses_from_samples(
         latent_reward_function: Callable[[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor],
         labeling_function: Callable[[tf.Tensor], tf.Tensor],
         latent_transition_function: Callable[[tf.Tensor, tf.Tensor], tfd.Distribution] = None,
-        estimate_transition_function_from_samples: bool = False
+        estimate_transition_function_from_samples: bool = False,
+        assert_transition_distribution: bool = False
 ):
+    """
+    Estimates reward and probability local losses from samples.
+    :param environment: batched TFPyEnvironment
+    :param latent_policy: a policy sets over latent states and producing (one-hot) latent actions
+    :param steps: number of environment steps used to perform the estimation
+    :param latent_state_size: binary size of the latent space
+    :param number_of_discrete_actions: number of discrete actions
+    :param state_embedding_function: mapping from real states and labels to binary states (of type int32)
+    :param action_embedding_function: mapping from real states and discrete actions (given in base 10 with type int32)
+                                      to real actions.
+                                      Important: latent actions are here assumed to be given in base 10 and not in
+                                      one-hot since environments generally process discrete actions represented in
+                                      base 10 by convention.
+    :param latent_reward_function: mapping from (binary) latent state, (one-hot) latent actions and (binary) next latent
+                                   state to rewards. Latent states and actions are assumed to be of type int32 while
+                                   returned reward type is float32.
+    :param labeling_function: labeling function (mapping from real states to subset of atomic propositions)
+    :param latent_transition_function: mapping from (binary) latent states and (one-hot) actions (given in int32) to
+                                       a probability distribution over latent states.
+                                       A probability distribution object is assumed to have a prob method (e.g.,
+                                       tensorflow probability distribution objects) such that
+                                       distribution.prob(label, latent_state_no_label) is the probability of the
+                                       latent state given by tf.concat([label, latent_state_no_label], axis=-1)
+    :param estimate_transition_function_from_samples: whether to estimate the latent transition function from samples
+                                                      or not. If True, the latent transition function estimated this
+                                                      way stores the probability matrix into a sparse tensor.
+    :param assert_transition_distribution: whether to assert the transition function is correctly computed or not
+    :return: a dictionary containing an estimation of the local reward and probability losses
+    """
     if latent_transition_function is None and not estimate_transition_function_from_samples:
         raise ValueError('no latent transition function provided')
     # generate environment wrapper for discrete actions
@@ -51,10 +81,7 @@ def estimate_local_losses_from_samples(
     replay_buffer = TFUniformReplayBuffer(
         data_spec=trajectory_spec,
         batch_size=latent_environment.batch_size,
-        max_length=steps,
-        dataset_drop_remainder=True,
-        # set the window shift to one to gather all transitions when the batch size corresponds to max_length
-        dataset_window_shift=1)
+        max_length=steps)
     # initialize driver
     driver = DynamicStepDriver(latent_environment, policy, num_steps=steps, observers=[replay_buffer.add_batch])
     driver.run = common.function(driver.run)
@@ -70,7 +97,7 @@ def estimate_local_losses_from_samples(
     dataset = replay_buffer.as_dataset(
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
         num_steps=2,
-        single_deterministic_pass=True  # gather transitions only once
+        single_deterministic_pass=False  # gather transitions only once
     ).map(
         map_func=generator,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
@@ -89,8 +116,9 @@ def estimate_local_losses_from_samples(
 
     if estimate_transition_function_from_samples:
         latent_transition_function = TransitionFrequencyEstimator(
-            latent_state, latent_action, next_latent_state, backup_transition_function=latent_transition_function)
-        driver.run()
+            latent_state, latent_action, next_latent_state,
+            backup_transition_function=latent_transition_function,
+            assert_distribution=assert_transition_distribution)
 
     local_probability_loss = estimate_local_probability_loss(
         state, label, latent_action, next_state, next_label,
@@ -137,7 +165,6 @@ def estimate_local_probability_loss(
         next_latent_state_no_label: Optional[tf.Tensor] = None,
         state_embedding_function: Optional[Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor]] = None,
 ):
-
     if latent_state is None:
         latent_state = state_embedding_function(state, label)
     if next_latent_state_no_label is None:

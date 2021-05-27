@@ -25,6 +25,8 @@ from tf_agents.trajectories.policy_step import PolicyStep
 from tf_agents.trajectories.trajectory import Trajectory
 from tf_agents.utils import common
 
+from util.io import dataset_generator
+from util.io.dataset_generator import reset_state
 from util.io.dataset_generator import ErgodicMDPTransitionGenerator
 from util.replay_buffer_tools import PriorityBuckets, LossPriority, PriorityHandler
 from verification.local_losses import estimate_local_losses_from_samples
@@ -1130,7 +1132,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             table_name = 'prioritized_replay_buffer'
             table = reverb.Table(
                 table_name,
-                max_size=int(1e6),
+                max_size=replay_buffer_capacity,
                 sampler=reverb.selectors.Prioritized(priority_exponent=priority_exponent),
                 remover=reverb.selectors.Fifo(),
                 rate_limiter=reverb.rate_limiters.MinSize(1))
@@ -1163,7 +1165,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
             reset_trajectory = Trajectory(
                 step_type=ts.StepType.MID,
-                observation=np.zeros(shape=self.state_shape, dtype=np.float32),
+                observation=reset_state(state_shape=self.state_shape),
                 action=(np.zeros(shape=self.action_shape, dtype=np.float32)
                         if not discrete_action_space else np.zeros(shape=(), dtype=np.int64)),
                 policy_info=(),
@@ -1287,7 +1289,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 tf.debugging.disable_check_numerics()
 
             _priority_handler = self.priority_handler
+            _optimizer = self._optimizer
             self.priority_handler = None
+            self._optimizer = None
 
             state, label, action, reward, next_state, next_label = next(dataset_iterator)[:6]
             call = self.__call__.get_concrete_function(
@@ -1300,6 +1304,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name), signatures=call, )
 
             self.priority_handler = _priority_handler
+            self._optimizer = _optimizer
             if check_numerics:
                 tf.debugging.enable_check_numerics()
 
@@ -1481,11 +1486,17 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         def _checkpoint():
             optimizer = self._optimizer
+            priority_handler = self.priority_handler
+
             self._optimizer = None
+            self.priority_handler = None
+
             eval_checkpoint = tf.train.Checkpoint(model=self)
             eval_checkpoint.save(
                 os.path.join(save_directory, 'training_checkpoints', log_name, 'ckpt-{:d}'.format(global_step.numpy())))
+
             self.attach_optimizer(optimizer)
+            self.priority_handler = priority_handler
 
         if eval_policy_driver and eval_steps > 0:
             for i in tf.range(tf.shape(self.evaluation_memory)[0]):
@@ -1587,18 +1598,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 else:
                     self._get_embedding = lambda distribution: distribution.sample()
                 self.deterministic_state_embedding = deterministic_state_embedding
-
-            def labeling_function(self, state: tf.Tensor):
-                label = tf.cast(self._labeling_function(state), dtype=tf.float32)
-                # take the reset label into account
-                label = tf.cond(
-                    tf.rank(label) == 1,
-                    lambda: tf.expand_dims(label, axis=-1),
-                    lambda: label)
-                return tf.concat(
-                    [label, tf.zeros(shape=tf.concat([tf.shape(label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
-                                     dtype=tf.float32)],
-                    axis=-1)
+                self.labeling_function = dataset_generator.ergodic_batched_labeling_function(labeling_function)
 
             def _current_time_step(self):
                 if self._current_latent_state is None:
@@ -1664,6 +1664,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             steps: int,
             labeling_function: Callable[[tf.Tensor], tf.Tensor],
             estimate_transition_function_from_samples: bool = False,
+            assert_estimated_transition_function_distribution: bool = False
     ):
         if self.latent_policy_network is None:
             raise ValueError('This VAE is not built for policy abstraction.')
@@ -1688,7 +1689,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 self.discrete_latent_transition_probability_distribution(
                     latent_state=tf.cast(latent_state, tf.float32),
                     action=action)),
-            estimate_transition_function_from_samples=estimate_transition_function_from_samples)
+            estimate_transition_function_from_samples=estimate_transition_function_from_samples,
+            assert_transition_distribution=assert_estimated_transition_function_distribution)
 
 
 def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) -> VariationalMarkovDecisionProcess:

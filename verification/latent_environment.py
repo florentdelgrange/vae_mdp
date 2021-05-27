@@ -4,6 +4,8 @@ from tf_agents import trajectories, specs
 from tf_agents.environments.tf_environment import TFEnvironment
 from tf_agents.policies import tf_policy
 
+from util.io import dataset_generator
+
 
 class LatentPolicyOverRealStateSpace(tf_policy.TFPolicy):
 
@@ -20,18 +22,7 @@ class LatentPolicyOverRealStateSpace(tf_policy.TFPolicy):
         self._labeling_function = labeling_function
         self.wrapped_policy = latent_policy
         self.state_embedding_function = state_embedding_function
-
-    def labeling_function(self, state: tf.Tensor):
-        label = tf.cast(self._labeling_function(state), dtype=tf.float32)
-        # take the reset label into account
-        label = tf.cond(
-            tf.rank(label) == 1,
-            lambda: tf.expand_dims(label, axis=-1),
-            lambda: label)
-        return tf.concat(
-            [label, tf.zeros(shape=tf.concat([tf.shape(label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
-                             dtype=tf.float32)],
-            axis=-1)
+        self.labeling_function = dataset_generator.ergodic_batched_labeling_function(labeling_function)
 
     def _distribution(self, time_step, policy_state):
         latent_state = self.state_embedding_function(
