@@ -94,6 +94,35 @@ def map_rl_trajectory_to_vae_input(
     return state, label, action, reward, next_state, next_label
 
 
+def reset_state(state_shape):
+    """
+    Get the conventional reset state of a given ergodic MDP
+    :param state_shape: state (or observation) shape without batch dimension
+    """
+    return tf.zeros(shape=state_shape, dtype=tf.float32)
+
+
+def ergodic_batched_labeling_function(labeling_function: Callable[[tf.Tensor], tf.Tensor]):
+    """
+    Wrap the given labeling function to the same (batched) labeling function taking into account reset states.
+    Input states are assumed to be batched and to be produced from the original environment.
+    The resulting labeling function has tf.float32 as returning type.
+    """
+
+    def _labeling_function(state: tf.Tensor):
+        label = tf.cast(labeling_function(state), dtype=tf.float32)
+        label = tf.cond(
+            tf.rank(label) == 1,
+            lambda: tf.expand_dims(label, axis=-1),
+            lambda: label)
+        return tf.concat(
+            [label, tf.zeros(shape=tf.concat([tf.shape(label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
+                             dtype=tf.float32)],
+            axis=-1)
+
+    return _labeling_function
+
+
 class ErgodicMDPTransitionGenerator:
     """
     Generates a dataset from 2-steps transitions contained in a replay buffer.
@@ -125,12 +154,12 @@ class ErgodicMDPTransitionGenerator:
             discrete_action=discrete_action,
             num_discrete_actions=num_discrete_actions
         )
-        self.reset_label = tf.ones(
+        self.reset_atomic_proposition = tf.ones(
             shape=tf.concat([tf.shape(state_label)[:-1], tf.constant([1], dtype=tf.int32)], axis=-1),
             dtype=tf.float32)
-        self.reset_state = tf.zeros(shape=tf.shape(state), dtype=tf.float32)
+        self.reset_state = reset_state(state_shape=tf.shape(state))
         self.reset_state_label = tf.concat(
-            [tf.zeros(shape=tf.shape(state_label), dtype=tf.float32), self.reset_label], axis=-1)
+            [tf.zeros(shape=tf.shape(state_label), dtype=tf.float32), self.reset_atomic_proposition], axis=-1)
         self.reset_action = tf.zeros(shape=tf.shape(action), dtype=tf.float32)
         self.reset_reward = tf.zeros(shape=tf.shape(reward), dtype=tf.float32)
 
@@ -165,7 +194,7 @@ class ErgodicMDPTransitionGenerator:
             if self.prioritized_replay_buffer and tf.reduce_all(tf.equal(state, self.reset_state)):
                 return self.reset_state_label
             else:
-                return tf.concat([state_label, self.reset_label - 1.], axis=-1)
+                return tf.concat([state_label, self.reset_atomic_proposition - 1.], axis=-1)
 
         new_state_label = detect_reset_state_label(state, state_label)
         new_next_state_label = detect_reset_state_label(next_state, next_state_label)
