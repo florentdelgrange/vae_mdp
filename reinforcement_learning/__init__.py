@@ -36,8 +36,8 @@ labeling_functions = {
         ], axis=-1),
     'CartPole-v0':  # safe labels
         lambda observation: tf.stack([
-            tf.abs(observation[..., 0]) < 1.5,  # cart position is less than 1.5
-            tf.abs(observation[..., 2]) < 0.15,  # pole angle is inferior than 9 degrees
+            tf.abs(observation[..., 0]) < 1.5,   # cart position is less than 1.5
+            tf.abs(observation[..., 2]) < 0.15,  # pole angle is inferior to 9 degrees
         ], axis=-1),
     'LunarLander-v2':
         lambda observation: tf.stack([
