@@ -247,7 +247,7 @@ flags.DEFINE_integer(
     default=int(1e4),
     help='Number of frames to be collected in the replay buffer before starting the training.'
 )
-flags.DEFINE_float(
+flags.DEFINE_integer(
     'seed', help='set seed', default=42
 )
 flags.DEFINE_bool(
@@ -571,6 +571,7 @@ def main(argv):
 
         vae_mdp_model.train_from_policy(policy=policy,
                                         environment_suite=environment_suite,
+                                        environment_seed=params['seed'],
                                         env_name=environment_name,
                                         labeling_function=reinforcement_learning.labeling_functions[environment_name],
                                         epsilon_greedy=params['epsilon_greedy'] if phase == 0 else 0.,

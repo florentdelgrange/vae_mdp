@@ -1031,6 +1031,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             display_progressbar: bool = True,
             save_directory='.',
             policy_evaluation_num_episodes: int = 30,
+            environment_seed: Optional[int] = None,
             aggressive_training: bool = False,
             approximate_convergence_error: float = 5e-1,
             approximate_convergence_steps: int = 10,
@@ -1092,12 +1093,35 @@ class VariationalMarkovDecisionProcess(tf.Module):
         discrete_action_space = discrete_action_space and (self.latent_policy_network is not None)
 
         if parallel_environments:
+
+            class EnvLoader:
+                def __init__(self, environment_suite, seed=None):
+                    self.n = 0
+                    self.environment_suite = environment_suite
+                    self.seed = seed
+
+                def load(self, env_name: str):
+                    environment = self.environment_suite.load(env_name)
+                    if self.seed is not None:
+                        try:
+                            environment.seed(self.seed + self.n)
+                            self.n += 1
+                        except NotImplementedError:
+                            print("Environment {} has no seed support.".format(env_name))
+                    return environment
+
+            env_loader = EnvLoader(environment_suite, seed=environment_seed)
             py_env = parallel_py_environment.ParallelPyEnvironment(
-                [lambda: environment_suite.load(env_name)] * num_parallel_environments)
+                [lambda: env_loader.load(env_name)] * num_parallel_environments)
             env = tf_py_environment.TFPyEnvironment(py_env)
             env.reset()
         else:
             py_env = environment_suite.load(env_name)
+            if environment_seed is not None:
+                try:
+                    py_env.seed(environment_seed)
+                except NotImplementedError:
+                    print("Environment {} has no seed support.".format(env_name))
             py_env.reset()
             env = tf_py_environment.TFPyEnvironment(py_env) if not use_prioritized_replay_buffer else py_env
 
