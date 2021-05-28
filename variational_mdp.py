@@ -1,6 +1,6 @@
 import os
 from collections import namedtuple
-from typing import Tuple, Optional, Callable, Dict, Iterator
+from typing import Tuple, Optional, Callable, Dict, Iterator, NamedTuple
 import numpy as np
 import reverb
 
@@ -45,6 +45,17 @@ if check_numerics:
 epsilon = 1e-25
 
 
+class DatasetHandler(NamedTuple):
+    replay_buffer: tf_agents.replay_buffers.replay_buffer.ReplayBuffer
+    driver: tf_agents.drivers.py_driver.PyDriver
+    initial_collect_driver: tf_agents.drivers.py_driver.PyDriver
+    close_fn: Callable
+    replay_buffer_num_frames_fn: Callable[[], int]
+    wrapped_manager: Optional[tf.train.CheckpointManager]
+    dataset: tf.data.Dataset
+    dataset_iterator: Iterator
+
+
 class VariationalMarkovDecisionProcess(tf.Module):
     def __init__(self,
                  state_shape: Tuple[int, ...],
@@ -77,7 +88,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  latent_policy_training_phase: bool = False,
                  full_optimization: bool = True,
                  optimizer: Optional = None,
-                 evaluation_memory_size: int = 5,
+                 evaluation_window_size: int = 5,
                  action_label_transition_network: Optional[Model] = None,
                  action_transition_network: Optional[Model] = None,
                  importance_sampling_exponent: Optional[float] = 1.,
@@ -131,7 +142,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self._encoder_softclip = tfb.SoftClip(high=10., low=-10.)
 
         # to save only the N best last models learned
-        self.evaluation_memory = tf.Variable([-1. * np.inf] * evaluation_memory_size, trainable=False)
+        self.evaluation_window = tf.Variable([-1. * np.inf] * evaluation_window_size, trainable=False)
 
         self.priority_handler = None
 
@@ -549,8 +560,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             return self.latent_policy_training(state, label, action, reward, next_state, next_label)
 
         # Logistic samples
-        state_encoder_distribution = self.relaxed_encoding(state, self.encoder_temperature)
-        next_state_encoder_distribution = self.relaxed_encoding(next_state, self.encoder_temperature)
+        state_encoder_distribution = self.relaxed_encoding(state, temperature=self.encoder_temperature)
+        next_state_encoder_distribution = self.relaxed_encoding(next_state, temperature=self.encoder_temperature)
 
         # Sigmoid of Logistic samples with location alpha/t and scale 1/t gives Relaxed Bernoulli
         # samples of location alpha and temperature t
@@ -589,8 +600,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         entropy_regularizer = self.entropy_regularizer(
             next_state,
-            enforce_latent_space_spreading=(
-                    self.marginal_entropy_regularizer_ratio > 0. and not self.latent_policy_training_phase),
+            enforce_latent_space_spreading=tf.stop_gradient(self.entropy_regularizer_scale_factor > 0.),
             latent_states=next_latent_state)
 
         # priority support
@@ -606,7 +616,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
         reconstruction_sample = reconstruction_distribution.sample()
         self.loss_metrics['state_mse'](next_state, reconstruction_sample[-1])
         self.loss_metrics['reward_mse'](reward, reconstruction_sample[-2])
-        #  self.loss_metrics['decoder_variance'](state_distribution.variance())
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
@@ -654,28 +663,30 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 self.loss_metrics[metric_label](
                     tf.stop_gradient(tfd.Independent(tfd.Bernoulli(logits=logits)).entropy()))
 
-        #  if enforce_latent_space_spreading:
-        batch_size = tf.shape(logits)[0]
-        marginal_encoder = tfd.MixtureSameFamily(
-            mixture_distribution=tfd.Categorical(
-                logits=tf.ones(shape=(batch_size, batch_size))),
-            components_distribution=tfd.Independent(tfd.RelaxedBernoulli(
-                logits=tf.tile(tf.expand_dims(logits, axis=0), [batch_size, 1, 1]),
-                temperature=self.encoder_temperature), reinterpreted_batch_ndims=1),
-            reparameterize=(latent_states is None),
-            allow_nan_stats=False
-        )
-        if latent_states is None:
-            latent_states = marginal_encoder.sample(batch_size)
+        if enforce_latent_space_spreading:
+            batch_size = tf.shape(logits)[0]
+            marginal_encoder = tfd.MixtureSameFamily(
+                mixture_distribution=tfd.Categorical(
+                    logits=tf.ones(shape=(batch_size, batch_size))),
+                components_distribution=tfd.Independent(tfd.RelaxedBernoulli(
+                    logits=tf.tile(tf.expand_dims(logits, axis=0), [batch_size, 1, 1]),
+                    temperature=self.encoder_temperature), reinterpreted_batch_ndims=1),
+                reparameterize=(latent_states is None),
+                allow_nan_stats=False
+            )
+            if latent_states is None:
+                latent_states = marginal_encoder.sample(batch_size)
+            else:
+                latent_states = latent_states[..., self.atomic_props_dims:]
+            latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
+            marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states))
+
+            if 'marginal_encoder_entropy' in self.loss_metrics:
+                self.loss_metrics['marginal_encoder_entropy'](tf.stop_gradient(-1. * marginal_entropy_regularizer))
+
+            return marginal_entropy_regularizer
         else:
-            latent_states = latent_states[..., self.atomic_props_dims:]
-        latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
-        marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states))
-
-        if 'marginal_encoder_entropy' in self.loss_metrics:
-            self.loss_metrics['marginal_encoder_entropy'](tf.stop_gradient(-1. * marginal_entropy_regularizer))
-
-        return marginal_entropy_regularizer
+            return 0.
 
     def latent_policy_training(
             self,
@@ -996,102 +1007,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
             state, label, action, reward, next_state, next_label,
             self.generator_variables, sample_key, sample_probability)
 
-    def train_from_policy(
+    def initialize_environment(
             self,
-            policy: tf_agents.policies.tf_policy.TFPolicy,
             environment_suite,
             env_name: str,
-            labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]],
-            epsilon_greedy: Optional[float] = 0.,
-            epsilon_greedy_decay_rate: Optional[float] = -1.,
-            discrete_action_space: bool = False,
-            num_iterations: int = int(3e6),
-            initial_collect_steps: int = int(1e4),
-            collect_steps_per_iteration: Optional[int] = None,
-            replay_buffer_capacity: int = int(1e6),
-            use_prioritized_replay_buffer: bool = True,
-            buckets_based_priorities: bool = True,
-            priority_exponent: int = 0.6,
-            parallel_environments: bool = True,
+            parallel_environments: bool = False,
             num_parallel_environments: int = 4,
-            batch_size: int = 128,
-            optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
-            checkpoint: Optional[tf.train.Checkpoint] = None,
-            manager: Optional[tf.train.CheckpointManager] = None,
-            log_interval: int = 80,
-            checkpoint_interval: int = 250,
-            eval_steps: int = int(1e3),
-            save_model_interval: int = int(1e4),
-            log_name: str = 'vae_training',
-            annealing_period: int = 0,
-            start_annealing_step: int = 0,
-            reset_kl_scale_factor: Optional[float] = None,
-            reset_entropy_regularizer: Optional[float] = None,
-            logs: bool = True,
-            display_progressbar: bool = True,
-            save_directory='.',
-            policy_evaluation_num_episodes: int = 30,
             environment_seed: Optional[int] = None,
-            aggressive_training: bool = False,
-            approximate_convergence_error: float = 5e-1,
-            approximate_convergence_steps: int = 10,
-            aggressive_training_steps: int = int(2e6),
+            use_prioritized_replay_buffer: bool = False,
     ):
-        # reverb replay buffers are not compatible with parallel env
-        parallel_environments = parallel_environments and not use_prioritized_replay_buffer
-        if collect_steps_per_iteration is None:
-            collect_steps_per_iteration = batch_size // 8
-        if parallel_environments:
-            replay_buffer_capacity = replay_buffer_capacity // num_parallel_environments
-            collect_steps_per_iteration = max(1, collect_steps_per_iteration // num_parallel_environments)
-
-        save_directory = os.path.join(save_directory, 'saves', env_name)
-
-        # Load checkpoint
-        if checkpoint is not None and manager is not None:
-            checkpoint.restore(manager.latest_checkpoint)
-            if manager.latest_checkpoint:
-                print("Restored from {}".format(manager.latest_checkpoint))
-            else:
-                print("Initializing from scratch.")
-
-        # initialize logs
-        if logs:
-            train_log_dir = os.path.join('logs', 'gradient_tape', env_name, log_name)  # , current_time)
-            print('logs path:', train_log_dir)
-            if not os.path.exists(train_log_dir) and logs:
-                os.makedirs(train_log_dir)
-            train_summary_writer = tf.summary.create_file_writer(train_log_dir)
-        else:
-            train_summary_writer = None
-
-        # attach optimizer
-        self.attach_optimizer(optimizer)
-
-        # Load step
-        global_step = checkpoint.save_counter if checkpoint else tf.Variable(0)
-        start_step = global_step.numpy()
-        print("Step: {}".format(start_step))
-
-        if start_step < start_annealing_step:
-            if reset_kl_scale_factor is not None:
-                self.kl_scale_factor = reset_kl_scale_factor
-            if reset_entropy_regularizer is not None:
-                self.entropy_regularizer_scale_factor = reset_entropy_regularizer
-
-        progressbar = Progbar(
-            target=None,
-            stateful_metrics=list(self.loss_metrics.keys()) + [
-                'loss', 't_1', 't_2', 'entropy_regularizer_scale_factor', 'step', "num_episodes", "env_steps",
-                "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv", 'state_rate',
-                "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used', 'wis_exponent',
-                'priority_logistic_smoothness', 'priority_logistic_mean',
-                'priority_logistic_max', 'priority_logistic_min'
-            ],
-            interval=0.1) if display_progressbar else None
-
-        discrete_action_space = discrete_action_space and (self.latent_policy_network is not None)
-
         if parallel_environments:
 
             class EnvLoader:
@@ -1125,25 +1049,23 @@ class VariationalMarkovDecisionProcess(tf.Module):
             py_env.reset()
             env = tf_py_environment.TFPyEnvironment(py_env) if not use_prioritized_replay_buffer else py_env
 
-        if epsilon_greedy > 0.:
-            epsilon_greedy = tf.Variable(epsilon_greedy, trainable=False, dtype=tf.float32)
+        return env
 
-            if epsilon_greedy_decay_rate == -1:
-                epsilon_greedy_decay_rate = 1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy))
-                                                        / (3. * (num_iterations - start_annealing_step) / 5.))
-            epsilon_greedy.assign(
-                epsilon_greedy * tf.pow(1. - epsilon_greedy_decay_rate,
-                                        tf.math.maximum(0.,
-                                                        tf.cast(global_step, dtype=tf.float32) - start_annealing_step)))
-
-            @tf.function
-            def _epsilon():
-                if tf.greater(global_step, start_annealing_step):
-                    epsilon_greedy.assign(epsilon_greedy * (1 - epsilon_greedy_decay_rate))
-                return epsilon_greedy
-
-            policy = tf_agents.policies.epsilon_greedy_policy.EpsilonGreedyPolicy(policy, _epsilon)
-
+    def initialize_dataset_components(
+            self,
+            env: py_environment.PyEnvironment,
+            policy: tf_agents.policies.tf_policy.TFPolicy,
+            labeling_function: Callable[[tf.Tensor], tf.Tensor],
+            batch_size: int = 128,
+            manager: Optional[tf.train.CheckpointManager] = None,
+            use_prioritized_replay_buffer: bool = False,
+            replay_buffer_capacity: int = int(1e6),
+            priority_exponent: float = 0.6,
+            buckets_based_priorities: bool = True,
+            discrete_action_space: bool = False,
+            collect_steps_per_iteration: int = 8,
+            initial_collect_steps: int = int(1e4),
+    ) -> DatasetHandler:
         # specs
         trajectory_spec = trajectory.from_transition(env.time_step_spec(),
                                                      policy.policy_step_spec,
@@ -1177,7 +1099,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             else:
                 self.priority_handler = LossPriority(
                     replay_buffer=replay_buffer,
-                    max_priority=10.,)
+                    max_priority=10., )
                 priority_handler: PriorityHandler = self.priority_handler
 
             _add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
@@ -1195,7 +1117,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 policy_info=(),
                 next_step_type=ts.StepType.MID,
                 reward=(np.zeros(shape=(), dtype=np.float32)
-                        if self.reward_shape == (1, ) else np.zeros(shape=self.reward_shape, dtype=np.float32)),
+                        if self.reward_shape == (1,) else np.zeros(shape=self.reward_shape, dtype=np.float32)),
                 discount=())
 
             def add_batch(trajectory: Trajectory):
@@ -1209,6 +1131,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                         reset_trajectory.replace(policy_info=trajectory.policy_info, discount=trajectory.discount))
                 else:
                     _add_batch(trajectory)
+
             add_batch.close = _add_batch.close
 
             driver = py_driver.PyDriver(
@@ -1225,7 +1148,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             replay_buffer_num_frames = replay_buffer.num_frames
 
             if manager is not None:
-
                 priority_handler.load_or_initialize_checkpoint(manager.directory)
                 model_manager = manager
 
@@ -1256,21 +1178,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             replay_buffer_num_frames = lambda: replay_buffer.num_frames().numpy()
             close = lambda: env.close()
 
-        policy_evaluation_driver = None
-        if policy_evaluation_num_episodes > 0:
-            py_eval_env = environment_suite.load(env_name)
-            eval_env = tf_py_environment.TFPyEnvironment(py_eval_env)
-            eval_env = self.wrap_tf_environment(eval_env, labeling_function)
-            eval_env.reset()
-            policy_evaluation_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
-                eval_env, self.get_latent_policy(), num_episodes=policy_evaluation_num_episodes)
-            #  policy_evaluation_driver.run = common.function(policy_evaluation_driver.run)
-
-        if replay_buffer.num_frames() < initial_collect_steps:
+        if replay_buffer_num_frames() < initial_collect_steps:
             print("Initial collect steps...")
             initial_collect_driver.run(env.current_time_step())
-
-        print("Start training.")
 
         def dataset_generator(generator: Optional = None):
             if generator is None:
@@ -1297,6 +1207,197 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         dataset = dataset_generator(transition_generator).batch(batch_size=batch_size, drop_remainder=True)
         dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
+
+        return DatasetHandler(
+            replay_buffer=replay_buffer,
+            driver=driver,
+            initial_collect_driver=initial_collect_driver,
+            close_fn=close,
+            replay_buffer_num_frames_fn=replay_buffer_num_frames,
+            wrapped_manager=manager,
+            dataset=dataset,
+            dataset_iterator=dataset_iterator)
+
+    def initialize_policy_evaluation_driver(
+            self,
+            environment_suite,
+            env_name: str,
+            labeling_function: Callable[[tf.Tensor], tf.Tensor],
+            policy_evaluation_num_episodes: int = 0,
+    ):
+        py_eval_env = environment_suite.load(env_name)
+        eval_env = tf_py_environment.TFPyEnvironment(py_eval_env)
+        eval_env = self.wrap_tf_environment(eval_env, labeling_function)
+        eval_env.reset()
+        policy_evaluation_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
+            eval_env, self.get_latent_policy(), num_episodes=policy_evaluation_num_episodes)
+        #  policy_evaluation_driver.run = common.function(policy_evaluation_driver.run)
+        return policy_evaluation_driver
+
+    def train_from_policy(
+            self,
+            policy: tf_agents.policies.tf_policy.TFPolicy,
+            environment_suite,
+            env_name: str,
+            labeling_function: Callable[[tf.Tensor], tf.Tensor],
+            epsilon_greedy: Optional[float] = 0.,
+            epsilon_greedy_decay_rate: Optional[float] = -1.,
+            discrete_action_space: bool = False,
+            num_iterations: int = int(3e6),
+            initial_collect_steps: int = int(1e4),
+            collect_steps_per_iteration: Optional[int] = None,
+            replay_buffer_capacity: int = int(1e6),
+            use_prioritized_replay_buffer: bool = True,
+            buckets_based_priorities: bool = True,
+            priority_exponent: int = 0.6,
+            parallel_environments: bool = True,
+            num_parallel_environments: int = 4,
+            batch_size: int = 128,
+            global_step: Optional[tf.Variable] = None,
+            optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
+            checkpoint: Optional[tf.train.Checkpoint] = None,
+            manager: Optional[tf.train.CheckpointManager] = None,
+            log_interval: int = 80,
+            checkpoint_interval: int = 250,
+            eval_steps: int = int(1e3),
+            save_model_interval: int = int(1e4),
+            log_name: str = 'vae_training',
+            annealing_period: int = 0,
+            start_annealing_step: int = 0,
+            reset_kl_scale_factor: Optional[float] = None,
+            reset_entropy_regularizer: Optional[float] = None,
+            logs: bool = True,
+            display_progressbar: bool = False,
+            save_directory: Optional[str] = '.',
+            policy_evaluation_num_episodes: int = 30,
+            environment_seed: Optional[int] = None,
+            aggressive_training: bool = False,
+            approximate_convergence_error: float = 5e-1,
+            approximate_convergence_steps: int = 10,
+            aggressive_training_steps: int = int(2e6),
+            environment: Optional[tf_agents.environments.py_environment.PyEnvironment] = None,
+            dataset_handler: Optional[DatasetHandler] = None,
+            policy_evaluation_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
+            close_at_the_end: bool = True,
+    ):
+        # reverb replay buffers are not compatible with parallel env
+        parallel_environments = parallel_environments and not use_prioritized_replay_buffer
+        if collect_steps_per_iteration is None:
+            collect_steps_per_iteration = batch_size // 8
+        if parallel_environments:
+            replay_buffer_capacity = replay_buffer_capacity // num_parallel_environments
+            collect_steps_per_iteration = max(1, collect_steps_per_iteration // num_parallel_environments)
+
+        if save_directory is not None:
+            save_directory = os.path.join(save_directory, 'saves', env_name)
+
+        # Load checkpoint
+        if checkpoint is not None and manager is not None:
+            checkpoint.restore(manager.latest_checkpoint)
+            if manager.latest_checkpoint:
+                print("Restored from {}".format(manager.latest_checkpoint))
+            else:
+                print("Initializing from scratch.")
+
+        # initialize logs
+        if logs:
+            train_log_dir = os.path.join('logs', 'gradient_tape', env_name, log_name)  # , current_time)
+            print('logs path:', train_log_dir)
+            if not os.path.exists(train_log_dir) and logs:
+                os.makedirs(train_log_dir)
+            train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+        else:
+            train_summary_writer = None
+
+        # attach optimizer
+        self.attach_optimizer(optimizer)
+
+        if global_step is None:
+            if checkpoint is not None:
+                global_step = checkpoint.save_counter
+            else:
+                global_step = tf.Variable(0, trainable=False, dtype=tf.int64)
+
+        start_step = global_step.numpy()
+        print("Step: {}".format(start_step))
+
+        if start_step < start_annealing_step:
+            if reset_kl_scale_factor is not None:
+                self.kl_scale_factor = reset_kl_scale_factor
+            if reset_entropy_regularizer is not None:
+                self.entropy_regularizer_scale_factor = reset_entropy_regularizer
+
+        progressbar = Progbar(
+            target=None,
+            stateful_metrics=list(self.loss_metrics.keys()) + [
+                'loss', 't_1', 't_2', 'entropy_regularizer_scale_factor', 'step', "num_episodes", "env_steps",
+                "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv", 'state_rate',
+                "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used', 'wis_exponent',
+                'priority_logistic_smoothness', 'priority_logistic_mean',
+                'priority_logistic_max', 'priority_logistic_min'
+            ],
+            interval=0.1) if display_progressbar else None
+
+        discrete_action_space = discrete_action_space and (self.latent_policy_network is not None)
+
+        if environment is None:
+            env = self.initialize_environment(
+                environment_suite=environment_suite,
+                env_name=env_name,
+                parallel_environments=parallel_environments,
+                num_parallel_environments=num_parallel_environments,
+                environment_seed=environment_seed,
+                use_prioritized_replay_buffer=use_prioritized_replay_buffer)
+        else:
+            env = environment
+
+        if epsilon_greedy > 0.:
+            epsilon_greedy = tf.Variable(epsilon_greedy, trainable=False, dtype=tf.float32)
+
+            if epsilon_greedy_decay_rate == -1:
+                epsilon_greedy_decay_rate = 1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy))
+                                                        / (3. * (num_iterations - start_annealing_step) / 5.))
+            epsilon_greedy.assign(
+                epsilon_greedy * tf.pow(1. - epsilon_greedy_decay_rate,
+                                        tf.math.maximum(0.,
+                                                        tf.cast(global_step, dtype=tf.float32) - start_annealing_step)))
+
+            @tf.function
+            def _epsilon():
+                if tf.greater(global_step, start_annealing_step):
+                    epsilon_greedy.assign(epsilon_greedy * (1 - epsilon_greedy_decay_rate))
+                return epsilon_greedy
+
+            policy = tf_agents.policies.epsilon_greedy_policy.EpsilonGreedyPolicy(policy, _epsilon)
+
+        if dataset_handler is None:
+            dataset_handler = self.initialize_dataset_components(
+                env=env, policy=policy, labeling_function=labeling_function, batch_size=batch_size, manager=manager,
+                use_prioritized_replay_buffer=use_prioritized_replay_buffer,
+                replay_buffer_capacity=replay_buffer_capacity, priority_exponent=priority_exponent,
+                buckets_based_priorities=buckets_based_priorities, discrete_action_space=discrete_action_space,
+                collect_steps_per_iteration=collect_steps_per_iteration, initial_collect_steps=initial_collect_steps)
+
+        replay_buffer = dataset_handler.replay_buffer
+        driver = dataset_handler.driver
+        initial_collect_driver = dataset_handler.initial_collect_driver
+        close = dataset_handler.close_fn
+        replay_buffer_num_frames = dataset_handler.replay_buffer_num_frames_fn
+        manager = dataset_handler.wrapped_manager
+        dataset_iterator = dataset_handler.dataset_iterator
+
+        if replay_buffer_num_frames() < initial_collect_steps:
+            print("Initial collect steps...")
+            initial_collect_driver.run(env.current_time_step())
+
+        print("Start training.")
+
+        if policy_evaluation_driver is None and policy_evaluation_num_episodes > 0:
+            policy_evaluation_driver = self.initialize_policy_evaluation_driver(
+                environment_suite=environment_suite,
+                env_name=env_name,
+                labeling_function=labeling_function,
+                policy_evaluation_num_episodes=policy_evaluation_num_episodes)
 
         # aggressive training metrics
         best_loss = None
@@ -1346,11 +1447,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if epsilon_greedy > 0.:
                 additional_training_metrics['epsilon_greedy'] = epsilon_greedy
             if use_prioritized_replay_buffer and not buckets_based_priorities:
-                diff = (priority_handler.max_loss.result() - priority_handler.min_loss.result())
-                additional_training_metrics['priority_logistic_smoothness'] = priority_handler.max_priority / diff
+                diff = (self.priority_handler.max_loss.result() - self.priority_handler.min_loss.result())
+                additional_training_metrics['priority_logistic_smoothness'] = self.priority_handler.max_priority / diff
                 additional_training_metrics['priority_logistic_mean'] = diff / 2
-                additional_training_metrics['priority_logistic_max'] = priority_handler.max_loss.result()
-                additional_training_metrics['priority_logistic_min'] = priority_handler.min_loss.result()
+                additional_training_metrics['priority_logistic_max'] = self.priority_handler.max_loss.result()
+                additional_training_metrics['priority_logistic_min'] = self.priority_handler.min_loss.result()
 
             loss = self.training_step(
                 dataset_iterator=dataset_iterator, batch_size=batch_size,
@@ -1358,15 +1459,14 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 dataset_size=replay_buffer_num_frames(), display_progressbar=display_progressbar,
                 start_step=start_step, epoch=0, progressbar=progressbar,
                 save_model_interval=save_model_interval,
-                eval_ratio=eval_steps * batch_size / replay_buffer_num_frames(),
+                eval_steps=eval_steps,
                 save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
                 log_interval=log_interval, logs=logs, start_annealing_step=start_annealing_step,
                 additional_metrics=additional_training_metrics,
                 eval_policy_driver=policy_evaluation_driver,
                 aggressive_training=aggressive_training and global_step.numpy() < aggressive_training_steps,
                 aggressive_update=aggressive_inference_optimization,
-                prioritized_experience_replay=use_prioritized_replay_buffer
-            )
+                prioritized_experience_replay=use_prioritized_replay_buffer)
 
             if checkpoint is not None and tf.equal(tf.math.mod(global_step, checkpoint_interval), 0):
                 manager.save()
@@ -1392,15 +1492,17 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     inference_update_steps = 0
 
         # save the final model
-        save(os.path.join(log_name, 'step{:d}'.format(global_step.numpy())))
+        if save_directory is not None:
+            save(os.path.join(log_name, 'step{:d}'.format(global_step.numpy())))
+        if close_at_the_end:
+            close()
 
-        close()
-        return 0
+        return tf.reduce_mean(self.evaluation_window)
 
     def training_step(
             self, dataset_iterator, batch_size, annealing_period, global_step, dataset_size,
             display_progressbar, start_step, epoch, progressbar, save_model_interval,
-            eval_ratio, save_directory, log_name, train_summary_writer, log_interval, logs,
+            eval_steps, save_directory, log_name, train_summary_writer, log_interval, logs,
             start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None,
             eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
             aggressive_training=False, aggressive_update=True, prioritized_experience_replay=False
@@ -1435,19 +1537,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
             metrics_key_values.append(('kl_annealing_scale_factor', self.kl_scale_factor))
         if prioritized_experience_replay:
             metrics_key_values.append(('wis_exponent', self.is_exponent))
-        if progressbar is not None:
-            if dataset_size is not None and progressbar.target is not None and display_progressbar and \
-                    (global_step.numpy() - start_step) * batch_size < dataset_size * (epoch + 1):
-                progressbar.add(batch_size, values=metrics_key_values)
-            elif (dataset_size is None or progressbar.target is None) and display_progressbar:
-                progressbar.add(batch_size, values=metrics_key_values)
+        if progressbar is not None and display_progressbar:
+            progressbar.add(batch_size, values=metrics_key_values)
 
         # update step
         global_step.assign_add(1)
 
         # eval, save and log
-        eval_steps = int(1e3) if dataset_size is None else int(dataset_size * eval_ratio) // batch_size
         if global_step.numpy() % save_model_interval == 0:
+            print(eval_steps)
             self.eval_and_save(dataset_iterator=dataset_iterator,
                                batch_size=batch_size, eval_steps=eval_steps,
                                global_step=global_step, save_directory=save_directory, log_name=log_name,
@@ -1469,18 +1567,20 @@ class VariationalMarkovDecisionProcess(tf.Module):
             batch_size: int,
             eval_steps: int,
             global_step: tf.Variable,
-            save_directory: str,
-            log_name: str,
+            save_directory: Optional[str] = None,
+            log_name: Optional[str] = None,
             train_summary_writer: Optional[tf.summary.SummaryWriter] = None,
             eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None
     ):
         eval_elbo = tf.metrics.Mean()
+        data = {'state': None, 'action': None}
+        avg_rewards = None
+
         if eval_steps > 0:
             eval_progressbar = Progbar(
                 target=(eval_steps + 1) * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
 
             tf.print("\nEvalutation over {} steps".format(eval_steps))
-            data = {'state': None, 'action': None}
             for step in range(eval_steps):
                 x = next(dataset_iterator)[:6]
 
@@ -1491,47 +1591,49 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 eval_elbo(elbo)
                 eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
 
-            if eval_policy_driver is not None:
-                avg_rewards = self.eval_policy(eval_policy_driver=eval_policy_driver,
-                                               train_summary_writer=train_summary_writer,
-                                               global_step=global_step)
+        if eval_policy_driver is not None:
+            avg_rewards = self.eval_policy(eval_policy_driver=eval_policy_driver,
+                                           train_summary_writer=train_summary_writer,
+                                           global_step=global_step)
 
-            if train_summary_writer is not None:
-                with train_summary_writer.as_default():
-                    tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
-                    for value in ('state', 'action'):
-                        if data[value] is not None:
-                            if value == 'state':
-                                data[value] = tf.reduce_sum(
-                                    data[value] * 2 ** tf.range(tf.cast(self.latent_state_size, dtype=tf.int64)),
-                                    axis=-1)
-                            tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
+        if train_summary_writer is not None and eval_steps > 0:
+            with train_summary_writer.as_default():
+                tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
+                for value in ('state', 'action'):
+                    if data[value] is not None:
+                        if value == 'state':
+                            data[value] = tf.reduce_sum(
+                                data[value] * 2 ** tf.range(tf.cast(self.latent_state_size, dtype=tf.int64)),
+                                axis=-1)
+                        tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
 
         def _checkpoint():
-            optimizer = self._optimizer
-            priority_handler = self.priority_handler
+            if save_directory is not None and log_name is not None:
+                optimizer = self._optimizer
+                priority_handler = self.priority_handler
 
-            self._optimizer = None
-            self.priority_handler = None
+                self._optimizer = None
+                self.priority_handler = None
 
-            eval_checkpoint = tf.train.Checkpoint(model=self)
-            eval_checkpoint.save(
-                os.path.join(save_directory, 'training_checkpoints', log_name, 'ckpt-{:d}'.format(global_step.numpy())))
+                eval_checkpoint = tf.train.Checkpoint(model=self)
+                eval_checkpoint.save(
+                    os.path.join(save_directory, 'training_checkpoints', log_name,
+                                 'ckpt-{:d}'.format(global_step.numpy())))
 
-            self.attach_optimizer(optimizer)
-            self.priority_handler = priority_handler
+                self.attach_optimizer(optimizer)
+                self.priority_handler = priority_handler
 
-        if eval_policy_driver and eval_steps > 0:
-            for i in tf.range(tf.shape(self.evaluation_memory)[0]):
-                if self.evaluation_memory[i] <= avg_rewards:
-                    self.evaluation_memory[i].assign(avg_rewards)
+        if eval_policy_driver:
+            for i in tf.range(tf.shape(self.evaluation_window)[0]):
+                if self.evaluation_window[i] <= avg_rewards:
+                    self.evaluation_window[i].assign(avg_rewards)
                     _checkpoint()
                     break
         elif eval_steps > 0:
-            for i in tf.range(tf.shape(self.evaluation_memory)[0]):
-                if self.evaluation_memory[i] <= eval_elbo:
-                    self.evaluation_memory[i].assign(eval_elbo)
+            for i in tf.range(tf.shape(self.evaluation_window)[0]):
+                if self.evaluation_window[i] <= eval_elbo:
+                    self.evaluation_window[i].assign(eval_elbo)
                     _checkpoint()
                     break
 

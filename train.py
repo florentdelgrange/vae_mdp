@@ -1,6 +1,7 @@
 import functools
 import importlib
 import os
+from collections import namedtuple
 
 import tensorflow as tf
 import tf_agents
@@ -302,49 +303,28 @@ flags.DEFINE_integer(
     help='Collect steps per iteration. If set to a value <= 0, then collect_steps is set to batch_size / 8',
     default=0
 )
+flags.DEFINE_bool(
+    'hyperparameter_search',
+    help='Perform a hyperparameter search with Optuna.',
+    default=False
+)
 FLAGS = flags.FLAGS
 
 
-def main(argv):
-    del argv
-    params = FLAGS.flag_values_dict()
+def generate_network_components(params, name=''):
+    activation = getattr(tf.nn, params["activation"])
+    network_components = []
 
-    tf.random.set_seed(params['seed'])
+    for component_name in ['encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy']:
+        x = Sequential(name="{}_{}_network_body".format(name, component_name))
+        for i, units in enumerate(params[component_name + '_layers']):
+            x.add(Dense(units, activation=activation, name="{}_{}_{}".format(name, component_name, i)))
+        network_components.append(x)
 
-    def check_missing_argument(name: str):
-        if params[name] == '':
-            raise RuntimeError('Missing argument: --{}'.format(name))
+    return network_components
 
-    if params['dataset_path'] == '':
-        for param in ('policy_path', 'environment'):
-            check_missing_argument(param)
 
-    if params['collect_steps_per_iteration'] <= 0:
-        params['collect_steps_per_iteration'] = params['batch_size'] // 8
-
-    relaxed_state_encoder_temperature = params['relaxed_state_encoder_temperature']
-    relaxed_state_prior_temperature = params['relaxed_state_prior_temperature']
-    if params['encoder_temperature'] < 0.:
-        if params['action_discretizer']:
-            params['encoder_temperature'] = 1. / (params['number_of_discrete_actions'] - 1)
-        else:
-            params['encoder_temperature'] = 0.99
-    if params['prior_temperature'] < 0.:
-        if params['action_discretizer']:
-            params['prior_temperature'] = params['encoder_temperature'] / 1.5
-        else:
-            params['prior_temperature'] = 0.95
-    if relaxed_state_encoder_temperature < 0:
-        relaxed_state_encoder_temperature = params['encoder_temperature']
-    if relaxed_state_prior_temperature < 0:
-        relaxed_state_prior_temperature = params['prior_temperature']
-
-    environment_name = params['environment']
-
-    batch_size = params['batch_size']
-    mixture_components = params['mixture_components']
-    latent_state_size = params['latent_size']  # depends on the number of bits reserved for labels
-
+def generate_vae_name(params):
     if params['load_vae'] != '':
         name_list = params['load_vae'].split(os.path.sep)
         if 'models' in name_list and name_list.index('models') < len(name_list) - 1:
@@ -363,15 +343,15 @@ def main(argv):
     vae_name = ''
     if not params['action_discretizer'] or params['full_vae_optimization'] or params['decompose_training']:
         vae_name = 'vae_LS{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}_seed={:d}'.format(
-            latent_state_size,
-            mixture_components,
+            params['latent_size'],
+            params['mixture_components'],
             params['entropy_regularizer_scale_factor'],
             params['entropy_regularizer_decay_rate'],
             params['entropy_regularizer_scale_factor_min_value'],
             params['kl_annealing_scale_factor'],
             params['kl_annealing_growth_rate'],
-            relaxed_state_encoder_temperature,
-            relaxed_state_prior_temperature,
+            params['relaxed_state_encoder_temperature'],
+            params['relaxed_state_prior_temperature'],
             params['encoder_temperature_decay_rate'],
             params['prior_temperature_decay_rate'],
             int(params['seed']))
@@ -384,7 +364,7 @@ def main(argv):
             'action_discretizer',
             'LA{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
                 params['number_of_discrete_actions'],
-                mixture_components,
+                params['mixture_components'],
                 params['entropy_regularizer_scale_factor'],
                 params['entropy_regularizer_decay_rate'],
                 params['entropy_regularizer_scale_factor_min_value'],
@@ -428,28 +408,10 @@ def main(argv):
         vae_name += ('_params={}' + '-{}' * (nb_additional_params - 1)).format(
             *filter(lambda x: params[x], additional_parameters))
 
-    activation = getattr(tf.nn, params["activation"])
+    return vae_name
 
-    def generate_network_components(name=''):
 
-        network_components = []
-        for component_name in ['encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy']:
-            x = Sequential(name="{}_{}_network_body".format(name, component_name))
-            for i, units in enumerate(params[component_name + '_layers']):
-                x.add(Dense(units, activation=activation, name="{}_{}_{}".format(name, component_name, i)))
-            network_components.append(x)
-
-        return network_components
-
-    if params['env_suite'] != '':
-        try:
-            environment_suite = importlib.import_module('tf_agents.environments.' + params['env_suite'])
-        except BaseException as err:
-            serr = str(err)
-            print("An error occurred when loading the module '" + params['env_suite'] + "': " + serr)
-    else:
-        environment_suite = None
-
+def get_environment_specs(environment_suite, environment_name: str, latent_policy: bool):
     environment = tf_py_environment.TFPyEnvironment(
         tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
             [lambda: environment_suite.load(environment_name)]))
@@ -466,16 +428,78 @@ def main(argv):
 
     time_step_spec = tensor_spec.from_spec(environment.time_step_spec())
     action_spec = tensor_spec.from_spec(environment.action_spec())
-    if params['latent_policy']:
+    if latent_policy:
         # one hot encoding
         action_shape = (environment.action_spec().maximum + 1,)
 
     environment.close()
     del environment
 
+    return namedtuple(
+        typename='EnvironmentSpecs',
+        field_names=['state_shape', 'action_shape', 'reward_shape', 'label_shape', 'time_step_spec', 'action_spec'])(
+        state_shape, action_shape, reward_shape, label_shape, time_step_spec, action_spec)
+
+
+def main(argv):
+    del argv
+    params = FLAGS.flag_values_dict()
+
+    tf.random.set_seed(params['seed'])
+
+    def check_missing_argument(name: str):
+        if params[name] == '':
+            raise RuntimeError('Missing argument: --{}'.format(name))
+
+    if params['dataset_path'] == '':
+        for param in ('policy_path', 'environment'):
+            check_missing_argument(param)
+
+    if params['collect_steps_per_iteration'] <= 0:
+        params['collect_steps_per_iteration'] = params['batch_size'] // 8
+
+    relaxed_state_encoder_temperature = params['relaxed_state_encoder_temperature']
+    relaxed_state_prior_temperature = params['relaxed_state_prior_temperature']
+    if params['encoder_temperature'] < 0.:
+        if params['action_discretizer']:
+            params['encoder_temperature'] = 1. / (params['number_of_discrete_actions'] - 1)
+        else:
+            params['encoder_temperature'] = 0.99
+    if params['prior_temperature'] < 0.:
+        if params['action_discretizer']:
+            params['prior_temperature'] = params['encoder_temperature'] / 1.5
+        else:
+            params['prior_temperature'] = 0.95
+    if relaxed_state_encoder_temperature < 0:
+        params['relaxed_state_encoder_temperature'] = params['encoder_temperature']
+    if relaxed_state_prior_temperature < 0:
+        params['relaxed_state_prior_temperature'] = params['prior_temperature']
+
+    environment_name = params['environment']
+
+    batch_size = params['batch_size']
+    mixture_components = params['mixture_components']
+    latent_state_size = params['latent_size']  # depends on the number of bits reserved for labels
+
+    vae_name = generate_vae_name(params)
+
+    if params['env_suite'] != '':
+        try:
+            environment_suite = importlib.import_module('tf_agents.environments.' + params['env_suite'])
+        except BaseException as err:
+            serr = str(err)
+            print("An error occurred when loading the module '" + params['env_suite'] + "': " + serr)
+    else:
+        environment_suite = None
+
+    specs = get_environment_specs(environment_suite, environment_name, params['latent_policy'])
+    state_shape, action_shape, reward_shape, label_shape, time_step_spec, action_spec = (
+        specs.state_shape, specs.action_shape, specs.reward_shape, specs.label_shape,
+        specs.time_step_spec, specs.action_spec)
+
     def build_vae_model():
         if params['load_vae'] == '':
-            q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(name='state')
+            q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(params, name='state')
             return variational_mdp.VariationalMarkovDecisionProcess(
                 state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
                 encoder_network=q, transition_network=p_t, label_transition_network=p_l_t,
@@ -511,7 +535,7 @@ def main(argv):
         if params['full_vae_optimization'] and params['load_vae'] != '':
             vae = variational_action_discretizer.load(params['load_vae'], full_optimization=True)
         else:
-            q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(name='action')
+            q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(params, name='action')
             vae = variational_action_discretizer.VariationalActionDiscretizer(
                 vae_mdp=vae_mdp_model,
                 number_of_discrete_actions=params['number_of_discrete_actions'],
@@ -561,11 +585,6 @@ def main(argv):
 
         if phase == 1 and not params['action_discretizer'] and params['latent_policy']:
             vae_mdp_model.latent_policy_training_phase = True
-
-        #  if base_model_name != '':
-        #      vae_name_list = vae_name.split(os.path.sep)
-        #      vae_name_list[0] = '_'.join(base_model_name.split(os.path.sep))
-        #      vae_name = os.path.join(*vae_name_list)
 
         policy = policies.SavedTFPolicy(params['policy_path'], time_step_spec, action_spec)
 
