@@ -645,7 +645,8 @@ if __name__ == '__main__':
     )
     flags.DEFINE_bool(
         'hyperparameter_search',
-        help='Perform a hyperparameter search with Optuna',
+        help='Perform a hyperparameter search with Optuna. If --action_discretizer is set, uses the flag'
+             '--number_of_discrete_actions as the maximum number of discrete actions to consider.',
         default=False
     )
     flags.DEFINE_integer(

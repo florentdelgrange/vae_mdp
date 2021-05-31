@@ -55,7 +55,10 @@ def search(
         batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128, 256, 512])
         collect_steps_per_iteration = trial.suggest_categorical(
             'collect_steps_per_iteration', [1, 4, 8, 16, 32, 64, 128])
-        latent_state_size = trial.suggest_int('latent_state_size', specs.label_shape[0] + 1, 20)
+        latent_state_size = trial.suggest_int(
+            'latent_state_size',
+            specs.label_shape[0] + 1,
+            max(20, specs.label_shape[0] + 8))
         relaxed_state_encoder_temperature = trial.suggest_float('relaxed_state_encoder_temperature', 0.1, 0.99)
         relaxed_state_prior_temperature = trial.suggest_float('relaxed_state_prior_temperature', 0.1, 0.99)
         kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-5, 1e-2, log=True)
@@ -72,7 +75,8 @@ def search(
         if fixed_parameters['action_discretizer']:
             encoder_temperature = trial.suggest_float('encoder_temperature', 0.1, 0.99)
             prior_temperature = trial.suggest_float('prior_temperature', 0.1, 0.99)
-            number_of_discrete_actions = trial.suggest_int('number_of_discrete_actions', 2, 16)
+            number_of_discrete_actions = trial.suggest_int(
+                'number_of_discrete_actions', 2, fixed_parameters['number_of_discrete_actions'])
             one_output_per_action = trial.suggest_categorical('one_output_per_action', [True, False])
 
         for attr in ['learning_rate', 'batch_size', 'collect_steps_per_iteration', 'latent_state_size',
