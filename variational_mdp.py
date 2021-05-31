@@ -1,5 +1,7 @@
 import os
 from collections import namedtuple
+import enum
+from enum import Enum
 from typing import Tuple, Optional, Callable, Dict, Iterator, NamedTuple
 import numpy as np
 import reverb
@@ -45,7 +47,7 @@ if check_numerics:
 epsilon = 1e-25
 
 
-class DatasetHandler(NamedTuple):
+class DatasetComponents(NamedTuple):
     replay_buffer: tf_agents.replay_buffers.replay_buffer.ReplayBuffer
     driver: tf_agents.drivers.py_driver.PyDriver
     initial_collect_driver: tf_agents.drivers.py_driver.PyDriver
@@ -54,6 +56,11 @@ class DatasetHandler(NamedTuple):
     wrapped_manager: Optional[tf.train.CheckpointManager]
     dataset: tf.data.Dataset
     dataset_iterator: Iterator
+
+
+class EvaluationCriterion(Enum):
+    MAX = enum.auto()
+    MEAN = enum.auto()
 
 
 class VariationalMarkovDecisionProcess(tf.Module):
@@ -89,6 +96,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  full_optimization: bool = True,
                  optimizer: Optional = None,
                  evaluation_window_size: int = 5,
+                 evaluation_criterion: EvaluationCriterion = EvaluationCriterion.MAX,
                  action_label_transition_network: Optional[Model] = None,
                  action_transition_network: Optional[Model] = None,
                  importance_sampling_exponent: Optional[float] = 1.,
@@ -141,7 +149,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
         action = Input(shape=action_shape, name="action")
         self._encoder_softclip = tfb.SoftClip(high=10., low=-10.)
 
-        # to save only the N best last models learned
+        # the evaluation window contains eiter the N max evaluation scores encountered during training if the evaluation
+        # criterion is MAX, or the N last evaluation scores encountered if the evaluation criterion is MEAN.
+        self.evaluation_criterion = evaluation_criterion
         self.evaluation_window = tf.Variable([-1. * np.inf] * evaluation_window_size, trainable=False)
 
         self.priority_handler = None
@@ -1065,7 +1075,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             discrete_action_space: bool = False,
             collect_steps_per_iteration: int = 8,
             initial_collect_steps: int = int(1e4),
-    ) -> DatasetHandler:
+    ) -> DatasetComponents:
         # specs
         trajectory_spec = trajectory.from_transition(env.time_step_spec(),
                                                      policy.policy_step_spec,
@@ -1208,7 +1218,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         dataset = dataset_generator(transition_generator).batch(batch_size=batch_size, drop_remainder=True)
         dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
 
-        return DatasetHandler(
+        return DatasetComponents(
             replay_buffer=replay_buffer,
             driver=driver,
             initial_collect_driver=initial_collect_driver,
@@ -1276,7 +1286,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             approximate_convergence_steps: int = 10,
             aggressive_training_steps: int = int(2e6),
             environment: Optional[tf_agents.environments.py_environment.PyEnvironment] = None,
-            dataset_handler: Optional[DatasetHandler] = None,
+            dataset_components: Optional[DatasetComponents] = None,
             policy_evaluation_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
             close_at_the_end: bool = True,
     ):
@@ -1370,21 +1380,21 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
             policy = tf_agents.policies.epsilon_greedy_policy.EpsilonGreedyPolicy(policy, _epsilon)
 
-        if dataset_handler is None:
-            dataset_handler = self.initialize_dataset_components(
+        if dataset_components is None:
+            dataset_components = self.initialize_dataset_components(
                 env=env, policy=policy, labeling_function=labeling_function, batch_size=batch_size, manager=manager,
                 use_prioritized_replay_buffer=use_prioritized_replay_buffer,
                 replay_buffer_capacity=replay_buffer_capacity, priority_exponent=priority_exponent,
                 buckets_based_priorities=buckets_based_priorities, discrete_action_space=discrete_action_space,
                 collect_steps_per_iteration=collect_steps_per_iteration, initial_collect_steps=initial_collect_steps)
 
-        replay_buffer = dataset_handler.replay_buffer
-        driver = dataset_handler.driver
-        initial_collect_driver = dataset_handler.initial_collect_driver
-        close = dataset_handler.close_fn
-        replay_buffer_num_frames = dataset_handler.replay_buffer_num_frames_fn
-        manager = dataset_handler.wrapped_manager
-        dataset_iterator = dataset_handler.dataset_iterator
+        replay_buffer = dataset_components.replay_buffer
+        driver = dataset_components.driver
+        initial_collect_driver = dataset_components.initial_collect_driver
+        close = dataset_components.close_fn
+        replay_buffer_num_frames = dataset_components.replay_buffer_num_frames_fn
+        manager = dataset_components.wrapped_manager
+        dataset_iterator = dataset_components.dataset_iterator
 
         if replay_buffer_num_frames() < initial_collect_steps:
             print("Initial collect steps...")
@@ -1561,6 +1571,48 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         return loss
 
+    def assign_score_to_model(
+            self,
+            score: float,
+            checkpoint_model: bool,
+            save_directory: str,
+            model_name: str,
+            training_step: int
+    ):
+        """
+        Stores the input score into the model evaluation window according to its evaluation criterion.
+        If the evaluation window is modified this way and the checkpoint_model flag is set, then the model is
+        checkpointed.
+        """
+
+        def _checkpoint():
+            optimizer = self._optimizer
+            priority_handler = self.priority_handler
+
+            self._optimizer = None
+            self.priority_handler = None
+
+            eval_checkpoint = tf.train.Checkpoint(model=self)
+            eval_checkpoint.save(
+                os.path.join(save_directory, 'training_checkpoints', model_name,
+                             'ckpt-{:d}'.format(training_step)))
+
+            self.attach_optimizer(optimizer)
+            self.priority_handler = priority_handler
+
+        for i in tf.range(tf.shape(self.evaluation_window)[0]):
+            if self.evaluation_criterion is EvaluationCriterion.MEAN:
+                _score = self.evaluation_window[i]
+                self.evaluation_window[i].assign(score)
+                score = _score
+            elif self.evaluation_criterion is EvaluationCriterion.MAX and self.evaluation_window[i] <= score:
+                self.evaluation_window[i].assign(score)
+                if checkpoint_model:
+                    _checkpoint()
+                break
+        if self.evaluation_criterion is EvaluationCriterion.MEAN and checkpoint_model:
+            _checkpoint()
+
     def eval_and_save(
             self,
             dataset_iterator,
@@ -1608,34 +1660,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
                         tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
             print('eval ELBO: ', eval_elbo.result().numpy())
 
-        def _checkpoint():
-            if save_directory is not None and log_name is not None:
-                optimizer = self._optimizer
-                priority_handler = self.priority_handler
-
-                self._optimizer = None
-                self.priority_handler = None
-
-                eval_checkpoint = tf.train.Checkpoint(model=self)
-                eval_checkpoint.save(
-                    os.path.join(save_directory, 'training_checkpoints', log_name,
-                                 'ckpt-{:d}'.format(global_step.numpy())))
-
-                self.attach_optimizer(optimizer)
-                self.priority_handler = priority_handler
-
-        if eval_policy_driver:
-            for i in tf.range(tf.shape(self.evaluation_window)[0]):
-                if self.evaluation_window[i] <= avg_rewards:
-                    self.evaluation_window[i].assign(avg_rewards)
-                    _checkpoint()
-                    break
-        elif eval_steps > 0:
-            for i in tf.range(tf.shape(self.evaluation_window)[0]):
-                if self.evaluation_window[i] <= eval_elbo:
-                    self.evaluation_window[i].assign(eval_elbo)
-                    _checkpoint()
-                    break
+        if eval_policy_driver is not None or eval_steps > 0:
+            self.assign_score_to_model(
+                score=avg_rewards if eval_policy_driver is not None else eval_elbo,
+                checkpoint_model=save_directory is not None and log_name is not None,
+                save_directory=save_directory,
+                model_name=log_name,
+                training_step=global_step.numpy())
 
         return eval_elbo
 

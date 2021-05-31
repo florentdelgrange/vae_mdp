@@ -45,7 +45,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             pre_loaded_model: bool = False,
             one_output_per_action: bool = False,
             relaxed_state_encoding: bool = False,
-            full_optimization: bool = False,
+            full_optimization: bool = True,
             reconstruction_mixture_components: int = 1,
             action_regularizer_scaling: float = 1e-1,
             importance_sampling_exponent: Optional[float] = None,
@@ -74,7 +74,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             multivariate_normal_full_covariance=vae_mdp.full_covariance,
             pre_loaded_model=True,
             importance_sampling_exponent=vae_mdp.is_exponent,
-            importance_sampling_exponent_growth_rate=vae_mdp.is_exponent_growth_rate)
+            importance_sampling_exponent_growth_rate=vae_mdp.is_exponent_growth_rate,
+            optimizer=vae_mdp._optimizer,
+            evaluation_window_size=tf.shape(vae_mdp.evaluation_window)[0],
+            evaluation_criterion=vae_mdp.evaluation_criterion)
 
         if encoder_temperature is None:
             encoder_temperature = 1. / (number_of_discrete_actions - 1)
