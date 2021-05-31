@@ -195,7 +195,8 @@ def search(
             environment=environment,
             dataset_components=dataset_components,
             policy_evaluation_driver=policy_evaluation_driver,
-            close_at_the_end=False)
+            close_at_the_end=False,
+            display_progressbar=fixed_parameters['display_progressbar'])
 
         score = train_model(initial_training_steps)
 

@@ -1286,7 +1286,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             log_interval: int = 80,
             checkpoint_interval: int = 250,
             eval_steps: int = int(1e3),
-            save_model_interval: int = int(1e4),
+            eval_and_save_model_interval: int = int(1e4),
             log_name: str = 'vae_training',
             annealing_period: int = 0,
             start_annealing_step: int = 0,
@@ -1480,7 +1480,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 annealing_period=annealing_period, global_step=global_step,
                 dataset_size=replay_buffer_num_frames(), display_progressbar=display_progressbar,
                 start_step=start_step, epoch=0, progressbar=progressbar,
-                save_model_interval=save_model_interval,
+                eval_and_save_model_interval=eval_and_save_model_interval,
                 eval_steps=eval_steps,
                 save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
                 log_interval=log_interval, logs=logs, start_annealing_step=start_annealing_step,
@@ -1523,7 +1523,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
     def training_step(
             self, dataset_iterator, batch_size, annealing_period, global_step, dataset_size,
-            display_progressbar, start_step, epoch, progressbar, save_model_interval,
+            display_progressbar, start_step, epoch, progressbar, eval_and_save_model_interval,
             eval_steps, save_directory, log_name, train_summary_writer, log_interval, logs,
             start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None,
             eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
@@ -1566,7 +1566,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         global_step.assign_add(1)
 
         # eval, save and log
-        if global_step.numpy() % save_model_interval == 0:
+        if global_step.numpy() % eval_and_save_model_interval == 0:
             print(eval_steps)
             self.eval_and_save(dataset_iterator=dataset_iterator,
                                batch_size=batch_size, eval_steps=eval_steps,
