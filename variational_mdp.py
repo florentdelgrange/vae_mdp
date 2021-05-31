@@ -152,7 +152,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
         # the evaluation window contains eiter the N max evaluation scores encountered during training if the evaluation
         # criterion is MAX, or the N last evaluation scores encountered if the evaluation criterion is MEAN.
         self.evaluation_criterion = evaluation_criterion
-        self.evaluation_window = tf.Variable([-1. * np.inf] * evaluation_window_size, trainable=False)
+        self.evaluation_window = tf.Variable(
+            initial_value=-1. * np.inf * tf.ones(shape=(evaluation_window_size,)),
+            trainable=False,
+            name='evaluation_window')
 
         self.priority_handler = None
 
@@ -1088,7 +1091,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
         if use_prioritized_replay_buffer:
 
             checkpoint_path = None if manager is None else os.path.join(manager.directory, 'reverb')
-            reverb_checkpointer = reverb.checkpointers.DefaultCheckpointer(checkpoint_path)
+            if checkpoint_path is not None:
+                reverb_checkpointer = reverb.checkpointers.DefaultCheckpointer(checkpoint_path)
+            else:
+                reverb_checkpointer = None
 
             table_name = 'prioritized_replay_buffer'
             table = reverb.Table(
@@ -1402,7 +1408,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         manager = dataset_components.wrapped_manager
         dataset_iterator = dataset_components.dataset_iterator
 
-        if replay_buffer_num_frames() < initial_collect_steps:
+        if replay_buffer_num_frames() < batch_size:
             print("Initial collect steps...")
             initial_collect_driver.run(env.current_time_step())
 
@@ -1453,7 +1459,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             # Collect a few steps and save them to the replay buffer.
             driver.run(env.current_time_step())
 
-            if tf.equal(global_step, 0):
+            if tf.logical_and(tf.equal(global_step, 0), save_directory is not None):
                 save(os.path.join(log_name, 'base'))
 
             additional_training_metrics = {

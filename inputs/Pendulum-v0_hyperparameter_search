@@ -1,0 +1,12 @@
+--policy_path
+reinforcement_learning/saves/Pendulum-v0/policy
+--environment
+Pendulum-v0
+--parallel_env
+4
+--env_suite
+suite_gym
+--action_discretizer=True
+--max_steps
+1000000
+--hyperparameter_search

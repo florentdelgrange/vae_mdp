@@ -10,305 +10,13 @@ from absl import flags
 from tensorflow.keras.layers import Dense
 from tensorflow.python.keras import Sequential
 from tf_agents.environments import tf_py_environment
-from tf_agents.policies import policy_saver
 from tf_agents.specs import tensor_spec
-from tf_agents.trajectories import policy_step
 
+import hyperparameter_search
 import policies
 import reinforcement_learning
 import variational_action_discretizer
 import variational_mdp
-from util.io import dataset_generator
-
-flags.DEFINE_string(
-    "dataset_path",
-    help="Path of the directory containing the dataset files in hdf5 format.",
-    default='')
-flags.DEFINE_integer("batch_size", default=128, help="Batch size.")
-flags.DEFINE_integer(
-    "mixture_components",
-    default=1,
-    help="Number of gaussian mixture components used to model the reconstruction distributions.")
-flags.DEFINE_integer(
-    "action_mixture_components",
-    default=0,
-    help="Number of gaussian mixture components used to model the action reconstruction distribution (optional). If not"
-         "set, all mixture distributions take the same value obtained via --mixture_components.")
-flags.DEFINE_bool(
-    "full_covariance",
-    default=False,
-    help="If set, the states and rewards reconstruction distributions will use a full covariance matrix instead of"
-         "a diagonal matrix."
-)
-flags.DEFINE_string(
-    "activation",
-    # default="leaky_relu",
-    default="relu",
-    help="Activation function for all hidden layers.")
-flags.DEFINE_integer("latent_size", default=17, help='Number of bits used for the discrete latent state space.')
-flags.DEFINE_float(
-    "max_state_decoder_variance",
-    default="0.",
-    help='Maximum variance allowed for the state decoder.'
-)
-flags.DEFINE_float(
-    "encoder_temperature",
-    default=-1.,
-    help="Temperature of the relaxation of the discrete encoder distribution."
-)
-flags.DEFINE_float(
-    "prior_temperature",
-    default=-1.,
-    help="Temperature of relaxation of the discrete prior distribution over latent variables."
-)
-flags.DEFINE_float(
-    "relaxed_state_encoder_temperature",
-    default=-1.,
-    help="Temperature of the binary concrete relaxation encoder distribution over latent states."
-)
-flags.DEFINE_float(
-    "relaxed_state_prior_temperature",
-    default=-1.,
-    help="Temperature of the binary concrete relaxation prior distribution over latent states."
-)
-flags.DEFINE_bool(
-    "latent_policy",
-    default=False,
-    help="If set, VAEs for state discretization will learn a abstraction of the input policy conditioned on"
-         "latent states."
-         "Remark 1: only works for environment with discrete actions."
-         "Remark 2: Action discretizer VAEs always learn a latent policy."
-)
-flags.DEFINE_float(
-    "encoder_temperature_decay_rate",
-    default=1e-6,
-    help="Decay rate used to anneal the temperature of the encoder distribution over latent states."
-)
-flags.DEFINE_float(
-    "prior_temperature_decay_rate",
-    default=2e-6,
-    help="Decay rate used to anneal the temperature of the prior distribution over latent states."
-)
-flags.DEFINE_float(
-    "entropy_regularizer_scale_factor",
-    default=0.,
-    help="Entropy regularizer scale factor."
-)
-flags.DEFINE_float(
-    "entropy_regularizer_decay_rate",
-    default=0.,
-    help="Decay rate of the scale factor of the entropy regularizer."
-)
-flags.DEFINE_float(
-    "entropy_regularizer_scale_factor_min_value",
-    default=0.,
-    help="Minimum value that can take the scale factor of the entropy regularizer."
-)
-flags.DEFINE_float(
-    "marginal_entropy_regularizer_ratio",
-    default=0.,
-    lower_bound=0.,
-    upper_bound=0.5,
-    help="Indicates the ratio of the entropy regularizer focusing on enforcing a high marginal state encoder entropy"
-         "(experimental)."
-)
-flags.DEFINE_float(
-    "kl_annealing_scale_factor",
-    default=1.,
-    help='Scale factor of the KL terms of the ELBO.'
-)
-flags.DEFINE_float(
-    "kl_annealing_growth_rate",
-    default=0.,
-    help='Annealing growth rate of the ELBO KL terms scale factor.'
-)
-flags.DEFINE_integer(
-    "start_annealing_step",
-    default=int(1e4),
-    help="Step from which temperatures and scale factors start to be annealed."
-)
-flags.DEFINE_integer(
-    "max_steps",
-    default=int(1e6),
-    help="Maximum number of training steps."
-)
-flags.DEFINE_string(
-    "save_dir",
-    default=".",
-    help="Checkpoints and models save directory."
-)
-flags.DEFINE_bool(
-    "display_progressbar",
-    default=False,
-    help="Display progressbar."
-)
-flags.DEFINE_bool(
-    "action_discretizer",
-    default=False,
-    help="If set, the (continuous) action space of the environment is also discretized."
-)
-flags.DEFINE_bool(
-    "one_output_per_action",
-    default=False,
-    help="Set whether discrete action networks use one output per action or use the latent action as input."
-)
-flags.DEFINE_boolean(
-    "do_not_eval",
-    default=False,
-    help="Set this flag to not perform an evaluation of the ELBO (using discrete latent variables) during training."
-)
-flags.DEFINE_bool(
-    "full_vae_optimization",
-    default=True,
-    help='Set whether the ELBO is optimized over the whole VAE or if the optimization is only focused on the'
-         'state or action discretizer part of the VAE.'
-)
-flags.DEFINE_bool(
-    'relaxed_state_encoding',
-    default=True,
-    help='Use a relaxed encoding of states to optimize the action discretizer part of the VAE.'
-)
-flags.DEFINE_integer(
-    "number_of_discrete_actions",
-    default=16,
-    help='Number of discrete actions per latent state to learn.'
-)
-flags.DEFINE_string(
-    "load_vae",
-    default='',
-    help='Path of a VAE model already trained to load (saved via the tf.saved_model function).'
-)
-flags.DEFINE_multi_integer(
-    "encoder_layers",
-    default=[256, 256],
-    help='Number of units to use for each layer of the encoder.'
-)
-flags.DEFINE_multi_integer(
-    "decoder_layers",
-    default=[256, 256],
-    help='Number of units to use for each layer of the decoder.'
-)
-flags.DEFINE_multi_integer(
-    "transition_layers",
-    default=[256, 256],
-    help='Number of units to use for each layer of the transition network.'
-)
-flags.DEFINE_multi_integer(
-    "label_transition_layers",
-    default=[256, 256],
-    help='Number of units to use for each layer of the label transition network.'
-)
-flags.DEFINE_multi_integer(
-    "reward_layers",
-    default=[256, 256],
-    help='Number of units to use for each layer of the reward network.'
-)
-flags.DEFINE_multi_integer(
-    "discrete_policy_layers",
-    default=[256, 256],
-    help="Number of units to use for each layer of the simplified policy network."
-)
-flags.DEFINE_string(
-    "policy_path",
-    default='',
-    help="Path of a policy in tf.saved_model format."
-)
-flags.DEFINE_string(
-    "environment",
-    default='',
-    help="Name of the agent's environment."
-)
-flags.DEFINE_string(
-    "env_suite",
-    default='suite_gym',
-    help='Name of the tf_agents environment suite.'
-)
-flags.DEFINE_integer(
-    "parallel_env",
-    default=1,
-    help='Number of parallel environments to be used during training.'
-)
-flags.DEFINE_float(
-    'state_scaling',
-    default=1.,
-    help='Scaler for the input states of the environment.'
-)
-flags.DEFINE_integer(
-    'annealing_period',
-    default=1,
-    help='annealing period'
-)
-flags.DEFINE_bool(
-    'aggressive_training',
-    default=False,
-    help='Set whether to perform aggressive inference optimizations.'
-)
-flags.DEFINE_integer(
-    'initial_collect_steps',
-    default=int(1e4),
-    help='Number of frames to be collected in the replay buffer before starting the training.'
-)
-flags.DEFINE_integer(
-    'seed', help='set seed', default=42
-)
-flags.DEFINE_bool(
-    'logs',
-    default=True,
-    help="Enable logging training metrics to the logs directory."
-)
-flags.DEFINE_bool(
-    'checkpoint',
-    default=True,
-    help='Enable to save/load checkpoints to/from the save directory.'
-)
-flags.DEFINE_float(
-    'epsilon_greedy',
-    default=0.,
-    help='Epsilon value used for training the model via epsilon-greedy with the input policy.'
-)
-flags.DEFINE_bool(
-    'decompose_training',
-    default=False,
-    help='Decompose the VAE training in two phases: 1) state space abstraction, 2) action space + policy abstraction.'
-)
-flags.DEFINE_bool(
-    'prioritized_experience_replay',
-    default=False,
-    help='Use a prioritized experience replay buffer'
-)
-flags.DEFINE_float(
-    'priority_exponent',
-    default=.6,
-    help='Exponent parameter for the priority experience replay'
-)
-flags.DEFINE_float(
-    'importance_sampling_exponent',
-    default=0.4,
-    help='Exponent parameter of the importance sampling weights used with the prioritized experience replay buffer'
-)
-flags.DEFINE_float(
-    'importance_sampling_exponent_growth_rate',
-    default=1e-5,
-    help='Growth rate used for annealing the weighted importance sampling exponent parameter when using a prioritized'
-         'experience replay buffer.'
-)
-flags.DEFINE_bool(
-    'buckets_based_priority',
-    default=True,
-    help='If set, the priority of the replay buffer use a bucket based priority scheme (where each bucket corresponds'
-         'to a discrete latent state). If not, the loss is used '
-)
-flags.DEFINE_integer(
-    'collect_steps_per_iteration',
-    help='Collect steps per iteration. If set to a value <= 0, then collect_steps is set to batch_size / 8',
-    default=0
-)
-flags.DEFINE_bool(
-    'hyperparameter_search',
-    help='Perform a hyperparameter search with Optuna.',
-    default=False
-)
-FLAGS = flags.FLAGS
 
 
 def generate_network_components(params, name=''):
@@ -411,7 +119,7 @@ def generate_vae_name(params):
     return vae_name
 
 
-def get_environment_specs(environment_suite, environment_name: str, latent_policy: bool):
+def get_environment_specs(environment_suite, environment_name: str, discrete_action_space: bool):
     environment = tf_py_environment.TFPyEnvironment(
         tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
             [lambda: environment_suite.load(environment_name)]))
@@ -428,7 +136,7 @@ def get_environment_specs(environment_suite, environment_name: str, latent_polic
 
     time_step_spec = tensor_spec.from_spec(environment.time_step_spec())
     action_spec = tensor_spec.from_spec(environment.action_spec())
-    if latent_policy:
+    if discrete_action_space:
         # one hot encoding
         action_shape = (environment.action_spec().maximum + 1,)
 
@@ -444,6 +152,13 @@ def get_environment_specs(environment_suite, environment_name: str, latent_polic
 def main(argv):
     del argv
     params = FLAGS.flag_values_dict()
+
+    if params['hyperparameter_search']:
+        return hyperparameter_search.search(
+            fixed_parameters=params,
+            num_steps=params['max_steps'],
+            study_name=params['environment'],
+            n_trials=params['hyperparameter_search_trials'])
 
     tf.random.set_seed(params['seed'])
 
@@ -492,7 +207,11 @@ def main(argv):
     else:
         environment_suite = None
 
-    specs = get_environment_specs(environment_suite, environment_name, params['latent_policy'])
+    specs = get_environment_specs(
+        environment_suite=environment_suite,
+        environment_name=environment_name,
+        discrete_action_space=params['latent_policy'] and not params['action_discretizer'])
+
     state_shape, action_shape, reward_shape, label_shape, time_step_spec, action_spec = (
         specs.state_shape, specs.action_shape, specs.reward_shape, specs.label_shape,
         specs.time_step_spec, specs.action_spec)
@@ -636,5 +355,305 @@ def main(argv):
 
 
 if __name__ == '__main__':
+    flags.DEFINE_string(
+        "dataset_path",
+        help="Path of the directory containing the dataset files in hdf5 format.",
+        default='')
+    flags.DEFINE_integer("batch_size", default=128, help="Batch size.")
+    flags.DEFINE_integer(
+        "mixture_components",
+        default=1,
+        help="Number of gaussian mixture components used to model the reconstruction distributions.")
+    flags.DEFINE_integer(
+        "action_mixture_components",
+        default=0,
+        help="Number of gaussian mixture components used to model the action reconstruction distribution (optional). "
+             "If not "
+             "set, all mixture distributions take the same value obtained via --mixture_components.")
+    flags.DEFINE_bool(
+        "full_covariance",
+        default=False,
+        help="If set, the states and rewards reconstruction distributions will use a full covariance matrix instead of"
+             "a diagonal matrix."
+    )
+    flags.DEFINE_string(
+        "activation",
+        # default="leaky_relu",
+        default="relu",
+        help="Activation function for all hidden layers.")
+    flags.DEFINE_integer("latent_size", default=17, help='Number of bits used for the discrete latent state space.')
+    flags.DEFINE_float(
+        "max_state_decoder_variance",
+        default="0.",
+        help='Maximum variance allowed for the state decoder.'
+    )
+    flags.DEFINE_float(
+        "encoder_temperature",
+        default=-1.,
+        help="Temperature of the relaxation of the discrete encoder distribution."
+    )
+    flags.DEFINE_float(
+        "prior_temperature",
+        default=-1.,
+        help="Temperature of relaxation of the discrete prior distribution over latent variables."
+    )
+    flags.DEFINE_float(
+        "relaxed_state_encoder_temperature",
+        default=-1.,
+        help="Temperature of the binary concrete relaxation encoder distribution over latent states."
+    )
+    flags.DEFINE_float(
+        "relaxed_state_prior_temperature",
+        default=-1.,
+        help="Temperature of the binary concrete relaxation prior distribution over latent states."
+    )
+    flags.DEFINE_bool(
+        "latent_policy",
+        default=False,
+        help="If set, VAEs for state discretization will learn a abstraction of the input policy conditioned on"
+             "latent states."
+             "Remark 1: only works for environment with discrete actions."
+             "Remark 2: Action discretizer VAEs always learn a latent policy."
+    )
+    flags.DEFINE_float(
+        "encoder_temperature_decay_rate",
+        default=1e-6,
+        help="Decay rate used to anneal the temperature of the encoder distribution over latent states."
+    )
+    flags.DEFINE_float(
+        "prior_temperature_decay_rate",
+        default=2e-6,
+        help="Decay rate used to anneal the temperature of the prior distribution over latent states."
+    )
+    flags.DEFINE_float(
+        "entropy_regularizer_scale_factor",
+        default=0.,
+        help="Entropy regularizer scale factor."
+    )
+    flags.DEFINE_float(
+        "entropy_regularizer_decay_rate",
+        default=0.,
+        help="Decay rate of the scale factor of the entropy regularizer."
+    )
+    flags.DEFINE_float(
+        "entropy_regularizer_scale_factor_min_value",
+        default=0.,
+        help="Minimum value that can take the scale factor of the entropy regularizer."
+    )
+    flags.DEFINE_float(
+        "marginal_entropy_regularizer_ratio",
+        default=0.,
+        lower_bound=0.,
+        upper_bound=0.5,
+        help="Indicates the ratio of the entropy regularizer focusing on enforcing a high marginal state encoder "
+             "entropy "
+             "(experimental)."
+    )
+    flags.DEFINE_float(
+        "kl_annealing_scale_factor",
+        default=1.,
+        help='Scale factor of the KL terms of the ELBO.'
+    )
+    flags.DEFINE_float(
+        "kl_annealing_growth_rate",
+        default=0.,
+        help='Annealing growth rate of the ELBO KL terms scale factor.'
+    )
+    flags.DEFINE_integer(
+        "start_annealing_step",
+        default=int(1e4),
+        help="Step from which temperatures and scale factors start to be annealed."
+    )
+    flags.DEFINE_integer(
+        "max_steps",
+        default=int(1e6),
+        help="Maximum number of training steps."
+    )
+    flags.DEFINE_string(
+        "save_dir",
+        default=".",
+        help="Checkpoints and models save directory."
+    )
+    flags.DEFINE_bool(
+        "display_progressbar",
+        default=False,
+        help="Display progressbar."
+    )
+    flags.DEFINE_bool(
+        "action_discretizer",
+        default=False,
+        help="If set, the (continuous) action space of the environment is also discretized."
+    )
+    flags.DEFINE_bool(
+        "one_output_per_action",
+        default=False,
+        help="Set whether discrete action networks use one output per action or use the latent action as input."
+    )
+    flags.DEFINE_boolean(
+        "do_not_eval",
+        default=False,
+        help="Set this flag to not perform an evaluation of the ELBO (using discrete latent variables) during training."
+    )
+    flags.DEFINE_bool(
+        "full_vae_optimization",
+        default=True,
+        help='Set whether the ELBO is optimized over the whole VAE or if the optimization is only focused on the'
+             'state or action discretizer part of the VAE.'
+    )
+    flags.DEFINE_bool(
+        'relaxed_state_encoding',
+        default=True,
+        help='Use a relaxed encoding of states to optimize the action discretizer part of the VAE.'
+    )
+    flags.DEFINE_integer(
+        "number_of_discrete_actions",
+        default=16,
+        help='Number of discrete actions per latent state to learn.'
+    )
+    flags.DEFINE_string(
+        "load_vae",
+        default='',
+        help='Path of a VAE model already trained to load (saved via the tf.saved_model function).'
+    )
+    flags.DEFINE_multi_integer(
+        "encoder_layers",
+        default=[256, 256],
+        help='Number of units to use for each layer of the encoder.'
+    )
+    flags.DEFINE_multi_integer(
+        "decoder_layers",
+        default=[256, 256],
+        help='Number of units to use for each layer of the decoder.'
+    )
+    flags.DEFINE_multi_integer(
+        "transition_layers",
+        default=[256, 256],
+        help='Number of units to use for each layer of the transition network.'
+    )
+    flags.DEFINE_multi_integer(
+        "label_transition_layers",
+        default=[256, 256],
+        help='Number of units to use for each layer of the label transition network.'
+    )
+    flags.DEFINE_multi_integer(
+        "reward_layers",
+        default=[256, 256],
+        help='Number of units to use for each layer of the reward network.'
+    )
+    flags.DEFINE_multi_integer(
+        "discrete_policy_layers",
+        default=[256, 256],
+        help="Number of units to use for each layer of the simplified policy network."
+    )
+    flags.DEFINE_string(
+        "policy_path",
+        default='',
+        help="Path of a policy in tf.saved_model format."
+    )
+    flags.DEFINE_string(
+        "environment",
+        default='',
+        help="Name of the agent's environment."
+    )
+    flags.DEFINE_string(
+        "env_suite",
+        default='suite_gym',
+        help='Name of the tf_agents environment suite.'
+    )
+    flags.DEFINE_integer(
+        "parallel_env",
+        default=1,
+        help='Number of parallel environments to be used during training.'
+    )
+    flags.DEFINE_float(
+        'state_scaling',
+        default=1.,
+        help='Scaler for the input states of the environment.'
+    )
+    flags.DEFINE_integer(
+        'annealing_period',
+        default=1,
+        help='annealing period'
+    )
+    flags.DEFINE_bool(
+        'aggressive_training',
+        default=False,
+        help='Set whether to perform aggressive inference optimizations.'
+    )
+    flags.DEFINE_integer(
+        'initial_collect_steps',
+        default=int(1e4),
+        help='Number of frames to be collected in the replay buffer before starting the training.'
+    )
+    flags.DEFINE_integer(
+        'seed', help='set seed', default=42
+    )
+    flags.DEFINE_bool(
+        'logs',
+        default=True,
+        help="Enable logging training metrics to the logs directory."
+    )
+    flags.DEFINE_bool(
+        'checkpoint',
+        default=True,
+        help='Enable to save/load checkpoints to/from the save directory.'
+    )
+    flags.DEFINE_float(
+        'epsilon_greedy',
+        default=0.,
+        help='Epsilon value used for training the model via epsilon-greedy with the input policy.'
+    )
+    flags.DEFINE_bool(
+        'decompose_training',
+        default=False,
+        help='Decompose the VAE training in two phases: 1) state space abstraction, 2) action space + policy '
+             'abstraction. '
+    )
+    flags.DEFINE_bool(
+        'prioritized_experience_replay',
+        default=False,
+        help='Use a prioritized experience replay buffer'
+    )
+    flags.DEFINE_float(
+        'priority_exponent',
+        default=.6,
+        help='Exponent parameter for the priority experience replay'
+    )
+    flags.DEFINE_float(
+        'importance_sampling_exponent',
+        default=0.4,
+        help='Exponent parameter of the importance sampling weights used with the prioritized experience replay buffer'
+    )
+    flags.DEFINE_float(
+        'importance_sampling_exponent_growth_rate',
+        default=1e-5,
+        help='Growth rate used for annealing the weighted importance sampling exponent parameter when using a '
+             'prioritized '
+             'experience replay buffer.'
+    )
+    flags.DEFINE_bool(
+        'buckets_based_priority',
+        default=True,
+        help='If set, the priority of the replay buffer use a bucket based priority scheme (where each bucket '
+             'corresponds '
+             'to a discrete latent state). If not, the loss is used '
+    )
+    flags.DEFINE_integer(
+        'collect_steps_per_iteration',
+        help='Collect steps per iteration. If set to a value <= 0, then collect_steps is set to batch_size / 8',
+        default=0
+    )
+    flags.DEFINE_bool(
+        'hyperparameter_search',
+        help='Perform a hyperparameter search with Optuna',
+        default=False
+    )
+    flags.DEFINE_integer(
+        'hyperparameter_search_trials',
+        help='Number of trials for the hyperparameter search',
+        default=100
+    )
+    FLAGS = flags.FLAGS
+
     tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))
     # app.run(main)
