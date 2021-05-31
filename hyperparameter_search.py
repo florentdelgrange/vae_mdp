@@ -187,12 +187,13 @@ def search(
             environment_suite=environment_suite,
             env_name=environment_name,
             labeling_function=reinforcement_learning.labeling_functions[environment_name],
-            num_iterations=training_steps,
+            training_steps=training_steps,
             logs=False,
             use_prioritized_replay_buffer=hyperparameters['prioritized_experience_replay'],
             global_step=global_step,
             optimizer=optimizer,
             eval_steps=0,
+            eval_and_save_model_interval=training_steps_per_iteration,
             save_directory=None,
             policy_evaluation_num_episodes=30,
             environment=environment,
@@ -203,8 +204,8 @@ def search(
 
         score = train_model(initial_training_steps)
 
-        for _ in range(initial_training_steps, num_steps, training_steps_per_iteration):
-            score = train_model(training_steps_per_iteration)
+        for step in range(initial_training_steps, num_steps, training_steps_per_iteration):
+            score = train_model(step + training_steps_per_iteration)
 
             # Report intermediate objective value.
             trial.report(score, global_step.numpy())

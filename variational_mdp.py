@@ -1269,7 +1269,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             epsilon_greedy: Optional[float] = 0.,
             epsilon_greedy_decay_rate: Optional[float] = -1.,
             discrete_action_space: bool = False,
-            num_iterations: int = int(3e6),
+            training_steps: int = int(3e6),
             initial_collect_steps: int = int(1e4),
             collect_steps_per_iteration: Optional[int] = None,
             replay_buffer_capacity: int = int(1e6),
@@ -1378,7 +1378,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
             if epsilon_greedy_decay_rate == -1:
                 epsilon_greedy_decay_rate = 1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy))
-                                                        / (3. * (num_iterations - start_annealing_step) / 5.))
+                                                        / (3. * (training_steps - start_annealing_step) / 5.))
             epsilon_greedy.assign(
                 epsilon_greedy * tf.pow(1. - epsilon_greedy_decay_rate,
                                         tf.math.maximum(0.,
@@ -1412,7 +1412,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
             print("Initial collect steps...")
             initial_collect_driver.run(env.current_time_step())
 
-        print("Start training.")
+        if tf.equal(global_step, 0):
+            print("Start training")
+        else:
+            print("Resume training")
 
         if policy_evaluation_driver is None and policy_evaluation_num_episodes > 0:
             policy_evaluation_driver = self.initialize_policy_evaluation_driver(
@@ -1455,11 +1458,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if check_numerics:
                 tf.debugging.enable_check_numerics()
 
-        for _ in range(global_step.numpy(), num_iterations):
+        for _ in range(global_step.numpy(), training_steps):
             # Collect a few steps and save them to the replay buffer.
             driver.run(env.current_time_step())
 
             if tf.logical_and(tf.equal(global_step, 0), save_directory is not None):
+                print("Saving base model")
                 save(os.path.join(log_name, 'base'))
 
             additional_training_metrics = {

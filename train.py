@@ -330,7 +330,7 @@ def main(argv):
                                                                                            params[
                                                                                                'latent_policy']) else None),
                                         logs=params['logs'],
-                                        num_iterations=(
+                                        training_steps=(
                                             params['max_steps'] if not params['decompose_training'] or phase == 1
                                             else params['max_steps'] // 2),
                                         display_progressbar=params['display_progressbar'],
