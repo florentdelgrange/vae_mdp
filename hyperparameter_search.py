@@ -53,25 +53,27 @@ def search(
         defaults = {}
         learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
         batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128, 256, 512])
-        collect_steps_per_iteration = trial.suggest_categorical(
-            'collect_steps_per_iteration', [1, 4, 8, 16, 32, 64, 128])
+        neurons = trial.suggest_int('neurons', 16, 512, step=16)
+        hidden = trial.suggest_int('hidden', 1, 5)
+        activation = trial.suggest_categorical('activation', ['relu', 'leaky_relu'])
         latent_state_size = trial.suggest_int(
-            'latent_state_size',
-            specs.label_shape[0] + 1,
-            max(20, specs.label_shape[0] + 8))
+            'latent_state_size', specs.label_shape[0] + 1, max(20, specs.label_shape[0] + 8))
         relaxed_state_encoder_temperature = trial.suggest_float('relaxed_state_encoder_temperature', 0.1, 0.99)
         relaxed_state_prior_temperature = trial.suggest_float('relaxed_state_prior_temperature', 0.1, 0.99)
         kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-5, 1e-2, log=True)
         entropy_regularizer_decay_rate = trial.suggest_float('entropy_regularizer_decay_rate', 1e-5, 1e-2, log=True)
         prioritized_experience_replay = trial.suggest_categorical('prioritized_experience_replay', [True, False])
-        buckets_based_priorities = trial.suggest_categorical('buckets_based_priorities', [True, False])
-        priority_exponent = trial.suggest_float('priority_exponent', 1e-1, 1.)
-        importance_sampling_exponent = trial.suggest_float('importance_sampling_exponent', 1e-1, 1.)
-        importance_sampling_exponent_growth_rate = trial.suggest_float(
-            'importance_sampling_exponent_growth_rate', 1e-5, 1e-2, log=True)
-        neurons = trial.suggest_int('neurons', 16, 512, step=16)
-        hidden = trial.suggest_int('hidden', 1, 5)
-        activation = trial.suggest_categorical('activation', ['relu', 'leaky_relu'])
+        if prioritized_experience_replay:
+            collect_steps_per_iteration = trial.suggest_int(
+                'prioritized_experience_replay_collect_steps_per_iteration', 1, batch_size // 8)
+            buckets_based_priorities = trial.suggest_categorical('buckets_based_priorities', [True, False])
+            priority_exponent = trial.suggest_float('priority_exponent', 1e-1, 1.)
+            importance_sampling_exponent = trial.suggest_float('importance_sampling_exponent', 1e-1, 1.)
+            importance_sampling_exponent_growth_rate = trial.suggest_float(
+                'importance_sampling_exponent_growth_rate', 1e-5, 1e-2, log=True)
+        else:
+            collect_steps_per_iteration = trial.suggest_int(
+                'uniform_replay_buffer_collect_steps_per_iteration', 1, batch_size)
         if fixed_parameters['action_discretizer']:
             encoder_temperature = trial.suggest_float('encoder_temperature', 0.1, 0.99)
             prior_temperature = trial.suggest_float('prior_temperature', 0.1, 0.99)
@@ -82,10 +84,11 @@ def search(
         for attr in ['learning_rate', 'batch_size', 'collect_steps_per_iteration', 'latent_state_size',
                      'relaxed_state_encoder_temperature', 'relaxed_state_prior_temperature',
                      'kl_annealing_growth_rate', 'entropy_regularizer_decay_rate', 'prioritized_experience_replay',
-                     'priority_exponent', 'importance_sampling_exponent', 'importance_sampling_exponent_growth_rate',
-                     'buckets_based_priorities', 'neurons', 'hidden', 'activation'] + [
-                     'encoder_temperature', 'prior_temperature', 'number_of_discrete_actions',
-                     'one_output_per_action'] if fixed_parameters['action_discretizer'] else []:
+                     'neurons', 'hidden', 'activation'] + ([
+                'encoder_temperature', 'prior_temperature', 'number_of_discrete_actions',
+                'one_output_per_action'] if fixed_parameters['action_discretizer'] else []) + ([
+                'priority_exponent', 'importance_sampling_exponent', 'importance_sampling_exponent_growth_rate',
+                'buckets_based_priorities'] if prioritized_experience_replay else []):
             defaults[attr] = locals()[attr]
 
         return defaults
@@ -98,10 +101,6 @@ def search(
         q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(hyperparameters, name='state')
 
         tf.random.set_seed(fixed_parameters['seed'])
-
-        hyperparameters['collect_steps_per_iteration'] = min(
-            hyperparameters['collect_steps_per_iteration'],
-            hyperparameters['batch_size'] // 2)
 
         evaluation_window_size = 5
         vae_mdp = variational_mdp.VariationalMarkovDecisionProcess(
