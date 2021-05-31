@@ -21,9 +21,13 @@ labeling_functions = {
         ], axis=-1),
     'Pendulum-v0':  # safe labels
         lambda observation: tf.stack([
-            # soft: cos(θ) >= cos(π / 6 rad) = cos(2 π - π / 6 rad) = cos(30°) = cos(-30°)
+            # cos(θ) >= cos(π / 3 rad) = cos(2 π - π / 3 rad) = cos(60°) = cos(-60°)
+            observation[..., 0] >= tf.math.cos(math.pi / 3),
+            # cos(θ) >= cos(π / 4 rad) = cos(2 π - π / 4 rad) = cos(45°) = cos(-45°)
+            observation[..., 0] >= tf.math.cos(math.pi / 4),
+            # cos(θ) >= cos(π / 6 rad) = cos(2 π - π / 6 rad) = cos(30°) = cos(-30°)
             observation[..., 0] >= tf.math.cos(math.pi / 6),
-            # hard: cos(θ) >= cos(π / 9 rad) = cos(2 π - π / 9 rad) = cos(20°) = cos(-20°)
+            # cos(θ) >= cos(π / 9 rad) = cos(2 π - π / 9 rad) = cos(20°) = cos(-20°)
             observation[..., 0] >= tf.math.cos(math.pi / 9),
             # first quadrant -- up right
             tf.logical_and(observation[..., 0] >= 0., observation[..., 1] >= 0.),
