@@ -95,6 +95,10 @@ def search(
 
         tf.random.set_seed(fixed_parameters['seed'])
 
+        hyperparameters['collect_steps_per_iteration'] = min(
+            hyperparameters['collect_steps_per_iteration'],
+            hyperparameters['batch_size'] // 2)
+
         evaluation_window_size = 5
         vae_mdp = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=specs.state_shape, action_shape=specs.action_shape,
