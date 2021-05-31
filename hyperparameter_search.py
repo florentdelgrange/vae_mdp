@@ -74,6 +74,12 @@ def search(
         else:
             collect_steps_per_iteration = trial.suggest_int(
                 'uniform_replay_buffer_collect_steps_per_iteration', 1, batch_size)
+            # default values
+            buckets_based_priorities = False
+            priority_exponent = 1.
+            importance_sampling_exponent = 1.
+            importance_sampling_exponent_growth_rate = 1.
+
         if fixed_parameters['action_discretizer']:
             encoder_temperature = trial.suggest_float('encoder_temperature', 0.1, 0.99)
             prior_temperature = trial.suggest_float('prior_temperature', 0.1, 0.99)
@@ -84,11 +90,11 @@ def search(
         for attr in ['learning_rate', 'batch_size', 'collect_steps_per_iteration', 'latent_state_size',
                      'relaxed_state_encoder_temperature', 'relaxed_state_prior_temperature',
                      'kl_annealing_growth_rate', 'entropy_regularizer_decay_rate', 'prioritized_experience_replay',
-                     'neurons', 'hidden', 'activation'] + ([
-                'encoder_temperature', 'prior_temperature', 'number_of_discrete_actions',
-                'one_output_per_action'] if fixed_parameters['action_discretizer'] else []) + ([
-                'priority_exponent', 'importance_sampling_exponent', 'importance_sampling_exponent_growth_rate',
-                'buckets_based_priorities'] if prioritized_experience_replay else []):
+                     'neurons', 'hidden', 'activation', 'priority_exponent', 'importance_sampling_exponent',
+                     'importance_sampling_exponent_growth_rate',
+                     'buckets_based_priorities'] + [
+                        'encoder_temperature', 'prior_temperature', 'number_of_discrete_actions',
+                        'one_output_per_action'] if fixed_parameters['action_discretizer'] else []:
             defaults[attr] = locals()[attr]
 
         return defaults
