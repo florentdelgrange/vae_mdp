@@ -106,6 +106,11 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         if importance_sampling_exponent_growth_rate is not None:
             self.is_exponent_growth_rate = importance_sampling_exponent_growth_rate
 
+        # self.kl_scale_factor = vae_mdp.kl_scale_factor
+        # self.kl_growth_rate = vae_mdp.kl_growth_rate
+        # self.entropy_regularizer_scale_factor = vae_mdp.entropy_regularizer_scale_factor
+        # self.entropy_regularizer_decay_rate = vae_mdp.entropy_regularizer_decay_rate
+
         def clone_model(model: tf.keras.Model, copy_name: str = ''):
             model = model_from_json(model.to_json(), custom_objects={'leaky_relu': tf.nn.leaky_relu})
             for layer in model.layers:
@@ -749,7 +754,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         entropy_regularizer = self.entropy_regularizer(
             latent_state, action, state=state,
-            enforce_latent_state_space_spreading=(self.marginal_entropy_regularizer_ratio > 0.))
+            enforce_latent_state_space_spreading=tf.stop_gradient(self.entropy_regularizer_scale_factor > 0.))
 
         # priority support
         if self.priority_handler is not None and sample_key is not None:
@@ -800,7 +805,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             enforce_latent_state_space_spreading: bool = False
     ):
         if state is not None:
-            state_regularizer = super().entropy_regularizer(state, enforce_latent_state_space_spreading, latent_state)
+            state_regularizer = super().entropy_regularizer(
+                state=state,
+                enforce_latent_space_spreading=enforce_latent_state_space_spreading,
+                latent_states=latent_state)
         else:
             state_regularizer = 0.
         if self.entropy_regularizer_scale_factor < 0. and not enforce_deterministic_action_encoder:
