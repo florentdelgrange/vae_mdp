@@ -1023,9 +1023,14 @@ class VariationalMarkovDecisionProcess(tf.Module):
             env_name: str,
             parallel_environments: bool = False,
             num_parallel_environments: int = 4,
+            collect_steps_per_iteration: int = 8,
             environment_seed: Optional[int] = None,
             use_prioritized_replay_buffer: bool = False,
     ):
+        # reverb replay buffers are not compatible with batched environments
+        parallel_environments = parallel_environments and not use_prioritized_replay_buffer
+        num_parallel_environments = min(num_parallel_environments, collect_steps_per_iteration)
+
         if parallel_environments:
 
             class EnvLoader:
@@ -1112,7 +1117,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     max_priority=10., )
                 priority_handler: PriorityHandler = self.priority_handler
 
-            _add_batch = reverb_utils.ReverbTrajectorySequenceObserver(
+            _add_environment_step = reverb_utils.ReverbTrajectorySequenceObserver(
                 py_client=replay_buffer.py_client,
                 table_name=table_name,
                 sequence_length=2,
@@ -1130,29 +1135,29 @@ class VariationalMarkovDecisionProcess(tf.Module):
                         if self.reward_shape == (1,) else np.zeros(shape=self.reward_shape, dtype=np.float32)),
                 discount=())
 
-            def add_batch(trajectory: Trajectory):
+            def add_environment_step(trajectory: Trajectory):
                 if trajectory.is_first():
-                    _add_batch(trajectory.replace(step_type=ts.StepType.MID))
+                    _add_environment_step(trajectory.replace(step_type=ts.StepType.MID))
                 elif trajectory.is_last():
-                    _add_batch(trajectory.replace(next_step_type=ts.StepType.MID))
+                    _add_environment_step(trajectory.replace(next_step_type=ts.StepType.MID))
                 elif trajectory.is_boundary():
-                    _add_batch(trajectory.replace(next_step_type=ts.StepType.MID))
-                    _add_batch(
+                    _add_environment_step(trajectory.replace(next_step_type=ts.StepType.MID))
+                    _add_environment_step(
                         reset_trajectory.replace(policy_info=trajectory.policy_info, discount=trajectory.discount))
                 else:
-                    _add_batch(trajectory)
+                    _add_environment_step(trajectory)
 
-            add_batch.close = _add_batch.close
+            add_environment_step.close = _add_environment_step.close
 
             driver = py_driver.PyDriver(
                 env=env,
                 policy=py_tf_eager_policy.PyTFEagerPolicy(policy, use_tf_function=True),
-                observers=[add_batch],
+                observers=[add_environment_step],
                 max_steps=collect_steps_per_iteration)
             initial_collect_driver = py_driver.PyDriver(
                 env=env,
                 policy=py_tf_eager_policy.PyTFEagerPolicy(policy, use_tf_function=True),
-                observers=[add_batch],
+                observers=[add_environment_step],
                 max_steps=initial_collect_steps)
 
             replay_buffer_num_frames = replay_buffer.num_frames
@@ -1170,10 +1175,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
             def close():
                 env.close()
-                add_batch.close()
+                add_environment_step.close()
                 reverb_server.stop()
 
         else:
+            num_parallel_environments = env.batch_size
+            collect_steps_per_iteration = collect_steps_per_iteration // num_parallel_environments
+            initial_collect_steps = initial_collect_steps // num_parallel_environments
+            replay_buffer_capacity = replay_buffer_capacity // num_parallel_environments
+
             replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
                 data_spec=trajectory_spec,
                 batch_size=env.batch_size,
@@ -1290,13 +1300,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             policy_evaluation_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
             close_at_the_end: bool = True,
     ):
-        # reverb replay buffers are not compatible with parallel env
-        parallel_environments = parallel_environments and not use_prioritized_replay_buffer
         if collect_steps_per_iteration is None:
             collect_steps_per_iteration = batch_size // 8
-        if parallel_environments:
-            replay_buffer_capacity = replay_buffer_capacity // num_parallel_environments
-            collect_steps_per_iteration = max(1, collect_steps_per_iteration // num_parallel_environments)
 
         if save_directory is not None:
             save_directory = os.path.join(save_directory, 'saves', env_name)
@@ -1356,6 +1361,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 env_name=env_name,
                 parallel_environments=parallel_environments,
                 num_parallel_environments=num_parallel_environments,
+                collect_steps_per_iteration=collect_steps_per_iteration,
                 environment_seed=environment_seed,
                 use_prioritized_replay_buffer=use_prioritized_replay_buffer)
         else:
@@ -1571,7 +1577,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         return loss
 
-    def assign_score_to_model(
+    def assign_score(
             self,
             score: float,
             checkpoint_model: bool,
@@ -1580,9 +1586,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             training_step: int
     ):
         """
-        Stores the input score into the model evaluation window according to its evaluation criterion.
-        If the evaluation window is modified this way and the checkpoint_model flag is set, then the model is
-        checkpointed.
+        Stores the input score into this model evaluation window according to its evaluation criterion.
+        If the evaluation window is modified this way and the checkpoint_model flag is set, then a model checkpoint is
+        stored into the specified save directory.
         """
 
         def _checkpoint():
@@ -1644,9 +1650,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
 
         if eval_policy_driver is not None:
-            avg_rewards = self.eval_policy(eval_policy_driver=eval_policy_driver,
-                                           train_summary_writer=train_summary_writer,
-                                           global_step=global_step)
+            avg_rewards = self.eval_policy(
+                eval_policy_driver=eval_policy_driver,
+                train_summary_writer=train_summary_writer,
+                global_step=global_step)
 
         if train_summary_writer is not None and eval_steps > 0:
             with train_summary_writer.as_default():
@@ -1661,7 +1668,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             print('eval ELBO: ', eval_elbo.result().numpy())
 
         if eval_policy_driver is not None or eval_steps > 0:
-            self.assign_score_to_model(
+            self.assign_score(
                 score=avg_rewards if eval_policy_driver is not None else eval_elbo,
                 checkpoint_model=save_directory is not None and log_name is not None,
                 save_directory=save_directory,
