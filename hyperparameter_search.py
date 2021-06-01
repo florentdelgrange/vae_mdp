@@ -1,4 +1,7 @@
+import logging
 import os
+import sys
+
 import tensorflow as tf
 import optuna
 import importlib
@@ -11,6 +14,9 @@ import variational_mdp
 
 
 def optimize_hyperparameters(study_name, optimize_trial, storage=None, n_trials=100):
+    # Add stream handler of stdout to show the messages
+    optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
+
     if storage is None:
         if not os.path.exists('studies'):
             os.makedirs('studies')
@@ -19,13 +25,13 @@ def optimize_hyperparameters(study_name, optimize_trial, storage=None, n_trials=
     sqlite_timeout = 300
     storage = optuna.storages.RDBStorage(
         storage,
-        engine_kwargs={'connect_args': {'timeout': sqlite_timeout}}
-    )
+        engine_kwargs={'connect_args': {'timeout': sqlite_timeout}})
     study = optuna.create_study(
         study_name=study_name,
         storage=storage,
         load_if_exists=True,
         direction='maximize')
+
     return study.optimize(optimize_trial, n_trials=n_trials)
 
 
@@ -101,6 +107,10 @@ def search(
 
     def optimize_trial(trial):
         hyperparameters = suggest_hyperparameters(trial)
+
+        "Suggested hyperparameters"
+        for key in hyperparameters.keys():
+            print("{}={}".format(key, hyperparameters[key]))
 
         for component_name in ['encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy']:
             hyperparameters[component_name + '_layers'] = hyperparameters['hidden'] * [hyperparameters['neurons']]
@@ -185,8 +195,8 @@ def search(
             labeling_function=reinforcement_learning.labeling_functions[environment_name],
             policy_evaluation_num_episodes=30)
 
-        initial_training_steps = evaluation_window_size * int(1e4)
-        training_steps_per_iteration = int(1e4)
+        initial_training_steps = evaluation_window_size * num_steps // 100
+        training_steps_per_iteration = num_steps // 100
 
         train_model = lambda training_steps: vae_mdp.train_from_policy(
             policy=policy,
