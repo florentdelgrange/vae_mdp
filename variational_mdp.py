@@ -1032,7 +1032,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
     ):
         # reverb replay buffers are not compatible with batched environments
         parallel_environments = parallel_environments and not use_prioritized_replay_buffer
-        num_parallel_environments = min(num_parallel_environments, collect_steps_per_iteration)
+        # get the highest integer from the range(1, num_parallel_env + 1) which can be (integer-)divided by
+        # collect_steps_per_iteration
+        num_parallel_environments = np.argmax(
+            np.gcd(np.arange(1, num_parallel_environments + 1), collect_steps_per_iteration)
+        ) + 1
 
         if parallel_environments:
 
