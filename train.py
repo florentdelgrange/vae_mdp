@@ -652,7 +652,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer(
         'hyperparameter_search_trials',
         help='Number of trials for the hyperparameter search',
-        default=100
+        default=1
     )
     FLAGS = flags.FLAGS
 

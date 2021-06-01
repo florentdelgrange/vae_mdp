@@ -224,6 +224,7 @@ def search(
 
         for step in range(initial_training_steps, num_steps, training_steps_per_iteration):
             score = train_model(step + training_steps_per_iteration)
+            print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
 
             # Report intermediate objective value.
             trial.report(score, global_step.numpy())
