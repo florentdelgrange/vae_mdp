@@ -210,7 +210,7 @@ def search(
             optimizer=optimizer,
             eval_steps=0,
             annealing_period=fixed_parameters['annealing_period'],
-            start_annealing_step=fixed_parameters['start_annealing_step'],
+            start_annealing_step=initial_training_steps,
             eval_and_save_model_interval=training_steps_per_iteration,
             save_directory=None,
             policy_evaluation_num_episodes=30,
