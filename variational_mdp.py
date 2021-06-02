@@ -1547,7 +1547,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if wall_time:
                 _loop_time = time.time() - _loop_time
                 training_loop_time = max(training_loop_time, _loop_time)
-                if time.time() - start_time >= wall_time + 2 * (training_loop_time + save_time):
+                if time.time() - start_time >= wall_time - 2 * (training_loop_time + save_time):
                     print('Wall time exceeded.')
                     break
 
