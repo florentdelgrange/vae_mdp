@@ -105,7 +105,7 @@ def search(
 
         return defaults
 
-    def optimize_trial(trial):
+    def optimize_trial(trial: optuna.Trial):
         hyperparameters = suggest_hyperparameters(trial)
 
         "Suggested hyperparameters"
@@ -204,7 +204,9 @@ def search(
             env_name=environment_name,
             labeling_function=reinforcement_learning.labeling_functions[environment_name],
             training_steps=training_steps,
-            logs=False,
+            logs=True,
+            log_dir=os.path.join('studies', 'logs'),
+            log_name='{:d}'.format(trial.study_id()),
             use_prioritized_replay_buffer=hyperparameters['prioritized_experience_replay'],
             global_step=global_step,
             optimizer=optimizer,
@@ -234,6 +236,9 @@ def search(
                 raise optuna.TrialPruned()
 
         dataset_components.close_fn()
+
+        for key, value in vae_mdp.loss_metrics.items():
+            trial.set_user_attr(key, value.result())
 
         return score
 

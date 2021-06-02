@@ -1291,12 +1291,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
             checkpoint_interval: int = 250,
             eval_steps: int = int(1e3),
             eval_and_save_model_interval: int = int(1e4),
+            logs: bool = True,
+            log_dir: str = 'log',
             log_name: str = 'vae_training',
             annealing_period: int = 0,
             start_annealing_step: int = 0,
             reset_kl_scale_factor: Optional[float] = None,
             reset_entropy_regularizer: Optional[float] = None,
-            logs: bool = True,
             display_progressbar: bool = False,
             save_directory: Optional[str] = '.',
             policy_evaluation_num_episodes: int = 30,
@@ -1326,8 +1327,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         # initialize logs
         if logs:
-            train_log_dir = os.path.join('logs', 'gradient_tape', env_name, log_name)  # , current_time)
-            print('logs path:', train_log_dir)
+            train_log_dir = os.path.join(log_dir, env_name, log_name)
+            print('log path:', train_log_dir)
             if not os.path.exists(train_log_dir) and logs:
                 os.makedirs(train_log_dir)
             train_summary_writer = tf.summary.create_file_writer(train_log_dir)
@@ -1724,7 +1725,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         except ValueError:
             print("Nan values occurred in the environment while the driver was running.")
             print("Consequently, -inf rewards are returned")
-            return -1. * np.inf
+            eval_avg_rewards.result = lambda: -1. * np.inf
 
         eval_policy_driver.observers.remove(eval_avg_rewards)
         eval_policy_driver.run = driver_run
