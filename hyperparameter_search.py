@@ -49,9 +49,9 @@ def search(
     if wall_time is not None:
         _wall_time = wall_time.split(':')
         _wall_time = datetime.timedelta(
-            hours=int(wall_time[0]),
-            minutes=int(wall_time[1]),
-            seconds=int(wall_time[2])).total_seconds()
+            hours=int(_wall_time[0]),
+            minutes=int(_wall_time[1]),
+            seconds=int(_wall_time[2])).total_seconds()
     else:
         _wall_time = 0.
 
