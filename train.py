@@ -158,7 +158,8 @@ def main(argv):
             fixed_parameters=params,
             num_steps=params['max_steps'],
             study_name=params['environment'],
-            n_trials=params['hyperparameter_search_trials'])
+            n_trials=params['hyperparameter_search_trials'],
+            wall_time=None if params['wall_time'] == '.' else params['wall_time'])
 
     tf.random.set_seed(params['seed'])
 
@@ -654,6 +655,10 @@ if __name__ == '__main__':
         help='Number of trials for the hyperparameter search',
         default=1
     )
+    flags.DEFINE_string(
+        'wall_time',
+        help='(optional) walltime, in the format %H:%M:%S',
+        default='.')
     FLAGS = flags.FLAGS
 
     tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))

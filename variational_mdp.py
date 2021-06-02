@@ -5,6 +5,8 @@ from enum import Enum
 from typing import Tuple, Optional, Callable, Dict, Iterator, NamedTuple
 import numpy as np
 import reverb
+import time
+import datetime
 
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -1310,7 +1312,19 @@ class VariationalMarkovDecisionProcess(tf.Module):
             dataset_components: Optional[DatasetComponents] = None,
             policy_evaluation_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
             close_at_the_end: bool = True,
+            start_time: Optional[float] = None,
+            wall_time: Optional[str] = None,
     ):
+        if wall_time is not None:
+            if start_time is None:
+                start_time = time.time()
+
+            wall_time = datetime.datetime.strptime(wall_time, '%H:%M:%S')
+            wall_time = datetime.timedelta(
+                hours=wall_time.hour,
+                minutes=wall_time.minute,
+                seconds=wall_time.second).total_seconds()
+
         if collect_steps_per_iteration is None:
             collect_steps_per_iteration = batch_size // 8
 
@@ -1463,13 +1477,21 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if check_numerics:
                 tf.debugging.enable_check_numerics()
 
+        # wall_time utils
+        save_time = 0.
+        training_loop_time = 0.
+
         for _ in range(global_step.numpy(), training_steps):
+            _loop_time = time.time()
+
             # Collect a few steps and save them to the replay buffer.
             driver.run(env.current_time_step())
 
             if tf.logical_and(tf.equal(global_step, 0), save_directory is not None):
+                _time = time.time()
                 print("Saving base model")
                 save(os.path.join(log_name, 'base'))
+                save_time = time.time() - _time + 10.
 
             additional_training_metrics = {
                 "replay_buffer_frames": replay_buffer.num_frames()} if not parallel_environments else {
@@ -1521,6 +1543,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     best_loss = None
                     prev_loss = None
                     inference_update_steps = 0
+
+            if wall_time:
+                _loop_time = time.time() - _loop_time
+                training_loop_time = max(training_loop_time, _loop_time)
+                if time.time() - start_time >= wall_time + 2 * (training_loop_time + save_time):
+                    print('Wall time exceeded.')
+                    break
 
         # save the final model
         if save_directory is not None:

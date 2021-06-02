@@ -1,6 +1,9 @@
+import datetime
 import logging
 import os
 import sys
+import time
+from typing import Optional
 
 import tensorflow as tf
 import optuna
@@ -39,7 +42,19 @@ def search(
         fixed_parameters: dict,
         num_steps: int = 1e6,
         study_name='study',
-        n_trials=100):
+        n_trials=100,
+        wall_time: Optional[str] = None
+):
+    start_time = time.time()
+    if wall_time is not None:
+        _wall_time = datetime.datetime.strptime(wall_time, '%H:%M:%S')
+        _wall_time = datetime.timedelta(
+            hours=wall_time.hour,
+            minutes=wall_time.minute,
+            seconds=wall_time.second).total_seconds()
+    else:
+        _wall_time = 0.
+
     environment_suite_name = fixed_parameters['env_suite']
     environment_name = fixed_parameters['environment']
     environment_suite = None
@@ -220,11 +235,17 @@ def search(
             dataset_components=dataset_components,
             policy_evaluation_driver=policy_evaluation_driver,
             close_at_the_end=False,
-            display_progressbar=fixed_parameters['display_progressbar'])
+            display_progressbar=fixed_parameters['display_progressbar'],
+            start_time=start_time,
+            wall_time=wall_time)
 
         score = train_model(initial_training_steps)
 
         for step in range(initial_training_steps, num_steps, training_steps_per_iteration):
+
+            if wall_time is not None and time.time() - start_time >= _wall_time:
+                break
+
             score = train_model(step + training_steps_per_iteration)
             print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
 
