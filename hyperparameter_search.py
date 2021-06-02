@@ -57,7 +57,7 @@ def search(
     def suggest_hyperparameters(trial):
 
         defaults = {}
-        learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
+        learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
         batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128, 256, 512])
         neurons = trial.suggest_int('neurons', 16, 512, step=16)
         hidden = trial.suggest_int('hidden', 1, 5)
