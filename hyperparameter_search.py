@@ -227,7 +227,7 @@ def search(
             print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
 
             # Report intermediate objective value.
-            trial.report(score, global_step.numpy())
+            trial.report(score, step=step + training_steps_per_iteration)
 
             # Handle pruning based on the intermediate value.
             if trial.should_prune():
