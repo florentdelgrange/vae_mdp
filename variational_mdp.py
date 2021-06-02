@@ -1719,7 +1719,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
         driver_run_tf_fun = common.function(eval_policy_driver.run)
         eval_policy_driver.run = driver_run_tf_fun if not render else eval_policy_driver.run
         eval_policy_driver.observers.append(eval_avg_rewards)
-        eval_policy_driver.run()
+        try:
+            eval_policy_driver.run()
+        except ValueError:
+            print("Nan values occurred in the environment while the driver was running.")
+            print("Consequently, -inf rewards are returned")
+            return -1. * np.inf
 
         eval_policy_driver.observers.remove(eval_avg_rewards)
         eval_policy_driver.run = driver_run

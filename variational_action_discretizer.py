@@ -543,14 +543,16 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             if self.mixture_components == 1:
                 return tfd.MultivariateNormalDiag(
                     loc=action_mean,
-                    scale_diag=self.scale_activation(action_raw_covariance)
+                    scale_diag=self.scale_activation(action_raw_covariance),
+                    allow_nan_stats=False
                 )
             else:
                 return tfd.MixtureSameFamily(
                     mixture_distribution=tfd.Categorical(logits=cat_logits),
                     components_distribution=tfd.MultivariateNormalDiag(
                         loc=action_mean,
-                        scale_diag=self.scale_activation(action_raw_covariance)
+                        scale_diag=self.scale_activation(action_raw_covariance),
+                        allow_nan_stats=False
                     )
                 )
         else:
@@ -573,13 +575,15 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                         scale_diag=tf.stop_gradient(tf.map_fn(
                             fn=lambda i: self.scale_activation(action_raw_covariance[i, _latent_action[i], ...]),
                             elems=tf.range(tf.shape(_latent_action)[0]),
-                            fn_output_signature=tf.float32)))
+                            fn_output_signature=tf.float32)),
+                        allow_nan_stats=False)
                 else:
                     return tfd.MixtureSameFamily(
                         mixture_distribution=action_categorical,
                         components_distribution=tfd.MultivariateNormalDiag(
                             loc=action_mean,
                             scale_diag=self.scale_activation(action_raw_covariance),
+                            allow_nan_stats=False
                         )
                     )
             else:
@@ -913,9 +917,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     batch_size=tf_env.batch_size
                 )
 
-                self.embed_observation = variational_action_discretizer.get_state_vae().binary_encode
-                self.embed_latent_action = lambda state, action: variational_action_discretizer.decode_action(
-                    state, action, disable_mixture_distribution=True)
+                self.embed_observation = variational_action_discretizer.binary_encode
+                self.embed_latent_action = (
+                    lambda latent_state, latent_action: variational_action_discretizer.decode_action(
+                    latent_state, latent_action, disable_mixture_distribution=True))
                 self.tf_env = tf_env
                 self._labeling_function = labeling_function
                 self.observation_shape, self.action_shape, self.reward_shape = [
@@ -942,7 +947,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 real_action = self._get_embedding(
                     self.embed_latent_action(
                         tf.cast(self._current_latent_state, tf.float32),
-                        tf.one_hot(indices=action, depth=self.action_spec().maximum + 1, dtype=tf.float32)))
+                        tf.one_hot(indices=action, depth=self.action_spec().maximum + 1, axis=-1, dtype=tf.float32)))
+
                 time_step = self.tf_env.step(real_action)
                 label = self.labeling_function(time_step.observation)
 
