@@ -47,11 +47,11 @@ def search(
 ):
     start_time = time.time()
     if wall_time is not None:
-        _wall_time = datetime.datetime.strptime(wall_time, '%H:%M:%S')
+        _wall_time = wall_time.split(':')
         _wall_time = datetime.timedelta(
-            hours=wall_time.hour,
-            minutes=wall_time.minute,
-            seconds=wall_time.second).total_seconds()
+            hours=wall_time[0],
+            minutes=wall_time[1],
+            seconds=wall_time[2]).total_seconds()
     else:
         _wall_time = 0.
 
