@@ -1321,9 +1321,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
             wall_time = wall_time.split(':')
             wall_time = datetime.timedelta(
-                hours=wall_time[0],
-                minutes=wall_time[1],
-                seconds=wall_time[2]).total_seconds()
+                hours=int(wall_time[0]),
+                minutes=int(wall_time[1]),
+                seconds=int(wall_time[2])).total_seconds()
 
         if collect_steps_per_iteration is None:
             collect_steps_per_iteration = batch_size // 8
