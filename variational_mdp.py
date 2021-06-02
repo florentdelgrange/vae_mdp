@@ -1751,7 +1751,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         eval_policy_driver.observers.append(eval_avg_rewards)
         try:
             eval_policy_driver.run()
-        except ValueError:
+        except:
             print("Nan values occurred in the environment while the driver was running.")
             print("Consequently, -inf rewards are returned")
             eval_avg_rewards.result = lambda: -1. * np.inf
