@@ -1780,8 +1780,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
         try:
             eval_policy_driver.run()
         except:
-            print("Nan values occurred in the environment while the driver was running.")
-            print("Consequently, -inf rewards are returned")
+            tf.compat.v1.logging.warning("NaN values occurred in the environment while the driver was running.")
+            tf.compat.v1.logging.warning("Consequently, -inf rewards are returned")
             eval_avg_rewards.result = lambda: -1. * np.inf
 
         eval_policy_driver.observers.remove(eval_avg_rewards)
@@ -1791,7 +1791,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         if train_summary_writer is not None:
             with train_summary_writer.as_default():
                 tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
-        print('eval policy', eval_avg_rewards.result().numpy())
+        tf.print('eval policy', eval_avg_rewards.result())
         return eval_avg_rewards.result()
 
     def wrap_tf_environment(
