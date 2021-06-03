@@ -46,14 +46,6 @@ def search(
         wall_time: Optional[str] = None
 ):
     start_time = time.time()
-    if wall_time is not None:
-        _wall_time = wall_time.split(':')
-        _wall_time = datetime.timedelta(
-            hours=int(_wall_time[0]),
-            minutes=int(_wall_time[1]),
-            seconds=int(_wall_time[2])).total_seconds()
-    else:
-        _wall_time = 0.
 
     environment_suite_name = fixed_parameters['env_suite']
     environment_name = fixed_parameters['environment']
@@ -239,22 +231,25 @@ def search(
             start_time=start_time,
             wall_time=wall_time)
 
-        score = train_model(initial_training_steps)
+        result = train_model(initial_training_steps)
+        score = result['score']
 
-        for step in range(initial_training_steps, num_steps, training_steps_per_iteration):
+        if result['continue']:
+            for step in range(initial_training_steps, num_steps, training_steps_per_iteration):
 
-            if wall_time is not None and time.time() - start_time >= _wall_time:
-                break
+                result = train_model(step + training_steps_per_iteration)
+                score = result['score']
+                print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
 
-            score = train_model(step + training_steps_per_iteration)
-            print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
+                # Report intermediate objective value.
+                trial.report(score, step=step + training_steps_per_iteration)
 
-            # Report intermediate objective value.
-            trial.report(score, step=step + training_steps_per_iteration)
+                # Handle pruning based on the intermediate value.
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
 
-            # Handle pruning based on the intermediate value.
-            if trial.should_prune():
-                raise optuna.TrialPruned()
+                if not result['continue']:
+                    break
 
         dataset_components.close_fn()
 

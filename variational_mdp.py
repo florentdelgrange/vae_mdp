@@ -1504,6 +1504,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         # wall_time utils
         save_time = 0.
         training_loop_time = 0.
+        wall_time_exceeded = False
 
         for _ in range(global_step.numpy(), training_steps):
             _loop_time = time.time()
@@ -1515,7 +1516,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 _time = time.time()
                 print("Saving base model")
                 save(os.path.join(log_name, 'base'))
-                save_time = time.time() - _time + 10.
+                save_time = time.time() - _time
+                save_time += 10.  # epsilon
 
             additional_training_metrics = {
                 "replay_buffer_frames": replay_buffer.num_frames()} if not parallel_environments else {
@@ -1568,10 +1570,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     prev_loss = None
                     inference_update_steps = 0
 
-            if wall_time:
+            if wall_time is not None:
                 _loop_time = time.time() - _loop_time
                 training_loop_time = max(training_loop_time, _loop_time)
-                if time.time() - start_time >= wall_time - 2 * (training_loop_time + save_time):
+                wall_time_exceeded = (time.time() - start_time >= wall_time - 2 * (training_loop_time + save_time))
+                if wall_time_exceeded:
                     print('Wall time exceeded.')
                     break
 
@@ -1581,7 +1584,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
         if close_at_the_end:
             close()
 
-        return tf.reduce_mean(self.evaluation_window)
+        return {'score': tf.reduce_mean(self.evaluation_window),
+                'continue': not (wall_time_exceeded or close_at_the_end)}
 
     def training_step(
             self, dataset_iterator, batch_size, annealing_period, global_step, dataset_size,
