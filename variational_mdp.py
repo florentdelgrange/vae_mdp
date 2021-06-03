@@ -404,7 +404,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
             # change label = 1 to 100 and label = 0 to -100 so that
             # sigmoid(logistic_z[-1]) ~= 1 if label = 1 and sigmoid(logistic_z[-1]) ~= 0 if label = 0
             logits = tf.concat([(label * 2. - 1.) * 1e2, logits], axis=-1)
-        return tfd.Independent(tfd.Logistic(loc=logits / temperature, scale=1. / temperature))
+        return tfd.Independent(tfd.Logistic(
+            loc=logits / temperature,
+            scale=1. / temperature,
+            allow_nan_stats=False, ))
 
     def binary_encode(self, state: tf.Tensor, label: Optional[tf.Tensor] = None) -> tfd.Distribution:
         """
@@ -414,7 +417,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
         logits = self.encoder_network(state)
         if label is not None:
             logits = tf.concat([(label * 2. - 1.) * 1e2, logits], axis=-1)
-        return tfd.Independent(tfd.Bernoulli(logits, name='discrete_state_encoder_distribution'))
+        return tfd.Independent(tfd.Bernoulli(
+            logits=logits,
+            allow_nan_stats=False))
 
     def decode(self, latent_state: tf.Tensor) -> tfd.Distribution:
         """
@@ -434,12 +439,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 return tfd.MultivariateNormalTriL(
                     loc=reconstruction_mean[:, 0, ...],
                     scale_tril=reconstruction_raw_covariance[:, 0, ...],
-                )
+                    allow_nan_stats=False, )
             else:
                 return tfd.MultivariateNormalDiag(
                     loc=reconstruction_mean[:, 0, ...],
-                    scale_diag=reconstruction_raw_covariance[:, 0, ...]
-                )
+                    scale_diag=reconstruction_raw_covariance[:, 0, ...],
+                    allow_nan_stats=False)
         else:
             if self.full_covariance:
                 return tfd.MixtureSameFamily(
@@ -447,31 +452,38 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     components_distribution=tfd.MultivariateNormalTriL(
                         loc=reconstruction_mean,
                         scale_tril=reconstruction_raw_covariance,
+                        allow_nan_stats=False
                     ),
-                )
+                    allow_nan_stats=False)
             else:
                 return tfd.MixtureSameFamily(
                     mixture_distribution=tfd.Categorical(probs=reconstruction_prior_components),
                     components_distribution=tfd.MultivariateNormalDiag(
                         loc=reconstruction_mean,
-                        scale_diag=reconstruction_raw_covariance
+                        scale_diag=reconstruction_raw_covariance,
+                        allow_nan_stats=False
                     ),
-                )
+                    allow_nan_stats=False)
 
     def relaxed_markov_chain_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, temperature: float = 1e-5) -> tfd.Distribution:
         return tfd.JointDistributionSequential([
             tfd.MixtureSameFamily(
-                mixture_distribution=tfd.Categorical(self.latent_policy_network(latent_state)),
+                mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
                 components_distribution=tfd.Independent(
-                    tfd.Bernoulli(tf.transpose(self.action_label_transition_network(latent_state), perm=[0, 2, 1])),
-                    reinterpreted_batch_ndims=1)
+                    tfd.Bernoulli(
+                        logits=tf.transpose(self.action_label_transition_network(latent_state), perm=[0, 2, 1]),
+                        allow_nan_stats=False, ),
+                    reinterpreted_batch_ndims=1),
+                allow_nan_stats=False,
             ), lambda _next_label: tfd.MixtureSameFamily(
-                mixture_distribution=tfd.Categorical(self.latent_policy_network(latent_state)),
+                mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
                 components_distribution=tfd.Independent(tfd.Logistic(
                     loc=(tf.transpose(self.action_transition_network([latent_state, _next_label]), perm=[0, 2, 1])
                          / temperature),
-                    scale=1. / temperature), reinterpreted_batch_ndims=1))])
+                    scale=1. / temperature,
+                    allow_nan_stats=False, ), reinterpreted_batch_ndims=1),
+                allow_nan_stats=False)])
 
     def relaxed_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, action: tf.Tensor, next_label: Optional[tf.Tensor] = None,
@@ -486,29 +498,37 @@ class VariationalMarkovDecisionProcess(tf.Module):
         """
         if next_label is not None:
             next_latent_state_logits = self.transition_network([latent_state, action, next_label])
-            return tfd.Independent(tfd.Logistic(loc=next_latent_state_logits / temperature, scale=1. / temperature))
+            return tfd.Independent(tfd.Logistic(
+                loc=next_latent_state_logits / temperature,
+                scale=1. / temperature),
+                allow_nan_stats=False, )
         else:
             return tfd.JointDistributionSequential([
-                tfd.Independent(tfd.Bernoulli(logits=self.label_transition_network([latent_state, action]))),
+                tfd.Independent(tfd.Bernoulli(
+                    logits=self.label_transition_network([latent_state, action]),
+                    allow_nan_stats=False,
+                    name='label_transition_distribution')),
                 lambda _next_label: tfd.Independent(tfd.Logistic(
                     loc=self.transition_network([latent_state, action, _next_label]) / temperature,
-                    scale=1. / temperature))
-            ])
+                    scale=1. / temperature,
+                    allow_nan_stats=False))])
 
     def discrete_markov_chain_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor) -> tfd.Distribution:
         return tfd.JointDistributionSequential([
             tfd.MixtureSameFamily(
-                mixture_distribution=tfd.Categorical(self.latent_policy_network(latent_state)),
+                mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
                 components_distribution=tfd.Independent(
-                    tfd.Bernoulli(tf.transpose(self.action_label_transition_network(latent_state), perm=[0, 2, 1]),
-                                  dtype=tf.float32),
+                    tfd.Bernoulli(
+                        logits=tf.transpose(self.action_label_transition_network(latent_state), perm=[0, 2, 1]),
+                        dtype=tf.float32,
+                        allow_nan_stats=False),
                     reinterpreted_batch_ndims=1)
             ), lambda _next_label: tfd.MixtureSameFamily(
-                mixture_distribution=tfd.Categorical(self.latent_policy_network(latent_state)),
+                mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
                 components_distribution=tfd.Independent(tfd.Bernoulli(
-                    logits=tf.transpose(self.action_transition_network([latent_state, _next_label]), perm=[0, 2, 1])),
-                    reinterpreted_batch_ndims=1))])
+                    logits=tf.transpose(self.action_transition_network([latent_state, _next_label]), perm=[0, 2, 1]),
+                    allow_nan_stats=False), reinterpreted_batch_ndims=1))])
 
     def discrete_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, action: tf.Tensor, next_label: Optional[tf.Tensor] = None
@@ -519,14 +539,17 @@ class VariationalMarkovDecisionProcess(tf.Module):
         """
         if next_label is not None:
             next_latent_state_logits = self.transition_network([latent_state, action, next_label])
-            return tfd.Independent(tfd.Bernoulli(logits=next_latent_state_logits))
+            return tfd.Independent(tfd.Bernoulli(logits=next_latent_state_logits, allow_nan_stats=False))
         else:
             return tfd.JointDistributionSequential([
-                tfd.Independent(tfd.Bernoulli(logits=self.label_transition_network([latent_state, action]),
-                                              dtype=tf.float32)),
+                tfd.Independent(tfd.Bernoulli(
+                    logits=self.label_transition_network([latent_state, action]),
+                    allow_nan_stats=False,
+                    dtype=tf.float32)),
                 lambda _next_label: tfd.Independent(
-                    tfd.Bernoulli(logits=self.transition_network([latent_state, action, _next_label])))
-            ])
+                    tfd.Bernoulli(
+                        logits=self.transition_network([latent_state, action, _next_label]),
+                        allow_nan_stats=False))])
 
     def reward_probability_distribution(
             self, latent_state: tf.Tensor, action: tf.Tensor, next_latent_state: tf.Tensor) -> tfd.Distribution:
@@ -537,7 +560,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         return tfd.MultivariateNormalDiag(
             loc=reward_mean,
             scale_diag=self.scale_activation(reward_raw_covariance),
-        )
+            allow_nan_stats=False)
 
     def discrete_latent_policy(self, latent_state: tf.Tensor):
         return tfd.OneHotCategorical(logits=self.latent_policy_network(latent_state))
@@ -685,9 +708,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     logits=tf.ones(shape=(batch_size, batch_size))),
                 components_distribution=tfd.Independent(tfd.RelaxedBernoulli(
                     logits=tf.tile(tf.expand_dims(logits, axis=0), [batch_size, 1, 1]),
-                    temperature=self.encoder_temperature), reinterpreted_batch_ndims=1),
+                    temperature=self.encoder_temperature,
+                    # allow_nan_stats=False
+                ), reinterpreted_batch_ndims=1),
                 reparameterize=(latent_states is None),
-                allow_nan_stats=False
+                # allow_nan_stats=False
             )
             if latent_states is None:
                 latent_states = marginal_encoder.sample(batch_size)
@@ -698,6 +723,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
             if 'marginal_encoder_entropy' in self.loss_metrics:
                 self.loss_metrics['marginal_encoder_entropy'](tf.stop_gradient(-1. * marginal_entropy_regularizer))
+            if tf.reduce_any(tf.math.is_nan(marginal_entropy_regularizer)):
+                tf.compat.v1.logging.warning("NaN detected in marginal_encoder_entropy")
+                return 0.
 
             return marginal_entropy_regularizer
         else:
@@ -713,13 +741,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             next_label: tf.Tensor
     ):
         latent_distribution = self.relaxed_encoding(state, label, temperature=self.encoder_temperature)
-        next_latent_distribution = self.relaxed_encoding(next_state, next_label, temperature=self.encoder_temperature)
         latent_state = latent_distribution.sample()
-        next_latent_state = next_latent_distribution.sample()
 
         latent_policy_distribution = self.discrete_latent_policy(latent_state)
-        #  latent_markov_chain_transition_distribution = self.relaxed_latent_transition_probability_distribution(
-        #      latent_state, action=None, temperature=self.prior_temperature)
 
         if 'action_mse' in self.loss_metrics:
             self.loss_metrics['action_mse'](action, latent_policy_distribution.sample())
