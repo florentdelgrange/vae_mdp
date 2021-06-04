@@ -242,6 +242,7 @@ def search(
                 # TODO: find the error triggering NaN values (ValueError?)
                 except:
                     print("The training has stopped prematurely due to an error.")
+                    result['continue'] = False
 
                 score = result['score']
                 print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))

@@ -1678,18 +1678,21 @@ class VariationalMarkovDecisionProcess(tf.Module):
             self.attach_optimizer(optimizer)
             self.priority_handler = priority_handler
 
-        for i in tf.range(tf.shape(self.evaluation_window)[0]):
-            if self.evaluation_criterion is EvaluationCriterion.MEAN:
+        if (self.evaluation_criterion is EvaluationCriterion.MEAN) \
+                or tf.reduce_any(self.evaluation_window == -1. * np.inf):
+            for i in tf.range(tf.shape(self.evaluation_window)[0]):
                 _score = self.evaluation_window[i]
                 self.evaluation_window[i].assign(score)
                 score = _score
-            elif self.evaluation_criterion is EvaluationCriterion.MAX and self.evaluation_window[i] <= score:
-                self.evaluation_window[i].assign(score)
-                if checkpoint_model:
-                    _checkpoint()
+            if checkpoint_model:
+                _checkpoint()
+        elif self.evaluation_criterion is EvaluationCriterion.MAX:
+            for i in tf.range(tf.shape(self.evaluation_window)[0]):
+                if self.evaluation_window[i] <= score:
+                    self.evaluation_window[i].assign(score)
+                    if checkpoint_model:
+                        _checkpoint()
                 break
-        if self.evaluation_criterion is EvaluationCriterion.MEAN and checkpoint_model:
-            _checkpoint()
 
     def eval_and_save(
             self,
