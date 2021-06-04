@@ -149,7 +149,7 @@ def search(
             importance_sampling_exponent=hyperparameters['importance_sampling_exponent'],
             importance_sampling_exponent_growth_rate=hyperparameters['importance_sampling_exponent_growth_rate'],
             evaluation_window_size=evaluation_window_size,
-            evaluation_criterion=variational_mdp.EvaluationCriterion.MEAN)
+            evaluation_criterion=variational_mdp.EvaluationCriterion.MAX)
 
         if fixed_parameters['action_discretizer']:
             q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(
@@ -217,7 +217,7 @@ def search(
             use_prioritized_replay_buffer=hyperparameters['prioritized_experience_replay'],
             global_step=global_step,
             optimizer=optimizer,
-            eval_steps=0,
+            eval_steps=1000,
             annealing_period=fixed_parameters['annealing_period'],
             start_annealing_step=training_steps_per_iteration,
             eval_and_save_model_interval=training_steps_per_iteration,
@@ -237,7 +237,12 @@ def search(
         if result['continue']:
             for step in range(initial_training_steps, num_steps, training_steps_per_iteration):
 
-                result = train_model(step + training_steps_per_iteration)
+                try:
+                    result = train_model(step + training_steps_per_iteration)
+                # TODO: find the error triggering NaN values (ValueError?)
+                except:
+                    print("The training has stopped prematurely due to an error.")
+
                 score = result['score']
                 print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
 
@@ -254,8 +259,8 @@ def search(
         dataset_components.close_fn()
 
         for key, value in vae_mdp.loss_metrics.items():
-            trial.set_user_attr(key, value.result().numpy())
+            trial.set_user_attr(key, float(value.result()))
 
-        return score
+        return float(score)
 
     return optimize_hyperparameters(study_name, optimize_trial, n_trials=n_trials)
