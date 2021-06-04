@@ -254,7 +254,7 @@ def search(
         dataset_components.close_fn()
 
         for key, value in vae_mdp.loss_metrics.items():
-            trial.set_user_attr(key, value.result())
+            trial.set_user_attr(key, value.result().numpy())
 
         return score
 
