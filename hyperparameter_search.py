@@ -71,8 +71,8 @@ def search(
         activation = trial.suggest_categorical('activation', ['relu', 'leaky_relu'])
         latent_state_size = trial.suggest_int(
             'latent_state_size', specs.label_shape[0] + 1, max(20, specs.label_shape[0] + 8))
-        relaxed_state_encoder_temperature = trial.suggest_float('relaxed_state_encoder_temperature', 0.1, 0.99)
-        relaxed_state_prior_temperature = trial.suggest_float('relaxed_state_prior_temperature', 0.1, 0.99)
+        relaxed_state_encoder_temperature = trial.suggest_float('relaxed_state_encoder_temperature', 1e-6, 1.)
+        relaxed_state_prior_temperature = trial.suggest_float('relaxed_state_prior_temperature', 1e-6, 1.)
         kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-5, 1e-2, log=True)
         entropy_regularizer_decay_rate = trial.suggest_float('entropy_regularizer_decay_rate', 1e-5, 1e-2, log=True)
         prioritized_experience_replay = trial.suggest_categorical('prioritized_experience_replay', [True, False])
@@ -94,10 +94,12 @@ def search(
             importance_sampling_exponent_growth_rate = 1.
 
         if fixed_parameters['action_discretizer']:
-            encoder_temperature = trial.suggest_float('encoder_temperature', 0.1, 0.99)
-            prior_temperature = trial.suggest_float('prior_temperature', 0.1, 0.99)
             number_of_discrete_actions = trial.suggest_int(
                 'number_of_discrete_actions', 2, fixed_parameters['number_of_discrete_actions'])
+            encoder_temperature = trial.suggest_float(
+                'encoder_temperature', 1e-6, 1. / (number_of_discrete_actions - 1))
+            prior_temperature = trial.suggest_float(
+                'prior_temperature', 1e-6, 1. / (number_of_discrete_actions - 1))
             one_output_per_action = trial.suggest_categorical('one_output_per_action', [True, False])
 
         for attr in ['learning_rate', 'batch_size', 'collect_steps_per_iteration', 'latent_state_size',
