@@ -1633,7 +1633,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         # eval, save and log
         if global_step.numpy() % eval_and_save_model_interval == 0:
-            print(eval_steps)
             self.eval_and_save(dataset_iterator=dataset_iterator,
                                batch_size=batch_size, eval_steps=eval_steps,
                                global_step=global_step, save_directory=save_directory, log_name=log_name,
