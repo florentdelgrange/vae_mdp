@@ -125,7 +125,7 @@ def search(
 
         tf.random.set_seed(fixed_parameters['seed'])
 
-        evaluation_window_size = 5
+        evaluation_window_size = 10
         vae_mdp = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=specs.state_shape, action_shape=specs.action_shape,
             reward_shape=specs.reward_shape, label_shape=specs.label_shape,
