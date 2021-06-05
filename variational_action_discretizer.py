@@ -452,9 +452,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                             allow_nan_stats=False))])
         else:
             if log_latent_action:
-                action_categorical = tfd.Categorical(logits=latent_action)
+                action_categorical = tfd.Categorical(logits=latent_action, allow_nan_stats=False)
             else:
-                action_categorical = tfd.Categorical(probs=latent_action)
+                action_categorical = tfd.Categorical(probs=latent_action, allow_nan_stats=False)
 
             if relaxed_state_encoding:
                 return tfd.JointDistributionSequential([
@@ -515,9 +515,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 allow_nan_stats=False)
         else:
             if log_latent_action:
-                action_categorical = tfd.Categorical(logits=latent_action)
+                action_categorical = tfd.Categorical(logits=latent_action, allow_nan_stats=False)
             else:
-                action_categorical = tfd.Categorical(probs=latent_action)
+                action_categorical = tfd.Categorical(probs=latent_action, allow_nan_stats=False)
 
             [reward_mean, reward_raw_covariance] = self.action_reward_network([latent_state, next_latent_state])
 
@@ -561,16 +561,17 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     allow_nan_stats=False)
             else:
                 return tfd.MixtureSameFamily(
-                    mixture_distribution=tfd.Categorical(logits=cat_logits),
+                    mixture_distribution=tfd.Categorical(logits=cat_logits, allow_nan_stats=False),
                     components_distribution=tfd.MultivariateNormalDiag(
                         loc=action_mean,
                         scale_diag=self.scale_activation(action_raw_covariance),
-                        allow_nan_stats=False))
+                        allow_nan_stats=False),
+                    allow_nan_stats=False)
         else:
             if log_latent_action:
-                action_categorical = tfd.Categorical(logits=latent_action)
+                action_categorical = tfd.Categorical(logits=latent_action, allow_nan_stats=False)
             else:
-                action_categorical = tfd.Categorical(probs=latent_action)
+                action_categorical = tfd.Categorical(probs=latent_action, allow_nan_stats=False)
 
             [action_mean, action_raw_covariance, cat_logits] = self.action_decoder_network(latent_state)
 
