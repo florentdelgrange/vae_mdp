@@ -851,7 +851,10 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         latent_action_encoder = self.discrete_action_encoding(latent_state, action)
         latent_policy = self.discrete_latent_policy(latent_state)
         latent_action = tf.cast(latent_action_encoder.sample(), tf.float32)
-        rate = latent_action_encoder.kl_divergence(latent_policy)
+        try:
+            rate = latent_action_encoder.kl_divergence(latent_policy)
+        except tf.python.errors.InvalidArgumentError:
+            rate = latent_action_encoder.log_prob(latent_action) - latent_policy.log_prob(latent_action)
 
         # transition probability reconstruction
         transition_distribution = self.discrete_latent_transition_probability_distribution(
