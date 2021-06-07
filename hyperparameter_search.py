@@ -117,7 +117,7 @@ def search(
     def optimize_trial(trial: optuna.Trial):
         hyperparameters = suggest_hyperparameters(trial)
 
-        "Suggested hyperparameters"
+        print("Suggested hyperparameters")
         for key in hyperparameters.keys():
             print("{}={}".format(key, hyperparameters[key]))
 
@@ -241,7 +241,7 @@ def search(
 
                 try:
                     result = train_model(step + training_steps_per_iteration)
-                # TODO: find the error triggering NaN values (ValueError?)
+                # TODO: catch the error triggering NaN values (ValueError?)
                 except:
                     print("The training has stopped prematurely due to an error.")
                     result['continue'] = False
@@ -250,7 +250,7 @@ def search(
                 print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
 
                 # Report intermediate objective value.
-                trial.report(score, step=step + training_steps_per_iteration)
+                trial.report(float(score), step=step + training_steps_per_iteration)
 
                 # Handle pruning based on the intermediate value.
                 if trial.should_prune():
@@ -261,8 +261,8 @@ def search(
 
         dataset_components.close_fn()
 
-        for key, value in vae_mdp.loss_metrics.items():
-            trial.set_user_attr(key, float(value.result()))
+        #  for key, value in vae_mdp.loss_metrics.items():
+        #      trial.set_user_attr(key, float(value.result()))
 
         return float(score)
 
