@@ -27,7 +27,7 @@ class LossPriority(PriorityHandler):
         super().__init__()
         self.replay_buffer = replay_buffer
         self.step_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
-        self.max_priority = tf.Variable(initial_value=max_priority, dtype=tf.float64, name='max_priority')
+        self.max_priority = tf.constant(value=max_priority, dtype=tf.float64, name='max_priority')
         self.smoothness = tf.constant(1., dtype=tf.float64)
         # self.max_loss = tf.Variable(-10., trainable=False, dtype=tf.float64)
         # self.min_loss = tf.Variable(10., trainable=False, dtype=tf.float64)
@@ -49,7 +49,8 @@ class LossPriority(PriorityHandler):
         L = self.max_priority
         x0 = (self.max_loss.result() - self.min_loss.result()) / 2.
         k = L / (self.max_loss.result() - self.min_loss.result())
-        priorities = L / (1. + tf.exp(-k * (loss - x0)))
+        # priorities = L / (1. + tf.exp(-k * (loss - x0)))
+        priorities = L * tf.sigmoid(k * (loss - x0))
 
         self.replay_buffer.update_priorities(keys=keys, priorities=priorities)
         return priorities
@@ -76,7 +77,7 @@ class PriorityBuckets(PriorityHandler):
         self.latent_state_size = latent_state_size
         self._buckets = tf.Variable(
             initial_value=tf.zeros(shape=(size,), dtype=tf.int32), trainable=False, name='bucket')
-        self.max_priority = tf.Variable(initial_value=0., dtype=tf.float64, name='max_priority')
+        self.max_priority = tf.Variable(initial_value=0., dtype=tf.float64, trainable=False, name='max_priority')
 
         self._checkpointer = None
         self._manager = None
@@ -92,7 +93,6 @@ class PriorityBuckets(PriorityHandler):
         priorities = tf.map_fn(
             fn=lambda index: self.step_counter / self._buckets[index],
             elems=indices,
-            parallel_iterations=10,
             fn_output_signature=tf.float64)
         batch_max_priority = tf.reduce_max(priorities)
 
