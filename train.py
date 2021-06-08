@@ -350,7 +350,9 @@ def main(argv):
                                         use_prioritized_replay_buffer=params['prioritized_experience_replay'],
                                         priority_exponent=params['priority_exponent'],
                                         buckets_based_priorities=params['buckets_based_priority'],
-                                        collect_steps_per_iteration=params['collect_steps_per_iteration'])
+                                        collect_steps_per_iteration=params['collect_steps_per_iteration'],
+                                        wall_time=params['wall_time'] if params['wall_time'] != '.' else None,
+                                        memory_limit=params['memory'] if params['memory'] > 0. else None)
 
     return 0
 
@@ -659,6 +661,10 @@ if __name__ == '__main__':
         'wall_time',
         help='(optional) walltime, in the format %H:%M:%S',
         default='.')
+    flags.DEFINE_float(
+        'memory',
+        help='(optional) physical memory limit (in gb)',
+        default=-1.)
     FLAGS = flags.FLAGS
 
     tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))

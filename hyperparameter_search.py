@@ -231,7 +231,8 @@ def search(
             close_at_the_end=False,
             display_progressbar=fixed_parameters['display_progressbar'],
             start_time=start_time,
-            wall_time=wall_time)
+            wall_time=wall_time,
+            memory_limit=fixed_parameters['memory'] if fixed_parameters['memory'] > 0. else None)
 
         result = train_model(initial_training_steps)
         score = result['score']
