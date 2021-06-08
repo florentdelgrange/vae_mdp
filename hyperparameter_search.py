@@ -71,7 +71,7 @@ def search(
         hidden = trial.suggest_int('hidden', 1, 5)
         activation = trial.suggest_categorical('activation', ['relu', 'leaky_relu'])
         latent_state_size = trial.suggest_int(
-            'latent_state_size', specs.label_shape[0] + 1, max(20, specs.label_shape[0] + 8))
+            'latent_state_size', specs.label_shape[0] + 2, max(20, specs.label_shape[0] + 8))
         relaxed_state_encoder_temperature = trial.suggest_float('relaxed_state_encoder_temperature', 1e-6, 1.)
         relaxed_state_prior_temperature = trial.suggest_float('relaxed_state_prior_temperature', 1e-6, 1.)
         kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-5, 1e-2, log=True)
