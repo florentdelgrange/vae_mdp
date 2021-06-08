@@ -34,7 +34,6 @@ class LossPriority(PriorityHandler):
         self._manager = None
 
     def update_priority(self, keys: tf.Tensor, loss: tf.Tensor, **kwargs):
-
         loss = tf.cast(loss, tf.float64)
 
         self.max_loss(tf.reduce_max(loss))
@@ -45,8 +44,8 @@ class LossPriority(PriorityHandler):
         priorities = self.max_priority * tf.sigmoid(k * (loss - x0))
 
         if tf.reduce_any(tf.math.is_nan(priorities)):
-            tf.compat.v1.logging.warning("Priorities with NaN values detected."
-                                         "Resetting priority handler.")
+            tf.print("Priorities with NaN values detected."
+                     "Resetting priority handler.")
             priorities = self.max_priority / 2  # unknown priority
             self.max_loss.reset_states()
             self.min_loss.reset_states()
