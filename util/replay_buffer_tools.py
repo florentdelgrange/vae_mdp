@@ -26,11 +26,7 @@ class LossPriority(PriorityHandler):
     def __init__(self, replay_buffer, max_priority: tf.float64 = 10.):
         super().__init__()
         self.replay_buffer = replay_buffer
-        self.step_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
         self.max_priority = tf.constant(value=max_priority, dtype=tf.float64, name='max_priority')
-        self.smoothness = tf.constant(1., dtype=tf.float64)
-        # self.max_loss = tf.Variable(-10., trainable=False, dtype=tf.float64)
-        # self.min_loss = tf.Variable(10., trainable=False, dtype=tf.float64)
         self.max_loss = tf.keras.metrics.Mean(name='max_loss', dtype=tf.float64)
         self.min_loss = tf.keras.metrics.Mean(name='min_loss', dtype=tf.float64)
 
@@ -39,18 +35,21 @@ class LossPriority(PriorityHandler):
 
     def update_priority(self, keys: tf.Tensor, loss: tf.Tensor, **kwargs):
 
-        batch_size = tf.shape(loss)[0]
-        self.step_counter.assign_add(batch_size)
         loss = tf.cast(loss, tf.float64)
 
         self.max_loss(tf.reduce_max(loss))
         self.min_loss(tf.reduce_min(loss))
 
-        L = self.max_priority
         x0 = (self.max_loss.result() - self.min_loss.result()) / 2.
-        k = L / (self.max_loss.result() - self.min_loss.result())
-        # priorities = L / (1. + tf.exp(-k * (loss - x0)))
-        priorities = L * tf.sigmoid(k * (loss - x0))
+        k = self.max_priority / (self.max_loss.result() - self.min_loss.result())
+        priorities = self.max_priority * tf.sigmoid(k * (loss - x0))
+
+        if tf.reduce_any(tf.math.is_nan(priorities)):
+            tf.compat.v1.logging.warning("Priorities with NaN values detected."
+                                         "Resetting priority handler.")
+            priorities = self.max_priority / 2  # unknown priority
+            self.max_loss.reset_states()
+            self.min_loss.reset_states()
 
         self.replay_buffer.update_priorities(keys=keys, priorities=priorities)
         return priorities
