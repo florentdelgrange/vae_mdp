@@ -208,7 +208,8 @@ def search(
         initial_training_steps = evaluation_window_size * num_steps // 100
         training_steps_per_iteration = num_steps // 100
 
-        train_model = lambda training_steps: vae_mdp.train_from_policy(
+        def train_model(training_steps):
+            return vae_mdp.train_from_policy(
             policy=policy,
             environment_suite=environment_suite,
             env_name=environment_name,
