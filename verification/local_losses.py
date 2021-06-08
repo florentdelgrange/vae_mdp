@@ -1,3 +1,4 @@
+from collections import namedtuple
 from typing import Optional, Callable
 
 import tensorflow as tf
@@ -94,29 +95,47 @@ def estimate_local_losses_from_samples(
         replay_buffer,
         discrete_action=True,
         num_discrete_actions=number_of_discrete_actions)
-    dataset = replay_buffer.as_dataset(
-        num_parallel_calls=tf.data.experimental.AUTOTUNE,
-        num_steps=2,
-        single_deterministic_pass=False  # gather transitions only once
-    ).map(
-        map_func=generator,
-        num_parallel_calls=tf.data.experimental.AUTOTUNE,
-    ).batch(
-        batch_size=replay_buffer.num_frames(),
-        drop_remainder=False)
-    dataset_iterator = iter(dataset)
 
-    state, label, latent_action, reward, next_state, next_label = next(dataset_iterator)
-    latent_state = state_embedding_function(state, label)
-    next_latent_state_no_label = state_embedding_function(next_state, None)
-    next_latent_state = tf.concat([tf.cast(next_label, dtype=tf.int32), next_latent_state_no_label], axis=-1)
+    def sample_from_replay_buffer(single_deterministic_pass = False):
+        dataset = replay_buffer.as_dataset(
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+            num_steps=2,
+            # whether to gather transitions only once or not
+            single_deterministic_pass=single_deterministic_pass
+        ).map(
+            map_func=generator,
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+        ).batch(
+            batch_size=replay_buffer.num_frames(),
+            drop_remainder=single_deterministic_pass)
+        dataset_iterator = iter(dataset)
+
+        state, label, latent_action, reward, next_state, next_label = next(dataset_iterator)
+        latent_state = state_embedding_function(state, label)
+        next_latent_state_no_label = state_embedding_function(next_state, None)
+        next_latent_state = tf.concat([tf.cast(next_label, dtype=tf.int32), next_latent_state_no_label], axis=-1)
+
+        return namedtuple(
+            'ErgodicMDPTransitionSample',
+            ['state', 'label', 'latent_state', 'latent_action', 'reward', 'next_state', 'next_label',
+             'next_latent_state_no_label', 'next_latent_state'])(
+            state, label, latent_state, latent_action, reward, next_state, next_label, next_latent_state_no_label,
+            next_latent_state)
+
+    samples = sample_from_replay_buffer()
+    (state, label, latent_state, latent_action, reward, next_state, next_label, next_latent_state_no_label,
+     next_latent_state) =(
+        samples.state, samples.label, samples.latent_state, samples.latent_action, samples.reward,
+        samples.next_state, samples.next_label, samples.next_latent_state_no_label, samples.next_latent_state)
+
     local_reward_loss = estimate_local_reward_loss(
         state, label, latent_action, reward, next_state, next_label,
         latent_reward_function, latent_state, next_latent_state)
 
     if estimate_transition_function_from_samples:
+        _samples = sample_from_replay_buffer(single_deterministic_pass=True)
         latent_transition_function = TransitionFrequencyEstimator(
-            latent_state, latent_action, next_latent_state,
+            _samples.latent_state, _samples.latent_action, _samples.next_latent_state,
             backup_transition_function=latent_transition_function,
             assert_distribution=assert_transition_distribution)
 
