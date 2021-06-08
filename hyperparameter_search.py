@@ -178,7 +178,7 @@ def search(
         environment = vae_mdp.initialize_environment(
             environment_suite=environment_suite,
             env_name=environment_name,
-            parallel_environments=fixed_parameters['parallel_env'] > 0,
+            parallel_environments=fixed_parameters['parallel_env'] > 1,
             num_parallel_environments=fixed_parameters['parallel_env'],
             collect_steps_per_iteration=hyperparameters['collect_steps_per_iteration'],
             environment_seed=fixed_parameters['seed'],
