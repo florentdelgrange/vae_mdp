@@ -853,7 +853,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         latent_action = tf.cast(latent_action_encoder.sample(), tf.float32)
         try:
             rate = latent_action_encoder.kl_divergence(latent_policy)
-        except tf.python.errors.InvalidArgumentError:
+        except tf.errors.InvalidArgumentError:
             rate = latent_action_encoder.log_prob(latent_action) - latent_policy.log_prob(latent_action)
 
         # transition probability reconstruction
