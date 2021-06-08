@@ -119,10 +119,18 @@ def generate_vae_name(params):
     return vae_name
 
 
-def get_environment_specs(environment_suite, environment_name: str, discrete_action_space: bool):
-    environment = tf_py_environment.TFPyEnvironment(
-        tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
-            [lambda: environment_suite.load(environment_name)]))
+def get_environment_specs(
+        environment_suite,
+        environment_name: str,
+        discrete_action_space: bool,
+        allows_for_parallel_environment: bool = False):
+
+    if allows_for_parallel_environment:
+        environment = tf_py_environment.TFPyEnvironment(
+            tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
+                [lambda: environment_suite.load(environment_name)]))
+    else:
+        environment = tf_py_environment.TFPyEnvironment(environment_suite.load(environment_name))
 
     state_shape, action_shape, reward_shape, label_shape = (
         shape if shape != () else (1,) for shape in (
@@ -211,7 +219,8 @@ def main(argv):
     specs = get_environment_specs(
         environment_suite=environment_suite,
         environment_name=environment_name,
-        discrete_action_space=params['latent_policy'] and not params['action_discretizer'])
+        discrete_action_space=params['latent_policy'] and not params['action_discretizer'],
+        allows_for_parallel_environment=params['parallel_env'] > 1)
 
     state_shape, action_shape, reward_shape, label_shape, time_step_spec, action_spec = (
         specs.state_shape, specs.action_shape, specs.reward_shape, specs.label_shape,
