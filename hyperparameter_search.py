@@ -124,7 +124,8 @@ def search(
 
         for component_name in ['encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy']:
             hyperparameters[component_name + '_layers'] = hyperparameters['hidden'] * [hyperparameters['neurons']]
-        q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(hyperparameters, name='state')
+        q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(
+            hyperparameters, name='variational_mdp')
 
         tf.random.set_seed(fixed_parameters['seed'])
 
@@ -134,7 +135,7 @@ def search(
             reward_shape=specs.reward_shape, label_shape=specs.label_shape,
             encoder_network=q, transition_network=p_t, label_transition_network=p_l_t,
             reward_network=p_r, decoder_network=p_decode,
-            latent_policy_network=latent_policy,
+            latent_policy_network=(latent_policy if fixed_parameters['latent_policy'] else None),
             latent_state_size=hyperparameters['latent_state_size'],
             mixture_components=fixed_parameters['mixture_components'],
             encoder_temperature=hyperparameters['relaxed_state_encoder_temperature'],
@@ -156,7 +157,7 @@ def search(
 
         if fixed_parameters['action_discretizer']:
             q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(
-                hyperparameters, name='action')
+                hyperparameters, name='variational_action_discretizer')
             vae_mdp = variational_action_discretizer.VariationalActionDiscretizer(
                 vae_mdp=vae_mdp,
                 number_of_discrete_actions=hyperparameters['number_of_discrete_actions'],
