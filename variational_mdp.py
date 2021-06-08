@@ -4,6 +4,7 @@ import enum
 from enum import Enum
 from typing import Tuple, Optional, Callable, Dict, Iterator, NamedTuple
 import numpy as np
+import psutil
 import reverb
 import time
 import datetime
@@ -724,7 +725,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if 'marginal_encoder_entropy' in self.loss_metrics:
                 self.loss_metrics['marginal_encoder_entropy'](tf.stop_gradient(-1. * marginal_entropy_regularizer))
             if tf.reduce_any(tf.math.is_nan(marginal_entropy_regularizer)):
-                tf.compat.v1.logging.warning("NaN detected in marginal_encoder_entropy")
+                tf.print("NaN detected in marginal_encoder_entropy")
                 return 0.
 
             return marginal_entropy_regularizer
@@ -1338,6 +1339,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             close_at_the_end: bool = True,
             start_time: Optional[float] = None,
             wall_time: Optional[str] = None,
+            memory_limit: Optional[float] = None
     ):
         if wall_time is not None:
             if start_time is None:
@@ -1383,7 +1385,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 global_step = tf.Variable(0, trainable=False, dtype=tf.int64)
 
         start_step = global_step.numpy()
-        print("Step: {}".format(start_step))
+        print("Step {} on {}.".format(start_step, training_steps))
 
         if start_step < start_annealing_step:
             if reset_kl_scale_factor is not None:
@@ -1505,6 +1507,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
         save_time = 0.
         training_loop_time = 0.
         wall_time_exceeded = False
+        memory_used = 0. if memory_limit is None else psutil.Process().memory_info().rss / (1024 ** 3)
+        memory_growth = 0.
+        memory_limit_exceeded = False
 
         for _ in range(global_step.numpy(), training_steps):
             _loop_time = time.time()
@@ -1531,6 +1536,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 additional_training_metrics['priority_logistic_mean'] = diff / 2
                 additional_training_metrics['priority_logistic_max'] = self.priority_handler.max_loss.result()
                 additional_training_metrics['priority_logistic_min'] = self.priority_handler.min_loss.result()
+            if memory_limit is not None:
+                additional_training_metrics['memory'] = memory_used
 
             loss = self.training_step(
                 dataset_iterator=dataset_iterator, batch_size=batch_size,
@@ -1578,6 +1585,18 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     print('Wall time exceeded.')
                     break
 
+            if memory_limit is not None:
+                if tf.equal(tf.math.mod(global_step, log_interval), 0):
+                    process = psutil.Process()
+                    _memory_used = memory_used
+                    memory_used = process.memory_info().rss / (1024 ** 3)  # in GB
+                    memory_growth = max(memory_growth, memory_used - _memory_used)
+                    memory_limit_exceeded = memory_used + memory_growth > memory_limit
+                    if memory_limit_exceeded:
+                        print("Memory limit exceeded (used={:.3f}, max growth={:.3f}, limit={:.3f})".format(
+                            memory_used, memory_growth, memory_limit))
+                        break
+
         # save the final model
         if save_directory is not None:
             save(os.path.join(log_name, 'step{:d}'.format(global_step.numpy())))
@@ -1585,7 +1604,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             close()
 
         return {'score': tf.reduce_mean(self.evaluation_window),
-                'continue': not (wall_time_exceeded or close_at_the_end)}
+                'continue': not (wall_time_exceeded or close_at_the_end or memory_limit_exceeded)}
 
     def training_step(
             self, dataset_iterator, batch_size, annealing_period, global_step, dataset_size,
@@ -1782,8 +1801,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
         try:
             eval_policy_driver.run()
         except:
-            tf.compat.v1.logging.warning("NaN values occurred in the environment while the driver was running.")
-            tf.compat.v1.logging.warning("Consequently, -inf rewards are returned")
+            tf.print("NaN values occurred in the environment while the driver was running.")
+            tf.print("Consequently, -inf rewards are returned")
             eval_avg_rewards.result = lambda: -1. * np.inf
 
         eval_policy_driver.observers.remove(eval_avg_rewards)
