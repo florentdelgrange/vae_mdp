@@ -667,5 +667,8 @@ if __name__ == '__main__':
         default=-1.)
     FLAGS = flags.FLAGS
 
-    tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))
-    # app.run(main)
+    params = FLAGS.flag_values_dict()
+    if params['parallel_env'] > 1:
+        tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))
+    else:
+        app.run(main)
