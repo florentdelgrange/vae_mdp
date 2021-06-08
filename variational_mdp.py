@@ -755,11 +755,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
             latent_states = tf.clip_by_value(latent_states, clip_value_min=1e-7, clip_value_max=1. - 1e-7)
             marginal_entropy_regularizer = tf.reduce_mean(marginal_encoder.log_prob(latent_states))
 
+            if tf.reduce_any(tf.logical_or(
+                    tf.math.is_nan(marginal_entropy_regularizer),
+                    tf.math.is_inf(marginal_entropy_regularizer))):
+                tf.print("Inf or NaN detected in marginal_encoder_entropy")
+                return 0.
             if 'marginal_encoder_entropy' in self.loss_metrics:
                 self.loss_metrics['marginal_encoder_entropy'](tf.stop_gradient(-1. * marginal_entropy_regularizer))
-            if tf.reduce_any(tf.math.is_nan(marginal_entropy_regularizer)):
-                tf.print("NaN detected in marginal_encoder_entropy")
-                return 0.
 
             return marginal_entropy_regularizer
         else:
