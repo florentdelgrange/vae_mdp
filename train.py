@@ -124,7 +124,6 @@ def get_environment_specs(
         environment_name: str,
         discrete_action_space: bool,
         allows_for_parallel_environment: bool = False):
-
     if allows_for_parallel_environment:
         environment = tf_py_environment.TFPyEnvironment(
             tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
@@ -252,7 +251,8 @@ def main(argv):
                 ),
                 full_optimization=not params['decompose_training'] and params['latent_policy'],
                 importance_sampling_exponent=params['importance_sampling_exponent'],
-                importance_sampling_exponent_growth_rate=params['importance_sampling_exponent_growth_rate']
+                importance_sampling_exponent_growth_rate=params['importance_sampling_exponent_growth_rate'],
+                evaluation_window_size=params['evaluation_window_size']
             )
         else:
             vae = variational_mdp.load(params['load_vae'])
@@ -317,51 +317,50 @@ def main(argv):
 
         policy = policies.SavedTFPolicy(params['policy_path'], time_step_spec, action_spec)
 
-        vae_mdp_model.train_from_policy(policy=policy,
-                                        environment_suite=environment_suite,
-                                        environment_seed=params['seed'],
-                                        env_name=environment_name,
-                                        labeling_function=reinforcement_learning.labeling_functions[environment_name],
-                                        epsilon_greedy=params['epsilon_greedy'] if phase == 0 else 0.,
-                                        batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
-                                        manager=manager, log_name=vae_name,
-                                        start_annealing_step=(
-                                            params['start_annealing_step'] + params['max_steps'] // 2
-                                            if phase == 1 and params['action_discretizer'] else
-                                            params['start_annealing_step']),
-                                        reset_kl_scale_factor=(
-                                            params['kl_annealing_scale_factor'] if phase == 1 and
-                                                                                   (params['action_discretizer'] or
-                                                                                    params['latent_policy']) else None),
-                                        reset_entropy_regularizer=(
-                                            params['entropy_regularizer_scale_factor'] if phase == 1 and
-                                                                                          (params[
-                                                                                               'action_discretizer'] or
-                                                                                           params[
-                                                                                               'latent_policy']) else None),
-                                        logs=params['logs'],
-                                        training_steps=(
-                                            params['max_steps'] if not params['decompose_training'] or phase == 1
-                                            else params['max_steps'] // 2),
-                                        display_progressbar=params['display_progressbar'],
-                                        save_directory=params['save_dir'],
-                                        parallel_environments=params['parallel_env'] > 1,
-                                        num_parallel_environments=params['parallel_env'],
-                                        eval_steps=int(1e3) if not params['do_not_eval'] else 0,
-                                        policy_evaluation_num_episodes=(
-                                            0 if not (params['action_discretizer'] or params['latent_policy'])
-                                                 or (phase == 0 and len(models) > 1) else 30),
-                                        annealing_period=params['annealing_period'],
-                                        aggressive_training=params['aggressive_training'],
-                                        initial_collect_steps=params['initial_collect_steps'],
-                                        discrete_action_space=(
-                                                not params['action_discretizer'] and params['latent_policy']),
-                                        use_prioritized_replay_buffer=params['prioritized_experience_replay'],
-                                        priority_exponent=params['priority_exponent'],
-                                        buckets_based_priorities=params['buckets_based_priority'],
-                                        collect_steps_per_iteration=params['collect_steps_per_iteration'],
-                                        wall_time=params['wall_time'] if params['wall_time'] != '.' else None,
-                                        memory_limit=params['memory'] if params['memory'] > 0. else None)
+        vae_mdp_model.train_from_policy(
+            policy=policy,
+            environment_suite=environment_suite,
+            environment_seed=params['seed'],
+            env_name=environment_name,
+            labeling_function=reinforcement_learning.labeling_functions[environment_name],
+            epsilon_greedy=params['epsilon_greedy'] if phase == 0 else 0.,
+            batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
+            manager=manager, log_name=vae_name,
+            start_annealing_step=(
+                params['start_annealing_step'] + params['max_steps'] // 2
+                if phase == 1 and params['action_discretizer'] else
+                params['start_annealing_step']),
+            reset_kl_scale_factor=(
+                params['kl_annealing_scale_factor'] if phase == 1 and (
+                        params['action_discretizer'] or
+                        params['latent_policy']) else None),
+            reset_entropy_regularizer=(
+                params['entropy_regularizer_scale_factor'] if phase == 1 and (
+                        params['action_discretizer'] or
+                        params['latent_policy']) else None),
+            logs=params['logs'],
+            training_steps=(
+                params['max_steps'] if not params['decompose_training'] or phase == 1
+                else params['max_steps'] // 2),
+            display_progressbar=params['display_progressbar'],
+            save_directory=params['save_dir'],
+            parallel_environments=params['parallel_env'] > 1,
+            num_parallel_environments=params['parallel_env'],
+            eval_steps=int(1e3) if not params['do_not_eval'] else 0,
+            policy_evaluation_num_episodes=(
+                0 if not (params['action_discretizer'] or params['latent_policy'])
+                     or (phase == 0 and len(models) > 1) else 30),
+            annealing_period=params['annealing_period'],
+            aggressive_training=params['aggressive_training'],
+            initial_collect_steps=params['initial_collect_steps'],
+            discrete_action_space=(
+                    not params['action_discretizer'] and params['latent_policy']),
+            use_prioritized_replay_buffer=params['prioritized_experience_replay'],
+            priority_exponent=params['priority_exponent'],
+            buckets_based_priorities=params['buckets_based_priority'],
+            collect_steps_per_iteration=params['collect_steps_per_iteration'],
+            wall_time=params['wall_time'] if params['wall_time'] != '.' else None,
+            memory_limit=params['memory'] if params['memory'] > 0. else None)
 
     return 0
 
@@ -390,7 +389,6 @@ if __name__ == '__main__':
     )
     flags.DEFINE_string(
         "activation",
-        # default="leaky_relu",
         default="relu",
         help="Activation function for all hidden layers.")
     flags.DEFINE_integer("latent_size", default=17, help='Number of bits used for the discrete latent state space.')
@@ -665,6 +663,18 @@ if __name__ == '__main__':
         'hyperparameter_search_trials',
         help='Number of trials for the hyperparameter search',
         default=1
+    )
+    flags.DEFINE_bool(
+        'prune_trials',
+        help='Whether to allow for pruning trials during hyperparameter search or not',
+        default=False,
+    )
+    flags.DEFINE_integer(
+        'evaluation_window_size',
+        help="Size of the evaluation window, i.e., the number of evaluation values to be averaged for computing the"
+             "final score. These values might either correspond to the best or the last values obtained during"
+             "the evaluation or the model.",
+        default=5
     )
     flags.DEFINE_string(
         'wall_time',

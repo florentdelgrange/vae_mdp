@@ -129,7 +129,7 @@ def search(
 
         tf.random.set_seed(fixed_parameters['seed'])
 
-        evaluation_window_size = 10
+        evaluation_window_size = fixed_parameters['evaluation_window_size']
         vae_mdp = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=specs.state_shape, action_shape=specs.action_shape,
             reward_shape=specs.reward_shape, label_shape=specs.label_shape,
@@ -211,31 +211,31 @@ def search(
 
         def train_model(training_steps):
             return vae_mdp.train_from_policy(
-            policy=policy,
-            environment_suite=environment_suite,
-            env_name=environment_name,
-            labeling_function=reinforcement_learning.labeling_functions[environment_name],
-            training_steps=training_steps,
-            logs=True,
-            log_dir=os.path.join('studies', 'logs'),
-            log_name='{:d}'.format(trial._trial_id),
-            use_prioritized_replay_buffer=hyperparameters['prioritized_experience_replay'],
-            global_step=global_step,
-            optimizer=optimizer,
-            eval_steps=1000,
-            annealing_period=fixed_parameters['annealing_period'],
-            start_annealing_step=training_steps_per_iteration,
-            eval_and_save_model_interval=training_steps_per_iteration,
-            save_directory=None,
-            policy_evaluation_num_episodes=30,
-            environment=environment,
-            dataset_components=dataset_components,
-            policy_evaluation_driver=policy_evaluation_driver,
-            close_at_the_end=False,
-            display_progressbar=fixed_parameters['display_progressbar'],
-            start_time=start_time,
-            wall_time=wall_time,
-            memory_limit=fixed_parameters['memory'] if fixed_parameters['memory'] > 0. else None)
+                policy=policy,
+                environment_suite=environment_suite,
+                env_name=environment_name,
+                labeling_function=reinforcement_learning.labeling_functions[environment_name],
+                training_steps=training_steps,
+                logs=True,
+                log_dir=os.path.join('studies', 'logs'),
+                log_name='{:d}'.format(trial._trial_id),
+                use_prioritized_replay_buffer=hyperparameters['prioritized_experience_replay'],
+                global_step=global_step,
+                optimizer=optimizer,
+                eval_steps=1000,
+                annealing_period=fixed_parameters['annealing_period'],
+                start_annealing_step=fixed_parameters['start_annealing_step'],
+                eval_and_save_model_interval=training_steps_per_iteration,
+                save_directory=None,
+                policy_evaluation_num_episodes=30,
+                environment=environment,
+                dataset_components=dataset_components,
+                policy_evaluation_driver=policy_evaluation_driver,
+                close_at_the_end=False,
+                display_progressbar=fixed_parameters['display_progressbar'],
+                start_time=start_time,
+                wall_time=wall_time,
+                memory_limit=fixed_parameters['memory'] if fixed_parameters['memory'] > 0. else None)
 
         result = train_model(initial_training_steps)
         score = result['score']
@@ -245,20 +245,20 @@ def search(
 
                 try:
                     result = train_model(step + training_steps_per_iteration)
-                # TODO: catch the error triggering NaN values (ValueError?)
                 except:
                     print("The training has stopped prematurely due to an error.")
                     result['continue'] = False
 
-                score = result['score']
-                print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
+                if tf.reduce_any(tf.math.is_inf(result['score']), tf.reduce_any(tf.math.is_nan(result['score']))):
+                    score = result['score']
+                    print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
 
-                # Report intermediate objective value.
-                trial.report(float(score), step=step + training_steps_per_iteration)
+                    # Report intermediate objective value.
+                    trial.report(float(score), step=step + training_steps_per_iteration)
 
-                # Handle pruning based on the intermediate value.
-                if trial.should_prune():
-                    raise optuna.TrialPruned()
+                    # Handle pruning based on the intermediate value.
+                    if fixed_parameters['prune_trials'] and trial.should_prune():
+                        raise optuna.TrialPruned()
 
                 if not result['continue']:
                     break
