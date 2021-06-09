@@ -47,7 +47,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             relaxed_state_encoding: bool = False,
             full_optimization: bool = True,
             reconstruction_mixture_components: int = 1,
-            action_regularizer_scaling: float = 1e-1,
+            action_regularizer_scaling: float = 1.,
             importance_sampling_exponent: Optional[float] = None,
             importance_sampling_exponent_growth_rate: Optional[float] = None
     ):
@@ -772,7 +772,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         entropy_regularizer = self.entropy_regularizer(
             latent_state, action, state=state,
-            use_marginal_entropy=self.priority_handler is None or sample_key is None)
+            use_marginal_entropy=True)
 
         # priority support
         if self.priority_handler is not None and sample_key is not None:
