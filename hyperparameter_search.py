@@ -249,16 +249,15 @@ def search(
                     print("The training has stopped prematurely due to an error.")
                     result['continue'] = False
 
-                if tf.reduce_any(tf.math.is_inf(result['score']), tf.reduce_any(tf.math.is_nan(result['score']))):
-                    score = result['score']
-                    print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
+                score = result['score']
+                print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
 
-                    # Report intermediate objective value.
-                    trial.report(float(score), step=step + training_steps_per_iteration)
+                # Report intermediate objective value.
+                trial.report(float(score), step=step + training_steps_per_iteration)
 
-                    # Handle pruning based on the intermediate value.
-                    if fixed_parameters['prune_trials'] and trial.should_prune():
-                        raise optuna.TrialPruned()
+                # Handle pruning based on the intermediate value.
+                if fixed_parameters['prune_trials'] and trial.should_prune():
+                    raise optuna.TrialPruned()
 
                 if not result['continue']:
                     break
