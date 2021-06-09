@@ -150,13 +150,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         state = Input(shape=state_shape, name="state")
         action = Input(shape=action_shape, name="action")
-        self._encoder_softclip = tfb.SoftClip(high=10., low=-10.)
+        self._encoder_softclip = tfb.SoftClip(high=10., low=-10., hinge_softness=10.)
 
         # the evaluation window contains eiter the N max evaluation scores encountered during training if the evaluation
         # criterion is MAX, or the N last evaluation scores encountered if the evaluation criterion is MEAN.
         self.evaluation_criterion = evaluation_criterion
         self.evaluation_window = tf.Variable(
-            initial_value=-1. * np.inf * tf.ones(shape=(evaluation_window_size,)),
+            initial_value=tf.float32.min * tf.ones(shape=(evaluation_window_size,)),
             trainable=False,
             name='evaluation_window')
 
@@ -171,7 +171,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             logits_layer = Dense(
                 units=latent_state_size - self.atomic_props_dims,
                 # allows avoiding exploding logits values and probability errors after applying a sigmoid
-                activation=lambda x: self._encoder_softclip.forward(x),
+                activation=self._encoder_softclip,
                 name='variational_mdp_encoder_latent_distribution_logits'
             )(encoder)
             self.encoder_network = Model(
@@ -684,7 +684,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         entropy_regularizer = self.entropy_regularizer(
             next_state,
-            enforce_latent_space_spreading=tf.stop_gradient(self.entropy_regularizer_scale_factor > 0.),
+            use_marginal_entropy=self.priority_handler is None or sample_key is None,
             latent_states=next_latent_state)
 
         # priority support
@@ -737,7 +737,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
     @tf.function
     def entropy_regularizer(
             self, state: tf.Tensor,
-            enforce_latent_space_spreading: bool = False,
+            use_marginal_entropy: bool = False,
             latent_states: Optional[tf.Tensor] = None
     ):
         logits = self.encoder_network(state)
@@ -747,7 +747,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 self.loss_metrics[metric_label](
                     tf.stop_gradient(tfd.Independent(tfd.Bernoulli(logits=logits)).entropy()))
 
-        if enforce_latent_space_spreading:
+        if use_marginal_entropy:
             batch_size = tf.shape(logits)[0]
             marginal_encoder = tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(
@@ -771,14 +771,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     tf.math.is_nan(marginal_entropy_regularizer),
                     tf.math.is_inf(marginal_entropy_regularizer))):
                 tf.print("Inf or NaN detected in marginal_encoder_entropy")
-                return tfd.Independent(
-                    tfd.Bernoulli(logits=logits, allow_nan_stats=False)).entropy()
-            if 'marginal_encoder_entropy' in self.loss_metrics:
-                self.loss_metrics['marginal_encoder_entropy'](tf.stop_gradient(-1. * marginal_entropy_regularizer))
-
-            return marginal_entropy_regularizer
+                return -1. * tfd.Independent(tfd.Bernoulli(logits=logits, allow_nan_stats=False)).entropy()
+            else:
+                if 'marginal_encoder_entropy' in self.loss_metrics:
+                    self.loss_metrics['marginal_encoder_entropy'](tf.stop_gradient(-1. * marginal_entropy_regularizer))
+                return marginal_entropy_regularizer
         else:
-            return 0.
+            return -1. * tfd.Independent(tfd.Bernoulli(logits=logits, allow_nan_stats=False)).entropy()
 
     def latent_policy_training(
             self,

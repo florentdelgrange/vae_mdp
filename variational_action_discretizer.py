@@ -772,7 +772,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         entropy_regularizer = self.entropy_regularizer(
             latent_state, action, state=state,
-            enforce_latent_state_space_spreading=tf.stop_gradient(self.entropy_regularizer_scale_factor > 0.))
+            use_marginal_entropy=self.priority_handler is None or sample_key is None)
 
         # priority support
         if self.priority_handler is not None and sample_key is not None:
@@ -820,12 +820,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             action: tf.Tensor,
             state: Optional[tf.Tensor] = None,
             enforce_deterministic_action_encoder: bool = False,
-            enforce_latent_state_space_spreading: bool = False
+            use_marginal_entropy: bool = False
     ):
         if state is not None:
             state_regularizer = super().entropy_regularizer(
                 state=state,
-                enforce_latent_space_spreading=enforce_latent_state_space_spreading,
+                use_marginal_entropy=use_marginal_entropy,
                 latent_states=latent_state)
         else:
             state_regularizer = 0.
