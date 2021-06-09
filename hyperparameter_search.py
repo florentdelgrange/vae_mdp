@@ -1,4 +1,3 @@
-import datetime
 import logging
 import os
 import sys
@@ -43,7 +42,7 @@ def search(
         num_steps: int = 1e6,
         study_name='study',
         n_trials=100,
-        wall_time: Optional[str] = None
+        wall_time: Optional[str] = None,
 ):
     start_time = time.time()
 
