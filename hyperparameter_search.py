@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import sys
 import time
@@ -236,8 +237,12 @@ def search(
                 wall_time=wall_time,
                 memory_limit=fixed_parameters['memory'] if fixed_parameters['memory'] > 0. else None)
 
-        result = train_model(initial_training_steps)
-        score = result['score']
+        try:
+            result = train_model(initial_training_steps)
+        except ValueError:
+            raise optuna.TrialPruned()
+
+        score = float(result['score'])
 
         if result['continue']:
             for step in range(initial_training_steps, num_steps, training_steps_per_iteration):
@@ -248,11 +253,14 @@ def search(
                     print("The training has stopped prematurely due to an error.")
                     result['continue'] = False
 
-                score = result['score']
+                score = float(result['score'])
                 print("Step {} intermediate score: {}".format(step + training_steps_per_iteration, score))
 
+                if math.isinf(score) or math.isnan(score):
+                    optuna.TrialPruned()
+
                 # Report intermediate objective value.
-                trial.report(float(score), step=step + training_steps_per_iteration)
+                trial.report(score, step=step + training_steps_per_iteration)
 
                 # Handle pruning based on the intermediate value.
                 if fixed_parameters['prune_trials'] and trial.should_prune():
@@ -266,6 +274,6 @@ def search(
         #  for key, value in vae_mdp.loss_metrics.items():
         #      trial.set_user_attr(key, float(value.result()))
 
-        return float(score)
+        return score
 
     return optimize_hyperparameters(study_name, optimize_trial, n_trials=n_trials)
