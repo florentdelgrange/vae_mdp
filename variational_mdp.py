@@ -442,8 +442,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             tfd.Logistic(
                 loc=logits / temperature,
                 scale=1. / temperature,
-                allow_nan_stats=False,),
-            allow_nan_stats=False)
+                allow_nan_stats=False,))
 
     def binary_encode(self, state: tf.Tensor, label: Optional[tf.Tensor] = None) -> tfd.Distribution:
         """
@@ -456,8 +455,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         return tfd.Independent(
             tfd.Bernoulli(
                 logits=logits,
-                allow_nan_stats=False),
-            allow_nan_stats=False)
+                allow_nan_stats=False))
 
     def decode(self, latent_state: tf.Tensor) -> tfd.Distribution:
         """
@@ -774,8 +772,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     tf.math.is_inf(marginal_entropy_regularizer))):
                 tf.print("Inf or NaN detected in marginal_encoder_entropy")
                 return tfd.Independent(
-                    tfd.Bernoulli(logits=logits, allow_nan_stats=False),
-                    allow_nan_stats=False).entropy()
+                    tfd.Bernoulli(logits=logits, allow_nan_stats=False)).entropy()
             if 'marginal_encoder_entropy' in self.loss_metrics:
                 self.loss_metrics['marginal_encoder_entropy'](tf.stop_gradient(-1. * marginal_entropy_regularizer))
 

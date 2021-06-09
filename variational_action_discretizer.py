@@ -766,7 +766,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self.reward_probability_distribution(
                 latent_state, log_latent_action, next_latent_state, log_latent_action=True),
             self.decode(next_latent_state)
-        ], allow_nan_stats=False)
+        ])
 
         distortion = -1. * reconstruction_distribution.log_prob(action, reward, next_state)
 
