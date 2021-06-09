@@ -161,12 +161,13 @@ def main(argv):
     params = FLAGS.flag_values_dict()
 
     if params['hyperparameter_search']:
-        return hyperparameter_search.search(
+        hyperparameter_search.search(
             fixed_parameters=params,
             num_steps=params['max_steps'],
             study_name=params['environment'],
             n_trials=params['hyperparameter_search_trials'],
             wall_time=None if params['wall_time'] == '.' else params['wall_time'])
+        return 0
 
     tf.random.set_seed(params['seed'])
 
@@ -686,8 +687,4 @@ if __name__ == '__main__':
         default=-1.)
     FLAGS = flags.FLAGS
 
-    params = FLAGS.flag_values_dict()
-    if params['parallel_env'] > 1:
-        tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))
-    else:
-        app.run(main)
+    tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))
