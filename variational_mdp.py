@@ -8,6 +8,7 @@ import psutil
 import reverb
 import time
 import datetime
+import gc
 
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -150,13 +151,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         state = Input(shape=state_shape, name="state")
         action = Input(shape=action_shape, name="action")
-        self._encoder_softclip = tfb.SoftClip(high=10., low=-10., hinge_softness=10.)
+        self._encoder_softclip = tfb.SoftClip(high=10., low=-10.)  # , hinge_softness=10.)
 
         # the evaluation window contains eiter the N max evaluation scores encountered during training if the evaluation
         # criterion is MAX, or the N last evaluation scores encountered if the evaluation criterion is MEAN.
         self.evaluation_criterion = evaluation_criterion
         self.evaluation_window = tf.Variable(
-            initial_value=tf.float32.min * tf.ones(shape=(evaluation_window_size,)),
+            initial_value=-1. * np.inf * tf.ones(shape=(evaluation_window_size,)),
             trainable=False,
             name='evaluation_window')
 
@@ -442,7 +443,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             tfd.Logistic(
                 loc=logits / temperature,
                 scale=1. / temperature,
-                allow_nan_stats=False,))
+                allow_nan_stats=False, ))
 
     def binary_encode(self, state: tf.Tensor, label: Optional[tf.Tensor] = None) -> tfd.Distribution:
         """
@@ -539,7 +540,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     loc=next_latent_state_logits / temperature,
                     scale=1. / temperature,
                     allow_nan_stats=False),
-                allow_nan_stats=False,)
+                allow_nan_stats=False, )
         else:
             return tfd.JointDistributionSequential([
                 tfd.Independent(
@@ -684,7 +685,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         entropy_regularizer = self.entropy_regularizer(
             next_state,
-            use_marginal_entropy=self.priority_handler is None or sample_key is None,
+            # use_marginal_entropy=self.priority_handler is None or sample_key is None,
+            use_marginal_entropy=True,
             latent_states=next_latent_state)
 
         # priority support
@@ -1644,6 +1646,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                             memory_used, memory_growth, memory_limit))
                         break
 
+            if tf.reduce_any(tf.logical_or(tf.math.is_nan(loss), tf.math.is_inf(loss))):
+                raise ValueError("Loss is NaN or Inf.")
+
         # save the final model
         if save_directory is not None:
             save(os.path.join(log_name, 'step{:d}'.format(global_step.numpy())))
@@ -1815,6 +1820,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 model_name=log_name,
                 training_step=global_step.numpy())
 
+        gc.collect()
+
         return eval_elbo
 
     def eval_policy(
@@ -1849,7 +1856,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             eval_policy_driver.run()
         except:
             tf.print("NaN values occurred in the environment while the driver was running.")
-            eval_avg_rewards.result = lambda: tf.float32.min
+            eval_avg_rewards.result = lambda: -1. * np.inf
 
         eval_policy_driver.observers.remove(eval_avg_rewards)
         eval_policy_driver.run = driver_run
@@ -1859,6 +1866,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             with train_summary_writer.as_default():
                 tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
         tf.print('eval policy', eval_avg_rewards.result())
+
         return eval_avg_rewards.result()
 
     def wrap_tf_environment(
