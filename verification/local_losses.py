@@ -1,5 +1,6 @@
 from collections import namedtuple
 from typing import Optional, Callable
+import time
 
 import tensorflow as tf
 from tf_agents.environments.tf_py_environment import TFPyEnvironment
@@ -29,7 +30,9 @@ def estimate_local_losses_from_samples(
         labeling_function: Callable[[tf.Tensor], tf.Tensor],
         latent_transition_function: Callable[[tf.Tensor, tf.Tensor], tfd.Distribution] = None,
         estimate_transition_function_from_samples: bool = False,
-        assert_transition_distribution: bool = False
+        assert_transition_distribution: bool = False,
+        fill_in_replay_buffer: bool = True,
+        replay_buffer_max_frames: int = int(1e5)
 ):
     """
     Estimates reward and probability local losses from samples.
@@ -59,7 +62,11 @@ def estimate_local_losses_from_samples(
                                                       way stores the probability matrix into a sparse tensor.
     :param assert_transition_distribution: whether to assert the transition function is correctly computed or not
     :return: a dictionary containing an estimation of the local reward and probability losses
+    :param fill_in_replay_buffer: whether to fill in the replay buffer or not before the loss estimation.
+    :param replay_buffer_max_frames: maximum number of frames to be contained in the replay buffer.
     """
+    start_time = time.time()
+
     if latent_transition_function is None and not estimate_transition_function_from_samples:
         raise ValueError('no latent transition function provided')
     # generate environment wrapper for discrete actions
@@ -77,17 +84,27 @@ def estimate_local_losses_from_samples(
     trajectory_spec = trajectory.from_transition(
         time_step=latent_environment.time_step_spec(),
         action_step=policy.policy_step_spec,
-        next_time_step=latent_environment.time_step_spec())
+        next_time_step=latent_environment.time_step_spec(),
+    )
     # replay_buffer
     replay_buffer = TFUniformReplayBuffer(
         data_spec=trajectory_spec,
         batch_size=latent_environment.batch_size,
-        max_length=steps)
+        max_length=replay_buffer_max_frames,
+        # to retrieve all the transitions when single_deterministic_pass is True
+        dataset_window_shift=1,
+        dataset_drop_remainder=True)
     # initialize driver
-    driver = DynamicStepDriver(latent_environment, policy, num_steps=steps, observers=[replay_buffer.add_batch])
+    driver = DynamicStepDriver(
+        env=latent_environment,
+        policy=policy,
+        num_steps=replay_buffer_max_frames if fill_in_replay_buffer else steps,
+        observers=[replay_buffer.add_batch])
     driver.run = common.function(driver.run)
     # collect environment steps
     driver.run()
+
+    collect_time = time.time() - start_time
 
     # retrieve dataset from the replay buffer
     generator = ErgodicMDPTransitionGenerator(
@@ -96,18 +113,18 @@ def estimate_local_losses_from_samples(
         discrete_action=True,
         num_discrete_actions=number_of_discrete_actions)
 
-    def sample_from_replay_buffer(single_deterministic_pass = False):
+    def sample_from_replay_buffer(num_transitions: Optional[int] = None, single_deterministic_pass=False):
         dataset = replay_buffer.as_dataset(
             num_parallel_calls=tf.data.experimental.AUTOTUNE,
             num_steps=2,
             # whether to gather transitions only once or not
-            single_deterministic_pass=single_deterministic_pass
+            single_deterministic_pass=single_deterministic_pass,
         ).map(
             map_func=generator,
             num_parallel_calls=tf.data.experimental.AUTOTUNE,
         ).batch(
-            batch_size=replay_buffer.num_frames(),
-            drop_remainder=single_deterministic_pass)
+            batch_size=num_transitions if num_transitions else replay_buffer.num_frames(),
+            drop_remainder=False)
         dataset_iterator = iter(dataset)
 
         state, label, latent_action, reward, next_state, next_label = next(dataset_iterator)
@@ -118,13 +135,15 @@ def estimate_local_losses_from_samples(
         return namedtuple(
             'ErgodicMDPTransitionSample',
             ['state', 'label', 'latent_state', 'latent_action', 'reward', 'next_state', 'next_label',
-             'next_latent_state_no_label', 'next_latent_state'])(
+             'next_latent_state_no_label', 'next_latent_state', 'batch_size'])(
             state, label, latent_state, latent_action, reward, next_state, next_label, next_latent_state_no_label,
-            next_latent_state)
+            next_latent_state, tf.shape(state)[0])
 
-    samples = sample_from_replay_buffer()
+    local_reward_loss_time = time.time()
+
+    samples = sample_from_replay_buffer(num_transitions=steps)
     (state, label, latent_state, latent_action, reward, next_state, next_label, next_latent_state_no_label,
-     next_latent_state) =(
+     next_latent_state) = (
         samples.state, samples.label, samples.latent_state, samples.latent_action, samples.reward,
         samples.next_state, samples.next_label, samples.next_latent_state_no_label, samples.next_latent_state)
 
@@ -132,18 +151,45 @@ def estimate_local_losses_from_samples(
         state, label, latent_action, reward, next_state, next_label,
         latent_reward_function, latent_state, next_latent_state)
 
+    local_reward_loss_time = time.time() - local_reward_loss_time
+
     if estimate_transition_function_from_samples:
+
+        transition_function_estimation_time = time.time()
         _samples = sample_from_replay_buffer(single_deterministic_pass=True)
+        _transition_function_estimation_num_frames = _samples.batch_size
         latent_transition_function = TransitionFrequencyEstimator(
             _samples.latent_state, _samples.latent_action, _samples.next_latent_state,
             backup_transition_function=latent_transition_function,
             assert_distribution=assert_transition_distribution)
 
+        transition_function_estimation_time = time.time() - transition_function_estimation_time
+    else:
+        _transition_function_estimation_num_frames = 0
+        transition_function_estimation_time = 0
+
+    local_probability_loss_time = time.time()
+
     local_probability_loss = estimate_local_probability_loss(
         state, label, latent_action, next_state, next_label,
         latent_transition_function, latent_state, next_latent_state_no_label)
 
-    return {'local_reward_loss': local_reward_loss, 'local_probability_loss': local_probability_loss}
+    local_probability_loss_time = time.time() - local_probability_loss_time
+
+    def print_time_metrics():
+        print("Time to fill in the Replay Buffer ({:d} frames): {:.3f}".format(replay_buffer_max_frames, collect_time))
+        print("Time to estimate the local reward loss function (from {:d} transitions):"
+              " {:.3f}".format(steps, local_reward_loss_time))
+        if estimate_transition_function_from_samples:
+            print("Time to estimate the probability transition function (from {:d} transitions): {:3f}".format(
+                _transition_function_estimation_num_frames, transition_function_estimation_time))
+        print("Time to estimate the local probability loss function (from {:d} transitions):"
+              " {:.3f}".format(steps, local_probability_loss_time))
+
+    return namedtuple(
+        'LocalLossesEstimationMetrics',
+        ['local_reward_loss', 'local_probability_loss', 'print_time_metrics'])(
+          local_reward_loss,   local_probability_loss,   print_time_metrics)
 
 
 def generate_binary_latent_state_space(latent_state_size):

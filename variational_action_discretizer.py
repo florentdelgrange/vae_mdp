@@ -1046,29 +1046,31 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         _labeling_function = dataset_generator.ergodic_batched_labeling_function(labeling_function)
 
         return estimate_local_losses_from_samples(
-            environment=environment,
-            steps=steps,
-            latent_policy=self.get_latent_policy(),
-            latent_state_size=self.latent_state_size,
+            environment=environment, latent_policy=self.get_latent_policy(),
+            steps=steps, latent_state_size=self.latent_state_size,
             number_of_discrete_actions=self.number_of_discrete_actions,
             state_embedding_function=lambda state, label: self.binary_encode(
-                state, tf.cast(label, dtype=tf.float32) if label is not None else label).mode(),
-            action_embedding_function=lambda state, latent_action: self.decode_action(
+                state, tf.cast(label,
+                               dtype=tf.float32) if label is not None else label).mode(),
+            action_embedding_function=lambda state,
+                                             latent_action: self.decode_action(
                 latent_state=tf.cast(
                     self.binary_encode(state, _labeling_function(state)).mode(),
                     dtype=tf.float32),
                 latent_action=tf.cast(
-                    tf.one_hot(latent_action, depth=self.number_of_discrete_actions),
+                    tf.one_hot(latent_action,
+                               depth=self.number_of_discrete_actions),
                     dtype=tf.float32),
                 disable_mixture_distribution=True).mode(),
-            latent_reward_function=lambda latent_state, latent_action, next_latent_state: (
+            latent_reward_function=lambda latent_state, latent_action,
+                                          next_latent_state: (
                 self.reward_probability_distribution(
                     latent_state=tf.cast(latent_state, dtype=tf.float32),
                     latent_action=tf.cast(latent_action, dtype=tf.float32),
-                    next_latent_state=tf.cast(next_latent_state, dtype=tf.float32),
+                    next_latent_state=tf.cast(next_latent_state,
+                                              dtype=tf.float32),
                     disable_mixture_distribution=True).mode()),
-            labeling_function=labeling_function,
-            latent_transition_function=(
+            labeling_function=labeling_function, latent_transition_function=(
                 lambda latent_state, latent_action:
                 self.discrete_latent_transition_probability_distribution(
                     latent_state=tf.cast(latent_state, tf.float32),

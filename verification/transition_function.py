@@ -17,7 +17,7 @@ class TransitionFrequencyEstimator:
             assert_distribution: bool = False
     ):
         self.latent_state_size = tf.shape(latent_states)[1]  # first axis is batch, second is latent state size
-        self.num_states = 2 ** self.latent_state_size - 1
+        self.num_states = 2 ** self.latent_state_size
         self.num_actions = tf.shape(latent_actions)[1]  # first axis is batch, second is a one-hot vector
         self.backup_transition_function = backup_transition_function
 
