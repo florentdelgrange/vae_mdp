@@ -239,7 +239,8 @@ def search(
 
         try:
             result = train_model(initial_training_steps)
-        except ValueError:
+        except ValueError as ve:
+            print(ve)
             raise optuna.TrialPruned()
 
         score = float(result['score'])
@@ -249,8 +250,9 @@ def search(
 
                 try:
                     result = train_model(step + training_steps_per_iteration)
-                except:
-                    print("The training has stopped prematurely due to an error.")
+                except Exception as e:
+                    print("The training has stopped prematurely due to the following error:")
+                    print(e)
                     result['continue'] = False
 
                 score = float(result['score'])

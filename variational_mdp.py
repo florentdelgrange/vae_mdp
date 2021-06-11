@@ -1728,7 +1728,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             training_step: int
     ):
         """
-        Stores the input score into this model evaluation window according to its evaluation criterion.
+        Stores the input score into the model evaluation window according to its evaluation criterion.
         If the evaluation window is modified this way and the checkpoint_model flag is set, then a model checkpoint is
         stored into the specified save directory.
         """
@@ -1854,8 +1854,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
         eval_policy_driver.observers.append(eval_avg_rewards)
         try:
             eval_policy_driver.run()
-        except:
-            tf.print("NaN values occurred in the environment while the driver was running.")
+        except Exception as e:
+            tf.print("NaN values occurred in the environment while the driver was running:")
+            tf.print(e)
             eval_avg_rewards.result = lambda: -1. * np.inf
 
         eval_policy_driver.observers.remove(eval_avg_rewards)
