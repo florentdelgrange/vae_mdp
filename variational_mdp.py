@@ -386,7 +386,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     [latent_state, next_label])
                 x = self.transition_network.get_layer('variational_mdp_transition_network_core')(x)
                 x = self.transition_network.get_layer(
-                    'variational_mdp_variational_mdp_transition_network_raw_output_layer')(x)
+                    'variational_mdp_transition_network_raw_output_layer')(x)
                 x = self.transition_network.get_layer('variational_mdp_transition_network_output_layer_reshape')(x)
                 self.action_transition_network = Model(
                     inputs=[latent_state, next_label], outputs=x, name='variational_mdp_action_transition_network')
