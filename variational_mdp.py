@@ -172,7 +172,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             logits_layer = Dense(
                 units=latent_state_size - self.atomic_props_dims,
                 # allows avoiding exploding logits values and probability errors after applying a sigmoid
-                activation=self._encoder_softclip,
+                activation=lambda x: self._encoder_softclip(x),
                 name='variational_mdp_encoder_latent_distribution_logits'
             )(encoder)
             self.encoder_network = Model(
@@ -673,14 +673,14 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 self.discrete_latent_policy(latent_state),
                 lambda _action: self.reward_probability_distribution(latent_state, _action, next_latent_state),
                 self.decode(next_latent_state)
-            ], allow_nan_stats=False)
+            ])
             distortion = -1. * reconstruction_distribution.log_prob(action, reward, next_state)
         else:
             # log P(r, s' | z, a, z') = log P(r | z, a, z') + log P(s' | z')
             reconstruction_distribution = tfd.JointDistributionSequential([
                 self.reward_probability_distribution(latent_state, action, next_latent_state),
                 self.decode(next_latent_state)
-            ], allow_nan_stats=False)
+            ])
             distortion = -1. * reconstruction_distribution.log_prob(reward, next_state)
 
         entropy_regularizer = self.entropy_regularizer(
