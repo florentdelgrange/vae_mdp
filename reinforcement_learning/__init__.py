@@ -65,6 +65,16 @@ labeling_functions = {
         observation[..., 0] >= 0.5,  # has reached the goal
         observation[..., 0] >= -.5,  # right-hand side -- positive slope
         observation[..., 1] >= 0.,  # is going forward
+    ], axis=-1),
+    'Acrobot-v1': lambda observation: tf.stack([
+        # objective
+        -1. * observation[0] - observation[2] * observation[0] + observation[3] * observation[1] > 1.,
+        observation[..., 0] >= 0.,  # cos of the first pendulum angle
+        observation[..., 1] >= 0.,  # sin of the first pendulum angle
+        observation[..., 2] >= 0.,  # cos of the second pendulum angle
+        observation[..., 3] >= 0.,  # cos of the first pendulum angle
+        observation[..., 4] >= 0.,  # angular velocity of the first pendulum
+        observation[..., 5] >= 0.   # angular velocity of the second pendulum
     ], axis=-1)
 }
 
