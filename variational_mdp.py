@@ -1762,7 +1762,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     self.evaluation_window[i].assign(score)
                     if checkpoint_model:
                         _checkpoint()
-                break
+                    break
 
     def eval_and_save(
             self,
