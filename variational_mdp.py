@@ -174,8 +174,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
             transition_network._name = 'variational_mdp_transition_network_core'
 
             # Encoder network
-            if time_stacked_states and state_encoder_pre_processing_network is not None:
-                encoder = TimeDistributed(state_encoder_pre_processing_network)(state)
+            if time_stacked_states:
+                if state_encoder_pre_processing_network is not None:
+                    encoder = TimeDistributed(state_encoder_pre_processing_network)(state)
+                else:
+                    encoder = state
                 encoder = Flatten()(encoder)
                 encoder = encoder_network(encoder)
             else:
