@@ -9,6 +9,7 @@ from absl import app
 from absl import flags
 from tensorflow.keras.layers import Dense
 from tensorflow.python.keras import Sequential
+from tensorflow.python.keras.layers import TimeDistributed, Flatten
 from tf_agents.environments import tf_py_environment
 from tf_agents.specs import tensor_spec
 
@@ -21,15 +22,17 @@ import variational_mdp
 
 def generate_network_components(params, name=''):
     activation = getattr(tf.nn, params["activation"])
+    component_names = ['encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy',
+                       'state_encoder_pre_processing', 'state_decoder_pre_processing']
     network_components = []
 
-    for component_name in ['encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy']:
+    for component_name in component_names:
         x = Sequential(name="{}_{}_network_body".format(name, component_name))
         for i, units in enumerate(params[component_name + '_layers']):
             x.add(Dense(units, activation=activation, name="{}_{}_{}".format(name, component_name, i)))
         network_components.append(x)
 
-    return network_components
+    return namedtuple("VAEArchitecture", component_names)(*network_components)
 
 
 def generate_vae_name(params):
@@ -228,12 +231,20 @@ def main(argv):
 
     def build_vae_model():
         if params['load_vae'] == '':
-            q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(params, name='state')
+            network = generate_network_components(params, name='state')
             return variational_mdp.VariationalMarkovDecisionProcess(
                 state_shape=state_shape, action_shape=action_shape, reward_shape=reward_shape, label_shape=label_shape,
-                encoder_network=q, transition_network=p_t, label_transition_network=p_l_t,
-                reward_network=p_r, decoder_network=p_decode,
-                latent_policy_network=(latent_policy if params['latent_policy'] else None),
+                encoder_network=network.encoder,
+                state_encoder_pre_processing_network=(network.state_encoder_pre_processing
+                                                      if params['state_encoder_pre_processing_network'] else None),
+                state_decoder_pre_processing_network=(network.state_decoder_pre_processing
+                                                      if params['state_decoder_pre_processing_network'] else None),
+                transition_network=network.transition,
+                label_transition_network=network.label_transition,
+                reward_network=network.reward,
+                decoder_network=network.decoder,
+                latent_policy_network=(network.discrete_policy if params['latent_policy'] else None),
+                time_stacking_state=params['time_stacking_state'],
                 latent_state_size=latent_state_size,
                 mixture_components=mixture_components,
                 encoder_temperature=relaxed_state_encoder_temperature,
@@ -265,13 +276,15 @@ def main(argv):
         if params['full_vae_optimization'] and params['load_vae'] != '':
             vae = variational_action_discretizer.load(params['load_vae'], full_optimization=True)
         else:
-            q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(params, name='action')
+            network = generate_network_components(params, name='action')
             vae = variational_action_discretizer.VariationalActionDiscretizer(
                 vae_mdp=vae_mdp_model,
                 number_of_discrete_actions=params['number_of_discrete_actions'],
-                action_encoder_network=q, transition_network=p_t, action_label_transition_network=p_l_t,
-                reward_network=p_r, action_decoder_network=p_decode,
-                latent_policy_network=latent_policy,
+                action_encoder_network=network.encoder,
+                transition_network=network.transition,
+                action_label_transition_network=network.label_transition,
+                reward_network=network.reward, action_decoder_network=network.decoder,
+                latent_policy_network=network.discrete_policy,
                 encoder_temperature=params['encoder_temperature'],
                 prior_temperature=params['prior_temperature'],
                 encoder_temperature_decay_rate=params['encoder_temperature_decay_rate'],
@@ -685,6 +698,31 @@ if __name__ == '__main__':
         'memory',
         help='(optional) physical memory limit (in gb)',
         default=-1.)
+    flags.DEFINE_integer(
+        'time_stacking_state',
+        help='If > 1, then the specified last observations of the environment are stacked to form the state to be '
+             'processed by the VAE',
+        default=1)
+    flags.DEFINE_bool(
+        'state_encoder_pre_processing_network',
+        help="Whether to add a pre-processing network before encoding states in the architecture of the VAE",
+        default=False,
+    )
+    flags.DEFINE_multi_integer(
+        "state_encoder_pre_processing_layers",
+        default=[256, 256],
+        help='Number of units to use for each layer of the state encoder pre-processing network.'
+    )
+    flags.DEFINE_bool(
+        'state_decoder_pre_processing_network',
+        help="Whether to add a pre-processing network before decoding states in the architecture of the VAE",
+        default=False,
+    )
+    flags.DEFINE_multi_integer(
+        "state_decoder_pre_processing_layers",
+        default=[256, 256],
+        help='Number of units to use for each layer of the state decoder pre-processing network.'
+    )
     FLAGS = flags.FLAGS
 
     tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))

@@ -18,6 +18,7 @@ from tensorflow.keras.utils import Progbar
 
 import tf_agents.policies.tf_policy
 import tf_agents.agents.tf_agent
+from tensorflow.python.keras.layers import TimeDistributed, Flatten
 from tensorflow.python.keras.models import Sequential
 from tf_agents import specs, trajectories
 from tf_agents.policies import tf_policy, py_tf_eager_policy
@@ -79,6 +80,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  decoder_network: Model,
                  label_transition_network: Model,
                  latent_policy_network: Optional[Model] = None,
+                 state_encoder_pre_processing_network: Optional[Model] = None,
+                 state_decoder_pre_processing_network: Optional[Model] = None,
+                 time_stacking_state: bool = False,
                  latent_state_size: int = 12,
                  encoder_temperature: float = 2. / 3,
                  prior_temperature: float = 1. / 2,
@@ -119,6 +123,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.latent_policy_training_phase = latent_policy_training_phase
         self.full_optimization = full_optimization
         self._optimizer = optimizer
+        self.time_stacking_state = time_stacking_state
 
         # initialize all tf variables
         self._entropy_regularizer_scale_factor = None
@@ -168,7 +173,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
             transition_network._name = 'variational_mdp_transition_network_core'
 
             # Encoder network
-            encoder = encoder_network(state)
+            if time_stacking_state and state_encoder_pre_processing_network is not None:
+                encoder = TimeDistributed(state_encoder_pre_processing_network)(state)
+                encoder = Flatten()(encoder)
+                encoder = encoder_network(encoder)
+            else:
+                encoder = encoder_network(state)
             logits_layer = Dense(
                 units=latent_state_size - self.atomic_props_dims,
                 # allows avoiding exploding logits values and probability errors after applying a sigmoid
@@ -195,8 +205,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 self.latent_policy_network = Model(
                     inputs=latent_state,
                     outputs=self.latent_policy_network,
-                    name='variational_mdp_latent_policy_network'
-                )
+                    name='variational_mdp_latent_policy_network')
             else:
                 self.latent_policy_network = None
                 self.number_of_discrete_actions = -1
@@ -328,46 +337,78 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 name='variational_mdp_reward_network')
 
             # Reconstruction network
-            # inputs are latent binary states, outputs are given in parameter
-            decoder = decoder_network(next_latent_state)
+            if state_decoder_pre_processing_network is None:
+                decoder = next_latent_state
+            else:
+                decoder = state_decoder_pre_processing_network(next_latent_state)
+
+            if time_stacking_state:
+                time_dimension = state_shape[0]
+                _state_shape = state_shape[1:]
+                if decoder.shape[-1] % time_dimension != 0:
+                    decoder = Dense(
+                        units=decoder.shape[-1] + time_dimension - decoder.shape[-1] % time_dimension)(decoder)
+                decoder = Reshape(target_shape=(time_dimension, decoder.shape[-1] // time_dimension))(decoder)
+            else:
+                _state_shape = state_shape
+
             # 1 mean per dimension, nb Normal Gaussian
-            decoder_output_mean = Dense(
-                units=mixture_components * np.prod(state_shape),
-                activation=None,
-                name='variational_mdp_GMM_means_0')(decoder)
-            decoder_output_mean = Reshape(
-                (mixture_components,) + state_shape,
-                name="variational_mdp_GMM_means")(decoder_output_mean)
-            if self.full_covariance and len(state_shape) == 1:
-                d = np.prod(state_shape) * (np.prod(state_shape) + 1) / 2
-                decoder_raw_output = Dense(
-                    units=mixture_components * d,
+            decoder_output_mean = Sequential([
+                decoder_network,
+                Dense(
+                    units=mixture_components * np.prod(_state_shape),
                     activation=None,
-                    name='variational_mdp_state_decoder_GMM_tril_params_0'
-                )(decoder)
-                decoder_raw_output = Reshape(
-                    (mixture_components, d,),
-                    name='variational_mdp_state_decoder_GMM_tril_params_1'
-                )(decoder_raw_output)
-                decoder_raw_output = Lambda(
-                    lambda x: tfb.FillScaleTriL()(x),
-                    name='variational_mdp_state_decoder_GMM_scale_tril'
-                )(decoder_raw_output)
+                    name='variational_mdp_GMM_mean_0'),
+                Reshape(
+                    target_shape=(mixture_components,) + _state_shape,
+                    name="variational_mdp_GMM_mean")],
+                name="variational_mdp_state_decoder_mean")
+
+            if self.full_covariance and len(_state_shape) == 1:
+                d = np.prod(_state_shape) * (np.prod(_state_shape) + 1) / 2
+                decoder_raw_output = Sequential([
+                    decoder_network,
+                    Dense(
+                        units=mixture_components * d,
+                        activation=None,
+                        name='variational_mdp_state_decoder_GMM_tril_params_0'),
+                    Reshape(
+                        target_shape=(mixture_components, d,),
+                        name='variational_mdp_state_decoder_GMM_tril_params_1'),
+                    Lambda(
+                        lambda x: tfb.FillScaleTriL()(x),
+                        name='variational_mdp_state_decoder_GMM_scale_tril')],
+                    name='variational_mdp_state_decoder_scale_tril')
             else:
                 # n diagonal co-variance matrices
-                decoder_raw_output = Dense(
-                    units=mixture_components * np.prod(state_shape),
-                    activation=None,
-                    name='variational_mdp_state_decoder_GMM_raw_diag_covariance_0',
-                )(decoder)
-                decoder_raw_output = Reshape(
-                    (mixture_components,) + state_shape, name="variational_mdp_state_decoder_GMM_raw_diag_covar")(
-                    decoder_raw_output)
-            # number of Normal Gaussian forming the mixture model
-            decoder_prior = Dense(
-                units=mixture_components,
-                activation='softmax',
-                name="variational_mdp_state_decoder_GMM_priors")(decoder)
+                decoder_raw_output = Sequential([
+                    decoder_network,
+                    Dense(
+                        units=mixture_components * np.prod(_state_shape),
+                        activation=None,
+                        name='variational_mdp_state_decoder_GMM_raw_diag_covariance_0'),
+                    Reshape(
+                        (mixture_components,) + _state_shape,
+                        name="variational_mdp_state_decoder_GMM_raw_diag_covar")],
+                    name='variational_mdp_state_decoder_raw_diag_covar')
+
+            # prior distribution over the mixture components
+            decoder_prior = Sequential([
+                decoder_network,
+                Dense(
+                    units=mixture_components,
+                    activation='softmax',
+                    name="variational_mdp_state_decoder_GMM_priors")])
+
+            if time_stacking_state:
+                decoder_output_mean = TimeDistributed(decoder_output_mean)(decoder)
+                decoder_raw_output = TimeDistributed(decoder_raw_output)(decoder)
+                decoder_prior = TimeDistributed(decoder_prior)(decoder)
+            else:
+                decoder_output_mean = decoder_output_mean(decoder)
+                decoder_raw_output = decoder_raw_output(decoder)
+                decoder_prior = decoder_prior(decoder)
+
             self.reconstruction_network = Model(
                 inputs=next_latent_state,
                 outputs=[decoder_output_mean, decoder_raw_output, decoder_prior],
@@ -1164,9 +1205,14 @@ class VariationalMarkovDecisionProcess(tf.Module):
             initial_collect_steps: int = int(1e4),
     ) -> DatasetComponents:
         # specs
-        trajectory_spec = trajectory.from_transition(env.time_step_spec(),
-                                                     policy.policy_step_spec,
-                                                     env.time_step_spec())
+        trajectory_spec = trajectory.from_transition(
+            time_step=env.time_step_spec(),
+            action_step=policy.policy_step_spec,
+            next_time_step=env.time_step_spec())
+
+        if self.time_stacking_state:
+            labeling_function = lambda x: labeling_function(x)[:, -1, ...]
+
         if use_prioritized_replay_buffer:
 
             checkpoint_path = None if manager is None else os.path.join(manager.directory, 'reverb')
@@ -1332,7 +1378,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
     ):
         py_eval_env = environment_suite.load(env_name)
         eval_env = tf_py_environment.TFPyEnvironment(py_eval_env)
-        eval_env = self.wrap_tf_environment(eval_env, labeling_function)
+
+        if self.time_stacking_state:
+            eval_env = self.wrap_tf_environment(eval_env, lambda x: labeling_function(x)[:, -1, ...])
+        else:
+            eval_env = self.wrap_tf_environment(eval_env, labeling_function)
+
         eval_env.reset()
         policy_evaluation_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
             eval_env, self.get_latent_policy(), num_episodes=policy_evaluation_num_episodes)
@@ -1841,7 +1892,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if labeling_function is None:
                 raise ValueError('Must provide a labeling function if eval_env is provided.')
             eval_tf_env = tf_py_environment.TFPyEnvironment(eval_env)
-            latent_eval_env = self.wrap_tf_environment(eval_tf_env, labeling_function)
+            if self.time_stacking_state:
+                latent_eval_env = self.wrap_tf_environment(eval_tf_env, lambda x: labeling_function(x)[:, -1, ...])
+            else:
+                latent_eval_env = self.wrap_tf_environment(eval_tf_env, labeling_function)
             latent_eval_env.reset()
             eval_policy_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
                 latent_eval_env, self.get_latent_policy(), num_episodes=num_eval_episodes,
@@ -1999,7 +2053,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     tf.cast(latent_state, dtype=tf.float32),
                     action,
                     tf.cast(next_latent_state, dtype=tf.float32)).mode()),
-            labeling_function=labeling_function,
+            labeling_function=(
+                lambda x: labeling_function(x)[:, -1, ...] if self.time_stacking_state else labeling_function),
             latent_transition_function=(
                 lambda latent_state, action:
                 self.discrete_latent_transition_probability_distribution(

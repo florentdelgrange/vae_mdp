@@ -129,7 +129,7 @@ def search(
 
         for component_name in ['encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy']:
             hyperparameters[component_name + '_layers'] = hyperparameters['hidden'] * [hyperparameters['neurons']]
-        q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(
+        network = generate_network_components(
             hyperparameters, name='variational_mdp')
 
         tf.random.set_seed(fixed_parameters['seed'])
@@ -138,9 +138,10 @@ def search(
         vae_mdp = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=specs.state_shape, action_shape=specs.action_shape,
             reward_shape=specs.reward_shape, label_shape=specs.label_shape,
-            encoder_network=q, transition_network=p_t, label_transition_network=p_l_t,
-            reward_network=p_r, decoder_network=p_decode,
-            latent_policy_network=(latent_policy if fixed_parameters['latent_policy'] else None),
+            encoder_network=network.encoder,
+            transition_network=network.transition, label_transition_network=network.label_transition,
+            reward_network=network.reward, decoder_network=network.decoder,
+            latent_policy_network=(network.discrete_policy if fixed_parameters['latent_policy'] else None),
             latent_state_size=hyperparameters['latent_state_size'],
             mixture_components=fixed_parameters['mixture_components'],
             encoder_temperature=hyperparameters['relaxed_state_encoder_temperature'],
@@ -161,14 +162,14 @@ def search(
             evaluation_criterion=variational_mdp.EvaluationCriterion.MAX)
 
         if fixed_parameters['action_discretizer']:
-            q, p_t, p_l_t, p_r, p_decode, latent_policy = generate_network_components(
-                hyperparameters, name='variational_action_discretizer')
+            network = generate_network_components(hyperparameters, name='variational_action_discretizer')
             vae_mdp = variational_action_discretizer.VariationalActionDiscretizer(
                 vae_mdp=vae_mdp,
                 number_of_discrete_actions=hyperparameters['number_of_discrete_actions'],
-                action_encoder_network=q, transition_network=p_t, action_label_transition_network=p_l_t,
-                reward_network=p_r, action_decoder_network=p_decode,
-                latent_policy_network=latent_policy,
+                action_encoder_network=network.encoder,
+                transition_network=network.transition, action_label_transition_network=network.label_transition,
+                reward_network=network.reward, action_decoder_network=network.decoder,
+                latent_policy_network=network.discrete_policy,
                 encoder_temperature=hyperparameters['encoder_temperature'],
                 prior_temperature=hyperparameters['prior_temperature'],
                 encoder_temperature_decay_rate=0.,

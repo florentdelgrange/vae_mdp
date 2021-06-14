@@ -58,6 +58,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             transition_network=vae_mdp.transition_network, label_transition_network=vae_mdp.label_transition_network,
             reward_network=vae_mdp.reward_network,
             decoder_network=vae_mdp.reconstruction_network,
+            time_stacking_state=vae_mdp.time_stacking_state,
             latent_state_size=vae_mdp.latent_state_size,
             encoder_temperature=vae_mdp.encoder_temperature.numpy(),
             prior_temperature=vae_mdp.prior_temperature.numpy(),
@@ -105,11 +106,6 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self.is_exponent = importance_sampling_exponent
         if importance_sampling_exponent_growth_rate is not None:
             self.is_exponent_growth_rate = importance_sampling_exponent_growth_rate
-
-        # self.kl_scale_factor = vae_mdp.kl_scale_factor
-        # self.kl_growth_rate = vae_mdp.kl_growth_rate
-        # self.entropy_regularizer_scale_factor = vae_mdp.entropy_regularizer_scale_factor
-        # self.entropy_regularizer_decay_rate = vae_mdp.entropy_regularizer_decay_rate
 
         def clone_model(model: tf.keras.Model, copy_name: str = ''):
             model = model_from_json(model.to_json(), custom_objects={'leaky_relu': tf.nn.leaky_relu})
