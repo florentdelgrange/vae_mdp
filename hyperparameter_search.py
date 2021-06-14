@@ -222,7 +222,7 @@ def search(
                 labeling_function=reinforcement_learning.labeling_functions[environment_name],
                 training_steps=training_steps,
                 logs=True,
-                log_dir=os.path.join('studies', 'logs'),
+                log_dir=os.path.join(fixed_parameters['save_dir'], 'studies', 'logs'),
                 log_name='{:d}'.format(trial._trial_id),
                 use_prioritized_replay_buffer=hyperparameters['prioritized_experience_replay'],
                 global_step=global_step,
