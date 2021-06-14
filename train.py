@@ -11,6 +11,7 @@ from tensorflow.keras.layers import Dense
 from tensorflow.python.keras import Sequential
 from tensorflow.python.keras.layers import TimeDistributed, Flatten
 from tf_agents.environments import tf_py_environment
+from tf_agents.environments.wrappers import HistoryWrapper
 from tf_agents.specs import tensor_spec
 
 import hyperparameter_search
@@ -126,13 +127,19 @@ def get_environment_specs(
         environment_suite,
         environment_name: str,
         discrete_action_space: bool,
-        allows_for_parallel_environment: bool = False):
-    if allows_for_parallel_environment:
+        time_stacked_states: int = 1
+):
+    if time_stacked_states > 1:
+        environment = tf_py_environment.TFPyEnvironment(
+            tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
+                [lambda: HistoryWrapper(
+                    env=environment_suite.load(environment_name),
+                    history_length=time_stacked_states)]))
+    else:
         environment = tf_py_environment.TFPyEnvironment(
             tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
                 [lambda: environment_suite.load(environment_name)]))
-    else:
-        environment = tf_py_environment.TFPyEnvironment(environment_suite.load(environment_name))
+
 
     state_shape, action_shape, reward_shape, label_shape = (
         shape if shape != () else (1,) for shape in (
@@ -223,7 +230,7 @@ def main(argv):
         environment_suite=environment_suite,
         environment_name=environment_name,
         discrete_action_space=params['latent_policy'] and not params['action_discretizer'],
-        allows_for_parallel_environment=params['parallel_env'] > 1)
+        time_stacked_states=params['time_stacked_states'])
 
     state_shape, action_shape, reward_shape, label_shape, time_step_spec, action_spec = (
         specs.state_shape, specs.action_shape, specs.reward_shape, specs.label_shape,
@@ -244,7 +251,7 @@ def main(argv):
                 reward_network=network.reward,
                 decoder_network=network.decoder,
                 latent_policy_network=(network.discrete_policy if params['latent_policy'] else None),
-                time_stacking_state=params['time_stacking_state'],
+                time_stacked_states=params['time_stacked_states'] > 1,
                 latent_state_size=latent_state_size,
                 mixture_components=mixture_components,
                 encoder_temperature=relaxed_state_encoder_temperature,
@@ -699,7 +706,7 @@ if __name__ == '__main__':
         help='(optional) physical memory limit (in gb)',
         default=-1.)
     flags.DEFINE_integer(
-        'time_stacking_state',
+        'time_stacked_states',
         help='If > 1, then the specified last observations of the environment are stacked to form the state to be '
              'processed by the VAE',
         default=1)

@@ -21,6 +21,7 @@ import tf_agents.agents.tf_agent
 from tensorflow.python.keras.layers import TimeDistributed, Flatten
 from tensorflow.python.keras.models import Sequential
 from tf_agents import specs, trajectories
+from tf_agents.environments.wrappers import HistoryWrapper
 from tf_agents.policies import tf_policy, py_tf_eager_policy
 from tf_agents.trajectories import time_step as ts
 from tf_agents.drivers import dynamic_step_driver, py_driver
@@ -82,7 +83,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  latent_policy_network: Optional[Model] = None,
                  state_encoder_pre_processing_network: Optional[Model] = None,
                  state_decoder_pre_processing_network: Optional[Model] = None,
-                 time_stacking_state: bool = False,
+                 time_stacked_states: bool = False,
                  latent_state_size: int = 12,
                  encoder_temperature: float = 2. / 3,
                  prior_temperature: float = 1. / 2,
@@ -123,7 +124,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.latent_policy_training_phase = latent_policy_training_phase
         self.full_optimization = full_optimization
         self._optimizer = optimizer
-        self.time_stacking_state = time_stacking_state
+        self.time_stacked_states = time_stacked_states
 
         # initialize all tf variables
         self._entropy_regularizer_scale_factor = None
@@ -173,7 +174,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             transition_network._name = 'variational_mdp_transition_network_core'
 
             # Encoder network
-            if time_stacking_state and state_encoder_pre_processing_network is not None:
+            if time_stacked_states and state_encoder_pre_processing_network is not None:
                 encoder = TimeDistributed(state_encoder_pre_processing_network)(state)
                 encoder = Flatten()(encoder)
                 encoder = encoder_network(encoder)
@@ -342,7 +343,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             else:
                 decoder = state_decoder_pre_processing_network(next_latent_state)
 
-            if time_stacking_state:
+            if time_stacked_states:
                 time_dimension = state_shape[0]
                 _state_shape = state_shape[1:]
                 if decoder.shape[-1] % time_dimension != 0:
@@ -400,7 +401,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     activation='softmax',
                     name="variational_mdp_state_decoder_GMM_priors")])
 
-            if time_stacking_state:
+            if time_stacked_states:
                 decoder_output_mean = TimeDistributed(decoder_output_mean)(decoder)
                 decoder_raw_output = TimeDistributed(decoder_raw_output)(decoder)
                 decoder_prior = TimeDistributed(decoder_prior)(decoder)
@@ -513,15 +514,19 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 low=epsilon, high=self.max_decoder_variance ** 0.5).forward(reconstruction_raw_covariance)
 
         if self.mixture_components == 1:
+            reconstruction_mean = (reconstruction_mean[:, 0, ...] if not self.time_stacked_states
+                                   else reconstruction_mean[:, :, 0, ...])
+            reconstruction_raw_covariance = (reconstruction_raw_covariance[:, 0, ...] if not self.time_stacked_states
+                                             else reconstruction_raw_covariance[:, :, 0, ...])
             if self.full_covariance:
                 return tfd.MultivariateNormalTriL(
-                    loc=reconstruction_mean[:, 0, ...],
-                    scale_tril=reconstruction_raw_covariance[:, 0, ...],
+                    loc=reconstruction_mean,
+                    scale_tril=reconstruction_raw_covariance,
                     allow_nan_stats=False, )
             else:
                 return tfd.MultivariateNormalDiag(
-                    loc=reconstruction_mean[:, 0, ...],
-                    scale_diag=reconstruction_raw_covariance[:, 0, ...],
+                    loc=reconstruction_mean,
+                    scale_diag=reconstruction_raw_covariance,
                     allow_nan_stats=False)
         else:
             if self.full_covariance:
@@ -1175,10 +1180,14 @@ class VariationalMarkovDecisionProcess(tf.Module):
             env_loader = EnvLoader(environment_suite, seed=environment_seed)
             py_env = parallel_py_environment.ParallelPyEnvironment(
                 [lambda: env_loader.load(env_name)] * num_parallel_environments)
+            if self.time_stacked_states:
+                py_env = HistoryWrapper(env=py_env, history_length=self.state_shape[0])
             env = tf_py_environment.TFPyEnvironment(py_env)
             env.reset()
         else:
             py_env = environment_suite.load(env_name)
+            if self.time_stacked_states:
+                py_env = HistoryWrapper(env=py_env, history_length=self.state_shape[0])
             if environment_seed is not None:
                 try:
                     py_env.seed(environment_seed)
@@ -1210,7 +1219,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             action_step=policy.policy_step_spec,
             next_time_step=env.time_step_spec())
 
-        if self.time_stacking_state:
+        if self.time_stacked_states:
             labeling_function = lambda x: labeling_function(x)[:, -1, ...]
 
         if use_prioritized_replay_buffer:
@@ -1377,9 +1386,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
             policy_evaluation_num_episodes: int = 0,
     ):
         py_eval_env = environment_suite.load(env_name)
+        if self.time_stacked_states:
+            py_eval_env = HistoryWrapper(env=py_eval_env, history_length=self.state_shape[0])
         eval_env = tf_py_environment.TFPyEnvironment(py_eval_env)
 
-        if self.time_stacking_state:
+        if self.time_stacked_states:
             eval_env = self.wrap_tf_environment(eval_env, lambda x: labeling_function(x)[:, -1, ...])
         else:
             eval_env = self.wrap_tf_environment(eval_env, labeling_function)
@@ -1892,7 +1903,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if labeling_function is None:
                 raise ValueError('Must provide a labeling function if eval_env is provided.')
             eval_tf_env = tf_py_environment.TFPyEnvironment(eval_env)
-            if self.time_stacking_state:
+            if self.time_stacked_states:
                 latent_eval_env = self.wrap_tf_environment(eval_tf_env, lambda x: labeling_function(x)[:, -1, ...])
             else:
                 latent_eval_env = self.wrap_tf_environment(eval_tf_env, labeling_function)
@@ -2054,7 +2065,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     action,
                     tf.cast(next_latent_state, dtype=tf.float32)).mode()),
             labeling_function=(
-                lambda x: labeling_function(x)[:, -1, ...] if self.time_stacking_state else labeling_function),
+                lambda x: labeling_function(x)[:, -1, ...] if self.time_stacked_states else labeling_function),
             latent_transition_function=(
                 lambda latent_state, action:
                 self.discrete_latent_transition_probability_distribution(

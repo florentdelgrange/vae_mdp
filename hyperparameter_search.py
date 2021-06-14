@@ -59,8 +59,7 @@ def search(
     specs = get_environment_specs(
         environment_suite=environment_suite,
         environment_name=environment_name,
-        discrete_action_space=not fixed_parameters['action_discretizer'],
-        allows_for_parallel_environment=fixed_parameters['parallel_env'] > 1)
+        discrete_action_space=not fixed_parameters['action_discretizer'],)
 
     def suggest_hyperparameters(trial):
 

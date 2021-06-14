@@ -58,7 +58,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             transition_network=vae_mdp.transition_network, label_transition_network=vae_mdp.label_transition_network,
             reward_network=vae_mdp.reward_network,
             decoder_network=vae_mdp.reconstruction_network,
-            time_stacking_state=vae_mdp.time_stacking_state,
+            time_stacked_states=vae_mdp.time_stacked_states,
             latent_state_size=vae_mdp.latent_state_size,
             encoder_temperature=vae_mdp.encoder_temperature.numpy(),
             prior_temperature=vae_mdp.prior_temperature.numpy(),
