@@ -76,12 +76,17 @@ def search(
         relaxed_state_prior_temperature = trial.suggest_float('relaxed_state_prior_temperature', 1e-6, 1.)
         kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-5, 1e-2, log=True)
         entropy_regularizer_decay_rate = trial.suggest_float('entropy_regularizer_decay_rate', 1e-5, 1e-2, log=True)
-        prioritized_experience_replay = trial.suggest_categorical('prioritized_experience_replay', [True, False])
+
+        if fixed_parameters['prioritized_experience_replay']:
+            prioritized_experience_replay = True
+        else:
+            prioritized_experience_replay = trial.suggest_categorical('prioritized_experience_replay', [True, False])
+
         if prioritized_experience_replay:
             collect_steps_per_iteration = trial.suggest_int(
                 'prioritized_experience_replay_collect_steps_per_iteration', 1, batch_size // 8)
             buckets_based_priorities = trial.suggest_categorical('buckets_based_priorities', [True, False])
-            priority_exponent = trial.suggest_float('priority_exponent', 1e-1, 1.)
+            priority_exponent = trial.suggest_float('priority_exponent', 1e-6, 1.)
             importance_sampling_exponent = trial.suggest_float('importance_sampling_exponent', 1e-1, 1.)
             importance_sampling_exponent_growth_rate = trial.suggest_float(
                 'importance_sampling_exponent_growth_rate', 1e-5, 1e-2, log=True)
