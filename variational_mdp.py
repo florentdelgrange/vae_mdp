@@ -33,6 +33,7 @@ from tf_agents.trajectories.policy_step import PolicyStep
 from tf_agents.trajectories.trajectory import Trajectory
 from tf_agents.utils import common
 
+from policies import TimeStackedStatesPolicyWrapper
 from util.io import dataset_generator
 from util.io.dataset_generator import reset_state
 from util.io.dataset_generator import ErgodicMDPTransitionGenerator
@@ -1159,40 +1160,37 @@ class VariationalMarkovDecisionProcess(tf.Module):
             np.gcd(np.arange(1, num_parallel_environments + 1), collect_steps_per_iteration)
         ) + 1
 
+        class EnvironmentLoader:
+            def __init__(self, environment_suite, seed=None, time_stacked_states=1):
+                self.n = 0
+                self.environment_suite = environment_suite
+                self.seed = seed
+                self.time_stacked_states = time_stacked_states
+
+            def load(self, env_name: str):
+                environment = self.environment_suite.load(env_name)
+                if self.time_stacked_states > 1:
+                    environment = HistoryWrapper(env=environment, history_length=self.time_stacked_states)
+                if self.seed is not None:
+                    try:
+                        environment.seed(self.seed + self.n)
+                        self.n += 1
+                    except NotImplementedError:
+                        print("Environment {} has no seed support.".format(env_name))
+                return environment
+
+        env_loader = EnvironmentLoader(
+            environment_suite,
+            seed=environment_seed,
+            time_stacked_states=self.state_shape[0] if self.time_stacked_states else 1)
+
         if parallel_environments:
-
-            class EnvLoader:
-                def __init__(self, environment_suite, seed=None):
-                    self.n = 0
-                    self.environment_suite = environment_suite
-                    self.seed = seed
-
-                def load(self, env_name: str):
-                    environment = self.environment_suite.load(env_name)
-                    if self.seed is not None:
-                        try:
-                            environment.seed(self.seed + self.n)
-                            self.n += 1
-                        except NotImplementedError:
-                            print("Environment {} has no seed support.".format(env_name))
-                    return environment
-
-            env_loader = EnvLoader(environment_suite, seed=environment_seed)
             py_env = parallel_py_environment.ParallelPyEnvironment(
                 [lambda: env_loader.load(env_name)] * num_parallel_environments)
-            if self.time_stacked_states:
-                py_env = HistoryWrapper(env=py_env, history_length=self.state_shape[0])
             env = tf_py_environment.TFPyEnvironment(py_env)
             env.reset()
         else:
-            py_env = environment_suite.load(env_name)
-            if self.time_stacked_states:
-                py_env = HistoryWrapper(env=py_env, history_length=self.state_shape[0])
-            if environment_seed is not None:
-                try:
-                    py_env.seed(environment_seed)
-                except NotImplementedError:
-                    print("Environment {} has no seed support.".format(env_name))
+            py_env = env_loader.load(env_name)
             py_env.reset()
             env = tf_py_environment.TFPyEnvironment(py_env) if not use_prioritized_replay_buffer else py_env
 
@@ -1213,14 +1211,16 @@ class VariationalMarkovDecisionProcess(tf.Module):
             collect_steps_per_iteration: int = 8,
             initial_collect_steps: int = int(1e4),
     ) -> DatasetComponents:
+
+        if self.time_stacked_states:
+            labeling_function = lambda x: labeling_function(x)[:, -1, ...]
+            policy = TimeStackedStatesPolicyWrapper(policy, history_length=self.state_shape[0])
+
         # specs
         trajectory_spec = trajectory.from_transition(
             time_step=env.time_step_spec(),
             action_step=policy.policy_step_spec,
             next_time_step=env.time_step_spec())
-
-        if self.time_stacked_states:
-            labeling_function = lambda x: labeling_function(x)[:, -1, ...]
 
         if use_prioritized_replay_buffer:
 
