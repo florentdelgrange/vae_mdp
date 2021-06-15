@@ -523,18 +523,18 @@ class VariationalMarkovDecisionProcess(tf.Module):
             reconstruction_raw_covariance = (reconstruction_raw_covariance[:, 0, ...] if not self.time_stacked_states
                                              else reconstruction_raw_covariance[:, :, 0, ...])
             if self.full_covariance:
-                return tfd.MultivariateNormalTriL(
+                decoder_distribution = tfd.MultivariateNormalTriL(
                     loc=reconstruction_mean,
                     scale_tril=reconstruction_raw_covariance,
                     allow_nan_stats=False, )
             else:
-                return tfd.MultivariateNormalDiag(
+                decoder_distribution = tfd.MultivariateNormalDiag(
                     loc=reconstruction_mean,
                     scale_diag=reconstruction_raw_covariance,
                     allow_nan_stats=False)
         else:
             if self.full_covariance:
-                return tfd.MixtureSameFamily(
+                decoder_distribution = tfd.MixtureSameFamily(
                     mixture_distribution=tfd.Categorical(probs=reconstruction_prior_components),
                     components_distribution=tfd.MultivariateNormalTriL(
                         loc=reconstruction_mean,
@@ -543,7 +543,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     ),
                     allow_nan_stats=False)
             else:
-                return tfd.MixtureSameFamily(
+                decoder_distribution = tfd.MixtureSameFamily(
                     mixture_distribution=tfd.Categorical(probs=reconstruction_prior_components),
                     components_distribution=tfd.MultivariateNormalDiag(
                         loc=reconstruction_mean,
@@ -551,6 +551,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
                         allow_nan_stats=False
                     ),
                     allow_nan_stats=False)
+
+        if self.time_stacked_states:
+            return tfd.Joint
+        else:
+            return decoder_distribution
 
     def relaxed_markov_chain_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, temperature: float = 1e-5) -> tfd.Distribution:
@@ -1145,7 +1150,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             state, label, action, reward, next_state, next_label,
             self.generator_variables, sample_key, sample_probability)
 
-    def initialize_environment(
+    def initialize_environments(
             self,
             environment_suite,
             env_name: str,
@@ -1154,6 +1159,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             collect_steps_per_iteration: int = 8,
             environment_seed: Optional[int] = None,
             use_prioritized_replay_buffer: bool = False,
+            policy_evaluation_num_episodes: int = 0,
+            labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None,
     ):
         # reverb replay buffers are not compatible with batched environments
         parallel_environments = parallel_environments and not use_prioritized_replay_buffer
@@ -1197,7 +1204,27 @@ class VariationalMarkovDecisionProcess(tf.Module):
             py_env.reset()
             env = tf_py_environment.TFPyEnvironment(py_env) if not use_prioritized_replay_buffer else py_env
 
-        return env
+        if policy_evaluation_num_episodes > 0:
+            if labeling_function is None:
+                raise ValueError('Must pass a labeling function if a policy evaluation environment is requested')
+
+            py_eval_env = env_loader.load(env_name)
+            eval_env = tf_py_environment.TFPyEnvironment(py_eval_env)
+
+            if self.time_stacked_states:
+                eval_env = self.wrap_tf_environment(eval_env, lambda x: labeling_function(x)[:, -1, ...])
+            else:
+                eval_env = self.wrap_tf_environment(eval_env, labeling_function)
+
+            eval_env.reset()
+            policy_evaluation_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
+                eval_env, self.get_latent_policy(), num_episodes=policy_evaluation_num_episodes)
+        else:
+            eval_env = None
+            policy_evaluation_driver = None
+
+        return namedtuple('Environments', ['training', 'evaluation', 'policy_evaluation_driver'])(
+            env, eval_env, policy_evaluation_driver)
 
     def initialize_dataset_components(
             self,
@@ -1216,7 +1243,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
     ) -> DatasetComponents:
 
         if self.time_stacked_states:
-            labeling_function = lambda x: labeling_function(x)[:, -1, ...]
+            _labeling_function = labeling_function
+
+            def labeling_function(observation):
+                return _labeling_function(observation[:, -1, ...])
+
             policy = TimeStackedStatesPolicyWrapper(policy, history_length=self.state_shape[0])
 
         # specs
@@ -1381,29 +1412,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             dataset=dataset,
             dataset_iterator=dataset_iterator)
 
-    def initialize_policy_evaluation_driver(
-            self,
-            environment_suite,
-            env_name: str,
-            labeling_function: Callable[[tf.Tensor], tf.Tensor],
-            policy_evaluation_num_episodes: int = 0,
-    ):
-        py_eval_env = environment_suite.load(env_name)
-        if self.time_stacked_states:
-            py_eval_env = HistoryWrapper(env=py_eval_env, history_length=self.state_shape[0])
-        eval_env = tf_py_environment.TFPyEnvironment(py_eval_env)
-
-        if self.time_stacked_states:
-            eval_env = self.wrap_tf_environment(eval_env, lambda x: labeling_function(x)[:, -1, ...])
-        else:
-            eval_env = self.wrap_tf_environment(eval_env, labeling_function)
-
-        eval_env.reset()
-        policy_evaluation_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
-            eval_env, self.get_latent_policy(), num_episodes=policy_evaluation_num_episodes)
-        #  policy_evaluation_driver.run = common.function(policy_evaluation_driver.run)
-        return policy_evaluation_driver
-
     def train_from_policy(
             self,
             policy: tf_agents.policies.tf_policy.TFPolicy,
@@ -1519,15 +1527,21 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         discrete_action_space = discrete_action_space and (self.latent_policy_network is not None)
 
-        if environment is None:
-            env = self.initialize_environment(
+        if environment is None or (policy_evaluation_driver is None and policy_evaluation_num_episodes > 0):
+            environments = self.initialize_environments(
                 environment_suite=environment_suite,
                 env_name=env_name,
+                labeling_function=labeling_function,
                 parallel_environments=parallel_environments,
                 num_parallel_environments=num_parallel_environments,
                 collect_steps_per_iteration=collect_steps_per_iteration,
                 environment_seed=environment_seed,
-                use_prioritized_replay_buffer=use_prioritized_replay_buffer)
+                use_prioritized_replay_buffer=use_prioritized_replay_buffer,
+                policy_evaluation_num_episodes=policy_evaluation_num_episodes)
+
+            env = environment if environment is not None else environments.training
+            policy_evaluation_driver = policy_evaluation_driver if policy_evaluation_driver is not None \
+                else environments.policy_evaluation_driver
         else:
             env = environment
 
@@ -1574,13 +1588,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             print("Start training")
         else:
             print("Resume training")
-
-        if policy_evaluation_driver is None and policy_evaluation_num_episodes > 0:
-            policy_evaluation_driver = self.initialize_policy_evaluation_driver(
-                environment_suite=environment_suite,
-                env_name=env_name,
-                labeling_function=labeling_function,
-                policy_evaluation_num_episodes=policy_evaluation_num_episodes)
 
         # aggressive training metrics
         best_loss = None

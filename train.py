@@ -10,9 +10,11 @@ from absl import flags
 from tensorflow.keras.layers import Dense
 from tensorflow.python.keras import Sequential
 from tensorflow.python.keras.layers import TimeDistributed, Flatten
+from tf_agents import specs
 from tf_agents.environments import tf_py_environment
 from tf_agents.environments.wrappers import HistoryWrapper
 from tf_agents.specs import tensor_spec
+import tf_agents.trajectories.time_step as ts
 
 import hyperparameter_search
 import policies
@@ -140,18 +142,34 @@ def get_environment_specs(
             tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
                 [lambda: environment_suite.load(environment_name)]))
 
+    if time_stacked_states > 1:
+        label_shape = reinforcement_learning.labeling_functions[environment_name](
+            environment.reset().observation[:, -1, ...]).shape[1:]
+    else:
+        label_shape = reinforcement_learning.labeling_functions[environment_name](
+            environment.reset().observation).shape[1:]
 
     state_shape, action_shape, reward_shape, label_shape = (
-        shape if shape != () else (1,) for shape in (
-        environment.observation_spec().shape,
-        environment.action_spec().shape,
-        environment.time_step_spec().reward.shape,
-        tuple(reinforcement_learning.labeling_functions[environment_name](
-            environment.reset().observation).shape[1:])
-    )
-    )
+        shape if shape != () else (1,) for shape in [
+            environment.observation_spec().shape,
+            environment.action_spec().shape,
+            environment.time_step_spec().reward.shape,
+            label_shape])
 
     time_step_spec = tensor_spec.from_spec(environment.time_step_spec())
+    if time_stacked_states > 1:
+        observation_spec = specs.BoundedTensorSpec(
+            shape=time_step_spec.observation.shape[1:],  # remove the time dimension
+            dtype=time_step_spec.observation.dtype,
+            name=time_step_spec.observation.name,
+            minimum=time_step_spec.observation.minimum,
+            maximum=time_step_spec.observation.maximum)
+        time_step_spec = ts.TimeStep(
+            step_type=time_step_spec.step_type,
+            reward=time_step_spec.reward,
+            discount=time_step_spec.discount,
+            observation=observation_spec)
+
     action_spec = tensor_spec.from_spec(environment.action_spec())
     if discrete_action_space:
         # one hot encoding
@@ -232,9 +250,9 @@ def main(argv):
         discrete_action_space=params['latent_policy'] and not params['action_discretizer'],
         time_stacked_states=params['time_stacked_states'])
 
-    state_shape, action_shape, reward_shape, label_shape, time_step_spec, action_spec = (
-        specs.state_shape, specs.action_shape, specs.reward_shape, specs.label_shape,
-        specs.time_step_spec, specs.action_spec)
+    state_shape, action_shape, reward_shape, label_shape, time_step_spec, action_spec = \
+        specs.state_shape, specs.action_shape, specs.reward_shape, specs.label_shape, \
+        specs.time_step_spec, specs.action_spec
 
     def build_vae_model():
         if params['load_vae'] == '':

@@ -181,14 +181,19 @@ def search(
         global_step = tf.Variable(0, trainable=False, dtype=tf.int64)
         optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparameters['learning_rate'])
 
-        environment = vae_mdp.initialize_environment(
+        environments = vae_mdp.initialize_environments(
             environment_suite=environment_suite,
             env_name=environment_name,
             parallel_environments=fixed_parameters['parallel_env'] > 1,
             num_parallel_environments=fixed_parameters['parallel_env'],
             collect_steps_per_iteration=hyperparameters['collect_steps_per_iteration'],
             environment_seed=fixed_parameters['seed'],
-            use_prioritized_replay_buffer=hyperparameters['prioritized_experience_replay'], )
+            use_prioritized_replay_buffer=hyperparameters['prioritized_experience_replay'],
+            labeling_function=reinforcement_learning.labeling_functions[environment_name],
+            policy_evaluation_num_episodes=30)
+
+        environment = environments.training
+        policy_evaluation_driver = environments.policy_evaluation_driver
 
         policy = policies.SavedTFPolicy(fixed_parameters['policy_path'], specs.time_step_spec, specs.action_spec)
         dataset_components = vae_mdp.initialize_dataset_components(
@@ -204,12 +209,6 @@ def search(
             collect_steps_per_iteration=hyperparameters['collect_steps_per_iteration'],
             initial_collect_steps=int(1e4),
             replay_buffer_capacity=int(1e6))
-
-        policy_evaluation_driver = vae_mdp.initialize_policy_evaluation_driver(
-            environment_suite=environment_suite,
-            env_name=environment_name,
-            labeling_function=reinforcement_learning.labeling_functions[environment_name],
-            policy_evaluation_num_episodes=30)
 
         initial_training_steps = evaluation_window_size * num_steps // 100
         training_steps_per_iteration = num_steps // 100
