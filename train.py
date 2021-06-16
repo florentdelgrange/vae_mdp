@@ -77,9 +77,8 @@ def generate_vae_name(params):
             base_model_name,
             os.path.split(params['policy_path'])[-1],
             'action_discretizer',
-            'LA{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
+            'LA{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
                 params['number_of_discrete_actions'],
-                params['mixture_components'],
                 params['entropy_regularizer_scale_factor'],
                 params['entropy_regularizer_decay_rate'],
                 params['entropy_regularizer_scale_factor_min_value'],
@@ -92,14 +91,14 @@ def generate_vae_name(params):
             )
         )
     if params['prioritized_experience_replay']:
-        vae_name += '_PER-priority_exponent={:g}-WIS_exponent={:g}-WIS_growth_rate={:g}'.format(
+        vae_name += '_PER-P_exponent={:g}-WIS_exponent={:g}-WIS_growth={:g}'.format(
             params['priority_exponent'],
             params['importance_sampling_exponent'],
             params['importance_sampling_exponent_growth_rate'])
         if params['buckets_based_priority']:
-            vae_name += '_bucket_based_priorities'
+            vae_name += '_buckets_based'
         else:
-            vae_name += '_loss_based_priorities'
+            vae_name += '_loss_based'
     if params['max_state_decoder_variance'] > 0:
         vae_name += '_max_state_decoder_variance={:g}'.format(params['max_state_decoder_variance'])
     if params['epsilon_greedy'] > 0:
