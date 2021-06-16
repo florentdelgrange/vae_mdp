@@ -21,6 +21,7 @@ import policies
 import reinforcement_learning
 import variational_action_discretizer
 import variational_mdp
+import reinforcement_learning.environments
 
 
 def generate_network_components(params, name=''):
