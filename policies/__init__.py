@@ -60,20 +60,12 @@ class TimeStackedStatesPolicyWrapper(TFPolicy):
             name=tf_policy.time_step_spec.observation.name,
             minimum=tf_policy.time_step_spec.observation.minimum,
             maximum=tf_policy.time_step_spec.observation.maximum)
-        time_step_spec = ts.TimeStep(
-            step_type=tf_policy.time_step_spec.step_type,
-            reward=tf_policy.time_step_spec.reward,
-            discount=tf_policy.time_step_spec.discount,
-            observation=observation_spec)
+        time_step_spec = tf_policy.time_step_spec._replace(observation=observation_spec)
         super().__init__(time_step_spec, tf_policy.action_spec)
         self.wrapped_tf_policy = tf_policy
 
     def _distribution(self, time_step: ts.TimeStep, policy_state: types.NestedTensorSpec) -> policy_step.PolicyStep:
-        _time_step = ts.TimeStep(
-            step_type=time_step.step_type,
-            reward=time_step.reward,
-            discount=time_step.discount,
-            observation=time_step.observation[:, -1, ...])
+        _time_step = time_step._replace(observation=time_step.observation[:, -1, ...])
         return self.wrapped_tf_policy._distribution(_time_step, policy_state)
 
     def _get_initial_state(self, batch_size: int) -> types.NestedTensor:
