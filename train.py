@@ -99,15 +99,15 @@ def generate_vae_name(params):
         if params['buckets_based_priority']:
             vae_name += '_bucket_based_priorities'
         else:
-            vae_name += 'loss_based_priorities'
+            vae_name += '_loss_based_priorities'
     if params['max_state_decoder_variance'] > 0:
         vae_name += '_max_state_decoder_variance={:g}'.format(params['max_state_decoder_variance'])
     if params['epsilon_greedy'] > 0:
         vae_name += '_epsilon_greedy={:g}'.format(params['epsilon_greedy'])
     if params['marginal_entropy_regularizer_ratio'] > 0:
         vae_name += '_marginal_state_entropy_ratio={:g}'.format(params['marginal_entropy_regularizer_ratio'])
-    if params['state_scaling'] != 1.:
-        vae_name += '_state_scaling={:g}'.format(params['state_scaling'])
+    if params['time_stacked_states'] > 1:
+        vae_name += '_time_stacked_states={}'.format(params['time_stacked_states'])
 
     additional_parameters = [
         'one_output_per_action',
