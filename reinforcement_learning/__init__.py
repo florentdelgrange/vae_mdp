@@ -88,3 +88,4 @@ labeling_functions['LunarLanderContinuous-v2'] = labeling_functions['LunarLander
 labeling_functions['LunarLanderNoRewardShaping-v2'] = labeling_functions['LunarLander-v2']
 labeling_functions['LunarLanderRewardShapingAugmented-v2'] = labeling_functions['LunarLander-v2']
 labeling_functions['MountainCarContinuous-v0'] = labeling_functions['MountainCar-v0']
+labeling_functions['PendulumRightInit-v0'] = labeling_functions['Pendulum-v0']
