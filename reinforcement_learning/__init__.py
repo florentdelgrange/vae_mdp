@@ -31,14 +31,18 @@ labeling_functions = {
             observation[..., 0] >= tf.math.cos(math.pi / 9),
             # push direction
             observation[..., 2] >= 0,
+            # cos(θ) >= 0
+            observation[..., 0] >= 0.,
+            # sin(θ) >= 0
+            observation[..., 1] >= 0.,
             # first quadrant -- up right
-            tf.logical_and(observation[..., 0] >= 0., observation[..., 1] >= 0.),
+            # tf.logical_and(observation[..., 0] >= 0., observation[..., 1] >= 0.),
             # second quadrant -- down left
-            tf.logical_and(observation[..., 0] < 0., observation[..., 1] >= 0.),
+            # tf.logical_and(observation[..., 0] < 0., observation[..., 1] >= 0.),
             # third quadrant -- down right
-            tf.logical_and(observation[..., 0] < 0., observation[..., 1] < 0.),
+            # tf.logical_and(observation[..., 0] < 0., observation[..., 1] < 0.),
             # fourth quadrant -- up right
-            tf.logical_and(observation[..., 0] >= 0., observation[..., 1] < 0.),
+            # tf.logical_and(observation[..., 0] >= 0., observation[..., 1] < 0.),
         ], axis=-1),
     'CartPole-v0':  # safe labels
         lambda observation: tf.stack([
