@@ -18,7 +18,7 @@ from tensorflow.keras.utils import Progbar
 
 import tf_agents.policies.tf_policy
 import tf_agents.agents.tf_agent
-from tensorflow.python.keras.layers import TimeDistributed, Flatten
+from tensorflow.python.keras.layers import TimeDistributed, Flatten, LSTM
 from tensorflow.python.keras.models import Sequential
 from tf_agents import specs, trajectories
 from tf_agents.environments.wrappers import HistoryWrapper
@@ -110,7 +110,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  action_label_transition_network: Optional[Model] = None,
                  action_transition_network: Optional[Model] = None,
                  importance_sampling_exponent: Optional[float] = 1.,
-                 importance_sampling_exponent_growth_rate: Optional[float] = 0.):
+                 importance_sampling_exponent_growth_rate: Optional[float] = 0.,
+                 time_stacked_lstm_units: int = 128):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
 
@@ -126,6 +127,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.full_optimization = full_optimization
         self._optimizer = optimizer
         self.time_stacked_states = time_stacked_states
+        self.time_stacked_lstm_units = time_stacked_lstm_units
 
         # initialize all tf variables
         self._entropy_regularizer_scale_factor = None
@@ -180,7 +182,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     encoder = TimeDistributed(state_encoder_pre_processing_network)(state)
                 else:
                     encoder = state
-                encoder = Flatten()(encoder)
+                # encoder = Flatten()(encoder)
+                encoder = LSTM(units=time_stacked_lstm_units)(encoder)
                 encoder = encoder_network(encoder)
             else:
                 encoder = encoder_network(state)
@@ -342,24 +345,27 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 name='variational_mdp_reward_network')
 
             # Reconstruction network
-            if state_decoder_pre_processing_network is None:
-                decoder = next_latent_state
-            else:
-                decoder = state_decoder_pre_processing_network(next_latent_state)
+            decoder = decoder_network(next_latent_state)
 
             if time_stacked_states:
                 time_dimension = state_shape[0]
                 _state_shape = state_shape[1:]
+
                 if decoder.shape[-1] % time_dimension != 0:
                     decoder = Dense(
                         units=decoder.shape[-1] + time_dimension - decoder.shape[-1] % time_dimension)(decoder)
+
                 decoder = Reshape(target_shape=(time_dimension, decoder.shape[-1] // time_dimension))(decoder)
+                decoder = LSTM(units=self.time_stacked_lstm_units, return_sequences=True)(decoder)
+
+                if state_decoder_pre_processing_network is not None:
+                    decoder = TimeDistributed(state_decoder_pre_processing_network)(decoder)
+
             else:
                 _state_shape = state_shape
 
             # 1 mean per dimension, nb Normal Gaussian
             decoder_output_mean = Sequential([
-                decoder_network,
                 Dense(
                     units=mixture_components * np.prod(_state_shape),
                     activation=None,
@@ -372,7 +378,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if self.full_covariance and len(_state_shape) == 1:
                 d = np.prod(_state_shape) * (np.prod(_state_shape) + 1) / 2
                 decoder_raw_output = Sequential([
-                    decoder_network,
                     Dense(
                         units=mixture_components * d,
                         activation=None,
@@ -387,7 +392,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             else:
                 # n diagonal co-variance matrices
                 decoder_raw_output = Sequential([
-                    decoder_network,
                     Dense(
                         units=mixture_components * np.prod(_state_shape),
                         activation=None,
@@ -399,7 +403,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
             # prior distribution over the mixture components
             decoder_prior = Sequential([
-                decoder_network,
                 Dense(
                     units=mixture_components,
                     activation='softmax',
@@ -553,7 +556,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     allow_nan_stats=False)
 
         if self.time_stacked_states:
-            return tfd.Joint
+            return tfd.Independent(decoder_distribution)
         else:
             return decoder_distribution
 
