@@ -12,7 +12,8 @@ from tf_agents.utils import common
 import tensorflow_probability as tfp
 
 from util.io.dataset_generator import ErgodicMDPTransitionGenerator
-from verification.latent_environment import LatentPolicyOverRealStateSpace, DiscreteActionTFEnvironmentWrapper
+from verification.latent_environment import DiscreteActionTFEnvironmentWrapper
+from policies.latent_policy import LatentPolicyOverRealStateSpace
 from verification.transition_function import TransitionFrequencyEstimator
 
 tfd = tfp.distributions

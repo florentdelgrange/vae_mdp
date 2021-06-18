@@ -1,38 +1,7 @@
 from typing import Callable
 import tensorflow as tf
-from tf_agents import trajectories, specs
+from tf_agents import specs
 from tf_agents.environments.tf_environment import TFEnvironment
-from tf_agents.policies import tf_policy
-
-from util.io import dataset_generator
-
-
-class LatentPolicyOverRealStateSpace(tf_policy.TFPolicy):
-
-    def __init__(self,
-                 time_step_spec,
-                 labeling_function: Callable[[tf.Tensor], tf.Tensor],
-                 latent_policy: tf_policy.TFPolicy,
-                 state_embedding_function: Callable[[tf.Tensor, tf.Tensor], tf.Tensor]):
-        super().__init__(
-            time_step_spec=time_step_spec,
-            action_spec=latent_policy.action_spec,
-            info_spec=latent_policy.info_spec,
-            policy_state_spec=latent_policy.policy_state_spec)
-        self._labeling_function = labeling_function
-        self.wrapped_policy = latent_policy
-        self.state_embedding_function = state_embedding_function
-        self.labeling_function = dataset_generator.ergodic_batched_labeling_function(labeling_function)
-
-    def _distribution(self, time_step, policy_state):
-        latent_state = self.state_embedding_function(
-            time_step.observation, self.labeling_function(time_step.observation))
-        _time_step = trajectories.time_step.TimeStep(
-            step_type=time_step.step_type,
-            reward=time_step.reward,
-            discount=time_step.discount,
-            observation=latent_state)
-        return self.wrapped_policy._distribution(_time_step, policy_state)
 
 
 class DiscreteActionTFEnvironmentWrapper(TFEnvironment):

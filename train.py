@@ -18,6 +18,7 @@ import tf_agents.trajectories.time_step as ts
 
 import hyperparameter_search
 import policies
+import policies.saved_policy
 import reinforcement_learning
 import variational_action_discretizer
 import variational_mdp
@@ -354,7 +355,7 @@ def main(argv):
         if phase == 1 and not params['action_discretizer'] and params['latent_policy']:
             vae_mdp_model.latent_policy_training_phase = True
 
-        policy = policies.SavedTFPolicy(params['policy_path'], time_step_spec, action_spec)
+        policy = policies.saved_policy.SavedTFPolicy(params['policy_path'], time_step_spec, action_spec)
 
         vae_mdp_model.train_from_policy(
             policy=policy,
