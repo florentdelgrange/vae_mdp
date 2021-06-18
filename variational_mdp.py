@@ -670,9 +670,20 @@ class VariationalMarkovDecisionProcess(tf.Module):
             logits=self.latent_policy_network(latent_state),
             allow_nan_stats=False)
 
-    def state_embedding_function(self, state: tf.Tensor, label: Optional[tf.Tensor] = None) -> tf.Tensor:
-        if label is not None:
-            label = tf.cast(label, dtype=tf.float32)
+    def state_embedding_function(
+            self,
+            state: tf.Tensor,
+            label: Optional[tf.Tensor] = None,
+            labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None
+    ) -> tf.Tensor:
+        if (label is None) == (labeling_function is None):
+            raise ValueError("Must either pass a label or a labeling_function")
+
+        if labeling_function is not None:
+            label = labeling_function(state)
+
+        label = tf.cast(label, dtype=tf.float32)
+
         return self.binary_encode(state, label).mode()
 
     def action_embedding_function(
@@ -1585,11 +1596,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 policy=policy,
                 latent_policy=LatentPolicyOverRealStateAndActionSpaces(
                     time_step_spec=policy.time_step_spec,
+                    action_spec=policy.action_spec,
                     labeling_function=labeling_function,
                     latent_policy=self.get_latent_policy(),
                     state_embedding_function=self.state_embedding_function,
-                    action_embedding_function=lambda state, latent_action: self.action_embedding_function(
-                        state, latent_action, labeling_function=labeling_function)),
+                    action_embedding_function=self.action_embedding_function),
                 epsilon=_epsilon)
 
         if dataset_components is None:

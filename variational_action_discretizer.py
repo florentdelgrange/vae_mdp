@@ -631,7 +631,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             label = labeling_function(state)
 
         return self.decode_action(
-            latent_state=tf.cast(self.state_embedding_function(state, label), dtype=tf.float32),
+            latent_state=tf.cast(self.state_embedding_function(state, label=label), dtype=tf.float32),
             latent_action=tf.cast(tf.one_hot(latent_action, depth=self.number_of_discrete_actions), dtype=tf.float32),
             disable_mixture_distribution=True
         ).mode()
