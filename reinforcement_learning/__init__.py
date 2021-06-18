@@ -24,16 +24,16 @@ labeling_functions = {
             # cos(θ) >= cos(π / 3 rad) = cos(2 π - π / 3 rad) = cos(60°) = cos(-60°)
             observation[..., 0] >= tf.math.cos(math.pi / 3),
             # cos(θ) >= cos(π / 4 rad) = cos(2 π - π / 4 rad) = cos(45°) = cos(-45°)
-            observation[..., 0] >= tf.math.cos(math.pi / 4),
+            # observation[..., 0] >= tf.math.cos(math.pi / 4),
             # cos(θ) >= cos(π / 6 rad) = cos(2 π - π / 6 rad) = cos(30°) = cos(-30°)
-            observation[..., 0] >= tf.math.cos(math.pi / 6),
+            # observation[..., 0] >= tf.math.cos(math.pi / 6),
             # cos(θ) >= cos(π / 9 rad) = cos(2 π - π / 9 rad) = cos(20°) = cos(-20°)
-            observation[..., 0] >= tf.math.cos(math.pi / 9),
+            # observation[..., 0] >= tf.math.cos(math.pi / 9),
             # push direction
             observation[..., 2] >= 0,
-            # cos(θ) >= 0
+            # cos(θ) >= 0, i.e., the pendulum is at the top of the screen
             observation[..., 0] >= 0.,
-            # sin(θ) >= 0
+            # sin(θ) >= 0, i.e., the pendulum is at the left side of the screen
             observation[..., 1] >= 0.,
             # first quadrant -- up right
             # tf.logical_and(observation[..., 0] >= 0., observation[..., 1] >= 0.),
@@ -58,7 +58,7 @@ labeling_functions = {
             tf.abs(observation[..., 1]) <= 0.02,  # land along the lunar pad y-position
             # observation[..., 2] == 0.,  # horizontal speed is 0
             # observation[..., 3] == 0.,   # vertical speed is 0
-            tf.abs(observation[..., 2] + observation[..., 3]) <= 1e-5,  # speed and almost 0
+            tf.abs(observation[..., 2] + observation[..., 3]) <= 1e-4,  # speed and almost 0
             observation[..., 3] <= -0.5,  # fast vertical (landing) speed
             tf.abs(observation[..., 4]) <= math.pi / 3,  # lander angle is safe
             # tf.abs(observation[..., 4]) <= math.pi / 6,  # weak lander angle
@@ -72,9 +72,8 @@ labeling_functions = {
         observation[..., 1] >= 0.,  # is going forward
     ], axis=-1),
     'Acrobot-v1': lambda observation: tf.stack([
-        # objective
         (-1. * observation[..., 0] - observation[..., 2] * observation[..., 0] +
-         observation[..., 3] * observation[..., 1] > 1.),
+         observation[..., 3] * observation[..., 1] > 1.),  # objective
         observation[..., 0] >= 0.,  # cos of the first pendulum angle
         observation[..., 1] >= 0.,  # sin of the first pendulum angle
         observation[..., 2] >= 0.,  # cos of the second pendulum angle
@@ -88,4 +87,4 @@ labeling_functions['LunarLanderContinuous-v2'] = labeling_functions['LunarLander
 labeling_functions['LunarLanderNoRewardShaping-v2'] = labeling_functions['LunarLander-v2']
 labeling_functions['LunarLanderRewardShapingAugmented-v2'] = labeling_functions['LunarLander-v2']
 labeling_functions['MountainCarContinuous-v0'] = labeling_functions['MountainCar-v0']
-labeling_functions['PendulumRightInit-v0'] = labeling_functions['Pendulum-v0']
+labeling_functions['PendulumRandomInit-v0'] = labeling_functions['Pendulum-v0']
