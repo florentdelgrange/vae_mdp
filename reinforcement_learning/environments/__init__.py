@@ -15,7 +15,7 @@ register(
 )
 
 register(
-    id='PendulumRightInit-v0',
-    entry_point='reinforcement_learning.environments.pendulum:PendulumRightInit',
-    max_episode_steps=200,
+    id='PendulumRandomInit-v0',
+    entry_point='reinforcement_learning.environments.pendulum:PendulumRandomInit',
+    max_episode_steps=150,
 )
