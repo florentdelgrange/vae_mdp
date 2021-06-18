@@ -617,6 +617,25 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         log_probs = tf.math.log(relaxed_distribution.probs_parameter() + epsilon)
         return tfd.OneHotCategorical(logits=log_probs, allow_nan_stats=False)
 
+    def action_embedding_function(
+            self,
+            state: tf.Tensor,
+            latent_action: tf.Tensor,
+            label: Optional[tf.Tensor] = None,
+            labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None
+    ) -> tf.Tensor:
+        if (label is None) == (labeling_function is None):
+            raise ValueError("Must either pass a label or a labeling_function")
+
+        if labeling_function is not None:
+            label = labeling_function(state)
+
+        return self.decode_action(
+            latent_state=tf.cast(self.state_embedding_function(state, label), dtype=tf.float32),
+            latent_action=tf.cast(tf.one_hot(latent_action, depth=self.number_of_discrete_actions), dtype=tf.float32),
+            disable_mixture_distribution=True
+        ).mode()
+
     @tf.function
     def __call__(
             self,
@@ -1045,19 +1064,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             environment=environment, latent_policy=self.get_latent_policy(),
             steps=steps, latent_state_size=self.latent_state_size,
             number_of_discrete_actions=self.number_of_discrete_actions,
-            state_embedding_function=lambda state, label: self.binary_encode(
-                state, tf.cast(label,
-                               dtype=tf.float32) if label is not None else label).mode(),
-            action_embedding_function=lambda state,
-                                             latent_action: self.decode_action(
-                latent_state=tf.cast(
-                    self.binary_encode(state, _labeling_function(state)).mode(),
-                    dtype=tf.float32),
-                latent_action=tf.cast(
-                    tf.one_hot(latent_action,
-                               depth=self.number_of_discrete_actions),
-                    dtype=tf.float32),
-                disable_mixture_distribution=True).mode(),
+            state_embedding_function=self.state_embedding_function,
+            action_embedding_function=lambda state, latent_action: self.action_embedding_function(
+                state, latent_action, labeling_function=latent_action),
             latent_reward_function=lambda latent_state, latent_action,
                                           next_latent_state: (
                 self.reward_probability_distribution(

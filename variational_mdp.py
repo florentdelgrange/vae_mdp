@@ -26,14 +26,15 @@ from tf_agents.policies import tf_policy, py_tf_eager_policy
 from tf_agents.trajectories import time_step as ts
 from tf_agents.drivers import dynamic_step_driver, py_driver
 from tf_agents.environments import tf_py_environment, parallel_py_environment, tf_environment, py_environment
-from tf_agents.metrics import tf_metrics
 from tf_agents.replay_buffers import tf_uniform_replay_buffer, reverb_replay_buffer, reverb_utils
 from tf_agents.trajectories import trajectory
 from tf_agents.trajectories.policy_step import PolicyStep
 from tf_agents.trajectories.trajectory import Trajectory
 from tf_agents.utils import common
 
-from policies import TimeStackedStatesPolicyWrapper
+from policies.latent_policy import LatentPolicyOverRealStateAndActionSpaces
+from policies.time_stacked_states import TimeStackedStatesPolicyWrapper
+from policies.epsilon_mimic import EpsilonMimicPolicy
 from util.io import dataset_generator
 from util.io.dataset_generator import reset_state
 from util.io.dataset_generator import ErgodicMDPTransitionGenerator
@@ -668,6 +669,20 @@ class VariationalMarkovDecisionProcess(tf.Module):
         return tfd.OneHotCategorical(
             logits=self.latent_policy_network(latent_state),
             allow_nan_stats=False)
+
+    def state_embedding_function(self, state: tf.Tensor, label: Optional[tf.Tensor] = None) -> tf.Tensor:
+        if label is not None:
+            label = tf.cast(label, dtype=tf.float32)
+        return self.binary_encode(state, label).mode()
+
+    def action_embedding_function(
+            self,
+            state: tf.Tensor,
+            latent_action: tf.Tensor,
+            label: Optional[tf.Tensor] = None,
+            labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None
+    ) -> tf.Tensor:
+        return latent_action
 
     def anneal(self):
         for var, decay_rate in [
@@ -1552,12 +1567,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
             epsilon_greedy = tf.Variable(epsilon_greedy, trainable=False, dtype=tf.float32)
 
             if epsilon_greedy_decay_rate == -1:
-                epsilon_greedy_decay_rate = 1. - tf.exp((tf.math.log(1e-3) - tf.math.log(epsilon_greedy))
-                                                        / (3. * (training_steps - start_annealing_step) / 5.))
+                epsilon_greedy_decay_rate = 1. - tf.exp(
+                    (tf.math.log(1e-3) - tf.math.log(epsilon_greedy))
+                    / (3. * (training_steps - start_annealing_step) / 5.))
             epsilon_greedy.assign(
-                epsilon_greedy * tf.pow(1. - epsilon_greedy_decay_rate,
-                                        tf.math.maximum(0.,
-                                                        tf.cast(global_step, dtype=tf.float32) - start_annealing_step)))
+                epsilon_greedy * tf.pow(
+                    1. - epsilon_greedy_decay_rate,
+                    tf.math.maximum(0., tf.cast(global_step, dtype=tf.float32) - start_annealing_step)))
 
             @tf.function
             def _epsilon():
@@ -1565,7 +1581,16 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     epsilon_greedy.assign(epsilon_greedy * (1 - epsilon_greedy_decay_rate))
                 return epsilon_greedy
 
-            policy = tf_agents.policies.epsilon_greedy_policy.EpsilonGreedyPolicy(policy, _epsilon)
+            policy = EpsilonMimicPolicy(
+                policy=policy,
+                latent_policy=LatentPolicyOverRealStateAndActionSpaces(
+                    time_step_spec=policy.time_step_spec,
+                    labeling_function=labeling_function,
+                    latent_policy=self.get_latent_policy(),
+                    state_embedding_function=self.state_embedding_function,
+                    action_embedding_function=lambda state, latent_action: self.action_embedding_function(
+                        state, latent_action, labeling_function=labeling_function)),
+                epsilon=_epsilon)
 
         if dataset_components is None:
             dataset_components = self.initialize_dataset_components(
@@ -2069,9 +2094,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             latent_policy=self.get_latent_policy(),
             latent_state_size=self.latent_state_size,
             number_of_discrete_actions=self.number_of_discrete_actions,
-            state_embedding_function=lambda state, label: self.binary_encode(
-                state, tf.cast(label, dtype=tf.float32) if label is not None else label).mode(),
-            action_embedding_function=lambda _, action: action,
+            state_embedding_function=self.state_embedding_function,
+            action_embedding_function=self.action_embedding_function,
             latent_reward_function=lambda latent_state, action, next_latent_state: (
                 self.reward_probability_distribution(
                     tf.cast(latent_state, dtype=tf.float32),
