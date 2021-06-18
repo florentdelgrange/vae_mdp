@@ -49,7 +49,7 @@ class LatentPolicyOverRealStateAndActionSpaces(LatentPolicyOverRealStateSpace):
     def _distribution(self, time_step, policy_state):
         latent_state = self.state_embedding_function(
             time_step.observation, self.labeling_function(time_step.observation))
-        return tfd.JointDistribution([
+        return tfd.JointDistributionSequential([
             self.wrapped_policy._distribution(time_step._replace(observation=latent_state), policy_state),
             lambda latent_action: tfd.Deterministic(self.action_embedding_function(latent_state, latent_action))
         ])
