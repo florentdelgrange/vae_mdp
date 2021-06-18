@@ -364,6 +364,7 @@ def main(argv):
             env_name=environment_name,
             labeling_function=reinforcement_learning.labeling_functions[environment_name],
             epsilon_greedy=params['epsilon_greedy'] if phase == 0 else 0.,
+            epsilon_greedy_decay_rate=params['epsilon_greedy_decay_rate'],
             batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
             manager=manager, log_name=vae_name,
             start_annealing_step=(
@@ -652,6 +653,11 @@ if __name__ == '__main__':
         'epsilon_greedy',
         default=0.,
         help='Epsilon value used for training the model via epsilon-greedy with the input policy.'
+    )
+    flags.DEFINE_float(
+        'epsilon_greedy_decay_rate',
+        default=5e-6,
+        help='Decay rate of the epsilon parameter'
     )
     flags.DEFINE_bool(
         'decompose_training',
