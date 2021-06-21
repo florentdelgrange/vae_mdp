@@ -35,6 +35,8 @@ import tf_agents.trajectories.time_step as ts
 from tf_agents.agents import data_converter
 from tf_agents.utils.nest_utils import batch_nested_tensors
 
+from reinforcement_learning.environments import EnvironmentLoader
+
 path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, path + '/../')
 from reinforcement_learning import labeling_functions
@@ -65,8 +67,8 @@ flags.DEFINE_multi_float(
 flags.DEFINE_string(
     'save_dir', help='Save directory location', default='.'
 )
-flags.DEFINE_float(
-    'seed', help='set seed', default=42
+flags.DEFINE_integer(
+    'seed', help='set seed', default=None
 )
 flags.DEFINE_integer(
     'collect_steps_per_iteration',
@@ -179,8 +181,8 @@ class SACLearner:
             save_directory_location: str = '.',
             save_exploration_dataset: bool = False,
             prioritized_experience_replay: bool = False,
-            priority_exponent: float = 0.6
-    ):
+            priority_exponent: float = 0.6,
+            seed: Optional[int] = None):
         self.parallelization = parallelization and not prioritized_experience_replay
 
         if collect_steps_per_iteration is None:
@@ -222,9 +224,11 @@ class SACLearner:
 
         self.prioritized_experience_replay = prioritized_experience_replay
 
-        if self.parallelization:
+        env_loader = EnvironmentLoader(env_suite, seed=seed)
+
+        if parallelization:
             self.tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
-                [lambda: env_suite.load(env_name)] * num_parallel_environments))
+                [lambda: env_loader.load(env_name)] * num_parallel_environments))
             self.tf_env.reset()
             self.py_env = env_suite.load(env_name)
             self.py_env.reset()
@@ -233,13 +237,13 @@ class SACLearner:
                 img.show()
             self.eval_env = tf_py_environment.TFPyEnvironment(self.py_env)
         else:
-            self.py_env = env_suite.load(env_name)
+            self.py_env = env_loader.load(env_name)
             self.py_env.reset()
             if debug:
                 img = PIL.Image.fromarray(self.py_env.render())
                 img.show()
             self.tf_env = tf_py_environment.TFPyEnvironment(self.py_env)
-            self.eval_env = self.tf_env
+            self.eval_env = tf_py_environment.TFPyEnvironment(env_suite.load(env_name))
 
         self.observation_spec = self.tf_env.observation_spec()
         self.action_spec = self.tf_env.action_spec()
@@ -315,7 +319,7 @@ class SACLearner:
                 table_name=table_name,
                 local_server=reverb_server)
 
-            _add_batch = reverb_utils.ReverbAddTrajectoryObserver(
+            _add_trajectory = reverb_utils.ReverbAddTrajectoryObserver(
                 py_client=self.replay_buffer.py_client,
                 table_name=table_name,
                 sequence_length=2,
@@ -325,7 +329,7 @@ class SACLearner:
             self.num_episodes = py_metrics.NumberOfEpisodes()
             self.env_steps = py_metrics.EnvironmentSteps()
             self.avg_return = py_metrics.AverageReturnMetric()
-            observers = [self.num_episodes, self.env_steps, self.avg_return, _add_batch]
+            observers = [self.num_episodes, self.env_steps, self.avg_return, _add_trajectory]
 
             self.driver = py_driver.PyDriver(
                 env=self.py_env,
@@ -335,7 +339,7 @@ class SACLearner:
             self.initial_collect_driver = py_driver.PyDriver(
                 env=self.py_env,
                 policy=py_tf_eager_policy.PyTFEagerPolicy(self.collect_policy, use_tf_function=True),
-                observers=[_add_batch],
+                observers=[_add_trajectory],
                 max_steps=initial_collect_steps)
 
         else:
@@ -422,9 +426,7 @@ class SACLearner:
     def _compute_priorities(self, experience):
         assert self.prioritized_experience_replay
 
-        _start_time = timeit.default_timer()
         transitions = experience_to_transitions(experience, squeeze_time_dim=True)
-        _start_time = timeit.default_timer()
         time_steps, policy_steps, next_time_steps = transitions
         actions = policy_steps.action
 
@@ -503,8 +505,8 @@ class SACLearner:
 
         env = self.tf_env if not self.prioritized_experience_replay else self.py_env
 
-        print("Initialize replay buffer...")
         if tf.math.less(self.replay_buffer.num_frames(), self.initial_collect_steps):
+            print("Initialize replay buffer...")
             self.initial_collect_driver.run(env.current_time_step())
 
         print("Start training...")
@@ -519,8 +521,8 @@ class SACLearner:
             # Use data from the buffer and update the agent's network.
             experience, info = next(self.iterator)
             if self.prioritized_experience_replay:
-                assert (tf.reduce_all(info.key[:, 0, ...] == info.key[:, 1, ...]))
-                assert (tf.reduce_all(info.probability[:, 0, ...] == info.probability[:, 1, ...]))
+                # assert (tf.reduce_all(info.key[:, 0, ...] == info.key[:, 1, ...]))
+                # assert (tf.reduce_all(info.probability[:, 0, ...] == info.probability[:, 1, ...]))
 
                 priorities = self._compute_priorities(experience)
                 self.replay_buffer.update_priorities(keys=info.key[:, 0, ...], priorities=priorities)
@@ -644,11 +646,12 @@ def main(argv):
         prioritized_experience_replay=params['prioritized_experience_replay'],
         priority_exponent=params['priority_exponent'],
         gamma=params['gamma'],
-        critic_learning_rate = params['learning_rate'],
-        actor_learning_rate = params['learning_rate'],
-        alpha_learning_rate = params['learning_rate'],
-        target_update_tau = params['target_update_tau'],
-        replay_buffer_capacity=params['replay_buffer_size']
+        critic_learning_rate=params['learning_rate'],
+        actor_learning_rate=params['learning_rate'],
+        alpha_learning_rate=params['learning_rate'],
+        target_update_tau=params['target_update_tau'],
+        replay_buffer_capacity=params['replay_buffer_size'],
+        seed=params['seed'],
     )
     if params['permissive_policy_saver']:
         for variance_multiplier in params['variance']:
