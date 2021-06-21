@@ -16,6 +16,13 @@ register(
 )
 
 register(
+    id='LunarLanderRandomInit-v2',
+    entry_point='reinforcement_learning.environments.lunar_lander:LunarLanderRandomInit',
+    max_episode_steps=1000,
+    reward_threshold=200
+)
+
+register(
     id='PendulumRandomInit-v0',
     entry_point='reinforcement_learning.environments.pendulum:PendulumRandomInit',
     max_episode_steps=150,
