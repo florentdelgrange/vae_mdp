@@ -35,6 +35,7 @@ from tf_agents.utils import common
 from policies.latent_policy import LatentPolicyOverRealStateAndActionSpaces
 from policies.time_stacked_states import TimeStackedStatesPolicyWrapper
 from policies.epsilon_mimic import EpsilonMimicPolicy
+from reinforcement_learning.environments import EnvironmentLoader
 from util.io import dataset_generator
 from util.io.dataset_generator import reset_state
 from util.io.dataset_generator import ErgodicMDPTransitionGenerator
@@ -1199,25 +1200,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             np.gcd(np.arange(1, num_parallel_environments + 1), collect_steps_per_iteration)
         ) + 1
 
-        class EnvironmentLoader:
-            def __init__(self, environment_suite, seed=None, time_stacked_states=1):
-                self.n = 0
-                self.environment_suite = environment_suite
-                self.seed = seed
-                self.time_stacked_states = time_stacked_states
-
-            def load(self, env_name: str):
-                environment = self.environment_suite.load(env_name)
-                if self.time_stacked_states > 1:
-                    environment = HistoryWrapper(env=environment, history_length=self.time_stacked_states)
-                if self.seed is not None:
-                    try:
-                        environment.seed(self.seed + self.n)
-                        self.n += 1
-                    except NotImplementedError:
-                        print("Environment {} has no seed support.".format(env_name))
-                return environment
-
         env_loader = EnvironmentLoader(
             environment_suite,
             seed=environment_seed,
@@ -1586,12 +1568,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     1. - epsilon_greedy_decay_rate,
                     tf.math.maximum(0., tf.cast(global_step, dtype=tf.float32) - start_annealing_step)))
 
-            @tf.function
-            def _epsilon():
-                if tf.greater(global_step, start_annealing_step):
-                    epsilon_greedy.assign(epsilon_greedy * (1 - epsilon_greedy_decay_rate))
-                return epsilon_greedy
-
             policy = EpsilonMimicPolicy(
                 policy=policy,
                 latent_policy=LatentPolicyOverRealStateAndActionSpaces(
@@ -1601,7 +1577,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     latent_policy=self.get_latent_policy(),
                     state_embedding_function=self.state_embedding_function,
                     action_embedding_function=self.action_embedding_function),
-                epsilon=_epsilon)
+                epsilon=epsilon_greedy)
 
         if dataset_components is None:
             dataset_components = self.initialize_dataset_components(
@@ -1662,7 +1638,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if check_numerics:
                 tf.debugging.enable_check_numerics()
 
-        # wall_time utils
+        # wall_time and memory utils
         save_time = 0.
         training_loop_time = 0.
         wall_time_exceeded = False
@@ -1712,6 +1688,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 aggressive_training=aggressive_training and global_step.numpy() < aggressive_training_steps,
                 aggressive_update=aggressive_inference_optimization,
                 prioritized_experience_replay=use_prioritized_replay_buffer)
+
+            if tf.math.logical_and(tf.greater_equal(epsilon_greedy, 0),
+                                   tf.greater_equal(global_step, start_annealing_step)):
+                epsilon_greedy.assign(epsilon_greedy * (1 - epsilon_greedy_decay_rate))
 
             if checkpoint is not None and tf.equal(tf.math.mod(global_step, checkpoint_interval), 0):
                 manager.save()
