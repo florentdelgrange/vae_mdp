@@ -7,7 +7,7 @@ from gym.vector.utils import spaces
 import Box2D
 from Box2D.b2 import (edgeShape, circleShape, fixtureDef, polygonShape, revoluteJointDef, contactListener)
 
-INITIAL_RANDOM = INITIAL_RANDOM + 500
+INITIAL_RANDOM = INITIAL_RANDOM
 
 
 class LunarLanderRandomInit(LunarLander):
