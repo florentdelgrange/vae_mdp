@@ -52,14 +52,14 @@ labeling_functions = {
     'LunarLander-v2':
         lambda observation: tf.stack([
             tf.abs(observation[..., 0]) <= 0.15,  # land along the lunar pad x-position
-            tf.abs(observation[..., 0]) >= 0.8,  # close to the edge of the frame
+            tf.abs(observation[..., 1]) <= 0.02,  # land along the lunar pad y-position
+            # tf.abs(observation[..., 0]) >= 0.8,  # close to the edge of the frame
             # close to the lunar pad
             tf.math.logical_and(tf.abs(observation[..., 1]) <= 0.3, tf.abs(observation[..., 0]) <= 0.3),
-            tf.abs(observation[..., 1]) <= 0.02,  # land along the lunar pad y-position
             # observation[..., 2] == 0.,  # horizontal speed is 0
             # observation[..., 3] == 0.,   # vertical speed is 0
-            tf.abs(observation[..., 2] + observation[..., 3]) <= 1e-4,  # speed and almost 0
-            observation[..., 3] <= -0.5,  # fast vertical (landing) speed
+            tf.abs(observation[..., 2] + observation[..., 3]) <= 1e-4,  # speed is almost 0
+            # observation[..., 3] <= -0.5,  # fast vertical (landing) speed
             tf.abs(observation[..., 4]) <= math.pi / 3,  # lander angle is safe
             # tf.abs(observation[..., 4]) <= math.pi / 6,  # weak lander angle
             # observation[..., 5] == 0.,  # angular velocity is 0
