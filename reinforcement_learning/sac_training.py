@@ -1,6 +1,10 @@
 import functools
 import os
 import sys
+
+path = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, path + '/../')
+
 from collections import namedtuple
 from typing import Tuple, Callable, Optional
 import threading
@@ -32,14 +36,9 @@ from tf_agents.trajectories.trajectory import experience_to_transitions
 from tf_agents.utils import common
 from tf_agents.policies import policy_saver, py_tf_eager_policy
 import tf_agents.trajectories.time_step as ts
-from tf_agents.agents import data_converter
-from tf_agents.utils.nest_utils import batch_nested_tensors
 
 from reinforcement_learning.environments import EnvironmentLoader
 
-path = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, path + '/../')
-from reinforcement_learning import labeling_functions
 from util.io import dataset_generator
 
 flags.DEFINE_string(
@@ -183,6 +182,7 @@ class SACLearner:
             prioritized_experience_replay: bool = False,
             priority_exponent: float = 0.6,
             seed: Optional[int] = None):
+
         self.parallelization = parallelization and not prioritized_experience_replay
 
         if collect_steps_per_iteration is None:
@@ -243,7 +243,7 @@ class SACLearner:
                 img = PIL.Image.fromarray(self.py_env.render())
                 img.show()
             self.tf_env = tf_py_environment.TFPyEnvironment(self.py_env)
-            self.eval_env = tf_py_environment.TFPyEnvironment(env_suite.load(env_name))
+            self.eval_env = tf_py_environment.TFPyEnvironment(env_loader.load(env_name))
 
         self.observation_spec = self.tf_env.observation_spec()
         self.action_spec = self.tf_env.action_spec()
@@ -565,25 +565,17 @@ class SACLearner:
         avg_eval_return = tf_metrics.AverageReturnMetric()
         avg_eval_episode_length = tf_metrics.AverageEpisodeLengthMetric()
         saved_policy = tf.compat.v2.saved_model.load(self.stochastic_policy_dir)
-        #  num_safety_violations = NumberOfSafetyViolations(labeling_function=self.labeling_function)
-        if self.eval_video:
-            self.evaluate_policy_video(saved_policy,
-                                       observers=[avg_eval_return, avg_eval_episode_length],
-                                       # , num_safety_violations],
-                                       step=str(step))
-        else:
-            self.eval_env.reset()
-            dynamic_episode_driver.DynamicEpisodeDriver(
-                self.eval_env,
-                saved_policy,
-                [avg_eval_return, avg_eval_episode_length],  # , num_safety_violations],
-                num_episodes=self.num_eval_episodes
-            ).run()
+        self.eval_env.reset()
+        dynamic_episode_driver.DynamicEpisodeDriver(
+            self.eval_env,
+            saved_policy,
+            [avg_eval_return, avg_eval_episode_length],
+            num_episodes=self.num_eval_episodes
+        ).run()
 
         log_values = [
             ('eval_avg_returns', avg_eval_return.result()),
             ('avg_eval_episode_length', avg_eval_episode_length.result()),
-            #  "('eval_safety_violations', num_safety_violations.average())
         ]
         if progressbar is not None:
             progressbar.add(0, log_values)
@@ -639,6 +631,7 @@ def main(argv):
         env_suite=env_suite,
         num_iterations=params['steps'],
         num_parallel_environments=params['num_parallel_env'],
+        parallelization=params['num_parallel_env'] > 1,
         save_directory_location=params['save_dir'],
         collect_steps_per_iteration=params['collect_steps_per_iteration'],
         batch_size=params['batch_size'],
