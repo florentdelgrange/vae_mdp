@@ -56,11 +56,14 @@ class LatentPolicyOverRealStateAndActionSpaces(tf_policy.TFPolicy):
     def _distribution(self, time_step, policy_state):
         label = self.labeling_function(time_step.observation)
         latent_state = self.state_embedding_function(time_step.observation, label)
-        latent_action = self.wrapped_policy._distribution(
-            time_step._replace(observation=latent_state),
-            policy_state
-        ).action.sample()
+        latent_action = tf.cast(
+            self.wrapped_policy._distribution(
+                time_step._replace(observation=latent_state),
+                policy_state
+            ).action.sample(),
+            dtype=self.action_spec.dtype)
         return PolicyStep(
-            action=tfd.Deterministic(self.action_embedding_function(time_step.observation, latent_action, label)),
+            action=tfd.Deterministic(
+                self.action_embedding_function(time_step.observation, latent_action, label)),
             state=policy_state,
             info=())
