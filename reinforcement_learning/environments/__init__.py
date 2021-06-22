@@ -23,6 +23,28 @@ register(
 )
 
 register(
+    id='LunarLanderContinuousRandomInit-v2',
+    entry_point='reinforcement_learning.environments.lunar_lander:LunarLanderContinuousRandomInit',
+    max_episode_steps=1000,
+    reward_threshold=200
+)
+
+register(
+    id='LunarLanderRandomInitRewardShapingAugmented-v2',
+    entry_point='reinforcement_learning.environments.lunar_lander:LunarLanderRandomInitRewardShapingAugmented',
+    max_episode_steps=1000,
+    reward_threshold=200
+)
+
+register(
+    id='LunarLanderContinuousRandomInitRewardShapingAugmented-v2',
+    entry_point='reinforcement_learning.environments.lunar_lander:'
+                'LunarLanderContinuousRandomInitRewardShapingAugmented',
+    max_episode_steps=1000,
+    reward_threshold=200
+)
+
+register(
     id='PendulumRandomInit-v0',
     entry_point='reinforcement_learning.environments.pendulum:PendulumRandomInit',
     max_episode_steps=150,
