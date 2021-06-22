@@ -1,6 +1,10 @@
 import math
 import os
 import sys
+
+path = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, path + '/../')
+
 from typing import Tuple, Callable, Optional, List
 import functools
 import threading
@@ -31,11 +35,7 @@ from tf_agents.trajectories.trajectory import experience_to_transitions
 from tf_agents.utils import common
 from tf_agents.policies import policy_saver, categorical_q_policy, boltzmann_policy, q_policy, py_tf_eager_policy
 import tf_agents.trajectories.time_step as ts
-
 from reinforcement_learning.environments import EnvironmentLoader
-
-path = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, path + '/../')
 
 flags.DEFINE_string(
     'env_name', help='Name of the environment', default='CartPole-v0'
@@ -66,19 +66,19 @@ flags.DEFINE_multi_float(
     default=[]
 )
 flags.DEFINE_multi_integer(
-        'network_layers',
-        help='number of units per MLP layers',
-        default=[100, 50]
+    'network_layers',
+    help='number of units per MLP layers',
+    default=[100, 50]
 )
 flags.DEFINE_integer(
-        'batch_size',
-        help='batch_size',
-        default=64
+    'batch_size',
+    help='batch_size',
+    default=64
 )
 flags.DEFINE_float(
-        'learning_rate',
-        help='learning rate',
-        default=1e-3
+    'learning_rate',
+    help='learning rate',
+    default=1e-3
 )
 flags.DEFINE_integer(
     'collect_steps_per_iteration',
@@ -205,7 +205,7 @@ class DQNLearner:
             train_step_counter=self.global_step,
             target_update_period=target_update_period,
             gamma=gamma
-        # emit_log_probability=True
+            # emit_log_probability=True
         )
 
         self.tf_agent.initialize()
@@ -489,4 +489,4 @@ def main(argv):
 
 if __name__ == '__main__':
     tf_agents.system.multiprocessing.handle_main(functools.partial(app.run, main))
-    #app.run(main)
+    # app.run(main)
