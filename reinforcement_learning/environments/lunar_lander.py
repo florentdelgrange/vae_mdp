@@ -23,7 +23,7 @@ class LunarLanderRandomInit(LunarLander):
 
         # terrain
         CHUNKS = 11
-        height = self.np_random.uniform(0, H/2, size=(CHUNKS + 1,))
+        height = self.np_random.uniform(0, H / 2, size=(CHUNKS + 1,))
         chunk_x = [W / (CHUNKS - 1) * i for i in range(CHUNKS)]
         self.helipad_x1 = chunk_x[CHUNKS // 2 - 1]
         self.helipad_x2 = chunk_x[CHUNKS // 2 + 1]
@@ -109,6 +109,10 @@ class LunarLanderRandomInit(LunarLander):
         return self.step(np.array([0, 0]) if self.continuous else 0)[0]
 
 
+class LunarLanderContinuousRandomInit(LunarLanderRandomInit):
+    continuous = True
+
+
 class LunarLanderNoRewardShaping(LunarLander):
 
     def step(self, action):
@@ -130,3 +134,15 @@ class LunarLanderRewardShapingAugmented(LunarLander):
         state, reward, done, d = super().step(action)
         state = np.append(state, [self.prev_shaping], axis=-1)
         return state, reward, done, d
+
+
+class LunarLanderRandomInitRewardShapingAugmented(LunarLanderRandomInit, LunarLanderRewardShapingAugmented):
+    def reset(self):
+        return LunarLanderRandomInit.reset(self)
+
+    def step(self, action):
+        return super().step(action)
+
+
+class LunarLanderContinuousRandomInitRewardShapingAugmented(LunarLanderRandomInitRewardShapingAugmented):
+    continuous = True
