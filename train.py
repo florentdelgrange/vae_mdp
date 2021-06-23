@@ -58,9 +58,8 @@ def generate_vae_name(params):
 
     vae_name = ''
     if not params['action_discretizer'] or params['full_vae_optimization'] or params['decompose_training']:
-        vae_name = 'vae_LS{}_MC{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}_seed={:d}'.format(
+        vae_name = 'vae_LS{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_seed={:d}'.format(
             params['latent_size'],
-            params['mixture_components'],
             params['entropy_regularizer_scale_factor'],
             params['entropy_regularizer_decay_rate'],
             params['entropy_regularizer_scale_factor_min_value'],
@@ -68,8 +67,6 @@ def generate_vae_name(params):
             params['kl_annealing_growth_rate'],
             params['relaxed_state_encoder_temperature'],
             params['relaxed_state_prior_temperature'],
-            params['encoder_temperature_decay_rate'],
-            params['prior_temperature_decay_rate'],
             int(params['seed']))
     if params['action_discretizer']:
         if vae_name != '':
@@ -78,7 +75,7 @@ def generate_vae_name(params):
             base_model_name,
             os.path.split(params['policy_path'])[-1],
             'action_discretizer',
-            'LA{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_{}-{}'.format(
+            'LA{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}'.format(
                 params['number_of_discrete_actions'],
                 params['entropy_regularizer_scale_factor'],
                 params['entropy_regularizer_decay_rate'],
@@ -87,12 +84,10 @@ def generate_vae_name(params):
                 params['kl_annealing_growth_rate'],
                 params['encoder_temperature'],
                 params['prior_temperature'],
-                params['encoder_temperature_decay_rate'],
-                params['prior_temperature_decay_rate']
             )
         )
     if params['prioritized_experience_replay']:
-        vae_name += '_PER-P_exponent={:g}-WIS_exponent={:g}-WIS_growth={:g}'.format(
+        vae_name += '_PER-P_exp={:g}-WIS_exponent={:g}-WIS_growth={:g}'.format(
             params['priority_exponent'],
             params['importance_sampling_exponent'],
             params['importance_sampling_exponent_growth_rate'])
@@ -103,7 +98,7 @@ def generate_vae_name(params):
     if params['max_state_decoder_variance'] > 0:
         vae_name += '_max_state_decoder_variance={:g}'.format(params['max_state_decoder_variance'])
     if params['epsilon_greedy'] > 0:
-        vae_name += '_epsilon_greedy={:g}'.format(params['epsilon_greedy'])
+        vae_name += '_epsilon_greedy={:g}-decay={:g}'.format(params['epsilon_greedy'], params['epsilon_greedy_decay_rate'])
     if params['marginal_entropy_regularizer_ratio'] > 0:
         vae_name += '_marginal_state_entropy_ratio={:g}'.format(params['marginal_entropy_regularizer_ratio'])
     if params['time_stacked_states'] > 1:
@@ -111,8 +106,8 @@ def generate_vae_name(params):
 
     additional_parameters = [
         'one_output_per_action',
-        'full_vae_optimization',
-        'relaxed_state_encoding',
+        # 'full_vae_optimization',
+        # 'relaxed_state_encoding',
         'full_covariance',
         'latent_policy',
         'decompose_training',
@@ -366,7 +361,9 @@ def main(argv):
             epsilon_greedy=params['epsilon_greedy'] if phase == 0 else 0.,
             epsilon_greedy_decay_rate=params['epsilon_greedy_decay_rate'],
             batch_size=batch_size, optimizer=optimizer, checkpoint=checkpoint,
-            manager=manager, log_name=vae_name,
+            manager=manager,
+            log_name=vae_name,
+            log_dir=params['logdir'],
             start_annealing_step=(
                 params['start_annealing_step'] + params['max_steps'] // 2
                 if phase == 1 and params['action_discretizer'] else
@@ -524,6 +521,11 @@ if __name__ == '__main__':
         "save_dir",
         default=".",
         help="Checkpoints and models save directory."
+    )
+    flags.DEFINE_string(
+        "logdir",
+        default="log",
+        help="logs directory"
     )
     flags.DEFINE_bool(
         "display_progressbar",
