@@ -2150,6 +2150,7 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
             entropy_regularizer_scale_factor=tf_model._entropy_regularizer_scale_factor,
             kl_scale_factor=tf_model._kl_scale_factor,
             mixture_components=tf.shape(tf_model.reconstruction_network.variables[-1])[-1],
+            evaluation_window_size=tf.shape(tf_model.evaluation_window)[0],
             pre_loaded_model=True)
 
     if step is not None:
