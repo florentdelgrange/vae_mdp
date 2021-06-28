@@ -188,7 +188,7 @@ def main(argv):
         hyperparameter_search.search(
             fixed_parameters=params,
             num_steps=params['max_steps'],
-            study_name=params['environment'],
+            study_name=params['environment'] + '_seed={}'.format(params['seed']),
             n_trials=params['hyperparameter_search_trials'],
             wall_time=None if params['wall_time'] == '.' else params['wall_time'])
         return 0
