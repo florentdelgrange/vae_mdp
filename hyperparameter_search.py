@@ -9,8 +9,9 @@ import tensorflow as tf
 import optuna
 import importlib
 
-import policies
+from policies.saved_policy import SavedTFPolicy
 import reinforcement_learning
+import reinforcement_learning.environments
 from train import get_environment_specs, generate_network_components
 import variational_action_discretizer
 import variational_mdp
@@ -59,7 +60,7 @@ def search(
     specs = get_environment_specs(
         environment_suite=environment_suite,
         environment_name=environment_name,
-        discrete_action_space=not fixed_parameters['action_discretizer'],)
+        discrete_action_space=not fixed_parameters['action_discretizer'], )
 
     def suggest_hyperparameters(trial):
 
@@ -73,8 +74,10 @@ def search(
             'latent_state_size', specs.label_shape[0] + 2, max(20, specs.label_shape[0] + 8))
         relaxed_state_encoder_temperature = trial.suggest_float('relaxed_state_encoder_temperature', 1e-6, 1.)
         relaxed_state_prior_temperature = trial.suggest_float('relaxed_state_prior_temperature', 1e-6, 1.)
-        kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-5, 1e-2, log=True)
-        entropy_regularizer_decay_rate = trial.suggest_float('entropy_regularizer_decay_rate', 1e-5, 1e-2, log=True)
+        kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-6, 1e-3, log=True)
+        entropy_regularizer_decay_rate = trial.suggest_float('entropy_regularizer_decay_rate', 1e-6, 1e-3, log=True)
+        epsilon_greedy = trial.suggest_float('epsilon_greedy', 0., 0.5)
+        epsilon_greedy_decay_rate = trial.suggest_float('epsilon_greedy_decay_rate', 1e-6, 1e-3, log=True)
 
         if fixed_parameters['prioritized_experience_replay']:
             prioritized_experience_replay = True
@@ -86,9 +89,9 @@ def search(
                 'prioritized_experience_replay_collect_steps_per_iteration', 1, batch_size // 8)
             buckets_based_priorities = trial.suggest_categorical('buckets_based_priorities', [True, False])
             priority_exponent = trial.suggest_float('priority_exponent', 1e-6, 1.)
-            importance_sampling_exponent = trial.suggest_float('importance_sampling_exponent', 1e-1, 1.)
+            importance_sampling_exponent = trial.suggest_float('importance_sampling_exponent', 1e-6, 1.)
             importance_sampling_exponent_growth_rate = trial.suggest_float(
-                'importance_sampling_exponent_growth_rate', 1e-5, 1e-2, log=True)
+                'importance_sampling_exponent_growth_rate', 5e-6, 1e-2, log=True)
         else:
             collect_steps_per_iteration = trial.suggest_int(
                 'uniform_replay_buffer_collect_steps_per_iteration', 1, batch_size)
@@ -97,6 +100,23 @@ def search(
             priority_exponent = 1.
             importance_sampling_exponent = 1.
             importance_sampling_exponent_growth_rate = 1.
+
+        if fixed_parameters['time_stacked_states'] > 1:
+            time_stacked_states = trial.suggest_int('time_stacked_states', 1, fixed_parameters['time_stacked_states'])
+        else:
+            time_stacked_states = 1
+
+        if fixed_parameters['state_encoder_pre_processing_network']:
+            state_encoder_pre_processing_network = trial.suggest_categorical(
+                'state_encoder_pre_processing_network', [True, False])
+        else:
+            state_encoder_pre_processing_network = False
+
+        if fixed_parameters['state_decoder_pre_processing_network']:
+            state_decoder_pre_processing_network = trial.suggest_categorical(
+                'state_decoder_pre_processing_network', [True, False])
+        else:
+            state_decoder_pre_processing_network = False
 
         if fixed_parameters['action_discretizer']:
             number_of_discrete_actions = trial.suggest_int(
@@ -112,9 +132,10 @@ def search(
                      'kl_annealing_growth_rate', 'entropy_regularizer_decay_rate', 'prioritized_experience_replay',
                      'neurons', 'hidden', 'activation', 'priority_exponent', 'importance_sampling_exponent',
                      'importance_sampling_exponent_growth_rate',
-                     'buckets_based_priorities'] + [
+                     'buckets_based_priorities', 'epsilon_greedy', 'epsilon_greedy_decay_rate', 'time_stacked_states',
+                     'state_encoder_pre_processing_network', 'state_decoder_pre_processing_network'] + ([
                         'encoder_temperature', 'prior_temperature', 'number_of_discrete_actions',
-                        'one_output_per_action'] if fixed_parameters['action_discretizer'] else []:
+                        'one_output_per_action'] if fixed_parameters['action_discretizer'] else []):
             defaults[attr] = locals()[attr]
 
         return defaults
@@ -126,10 +147,11 @@ def search(
         for key in hyperparameters.keys():
             print("{}={}".format(key, hyperparameters[key]))
 
-        for component_name in ['encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy']:
+        for component_name in [
+                'encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy',
+                'state_encoder_pre_processing', 'state_decoder_pre_processing']:
             hyperparameters[component_name + '_layers'] = hyperparameters['hidden'] * [hyperparameters['neurons']]
-        network = generate_network_components(
-            hyperparameters, name='variational_mdp')
+        network = generate_network_components(hyperparameters, name='variational_mdp')
 
         tf.random.set_seed(fixed_parameters['seed'])
 
@@ -140,6 +162,12 @@ def search(
             encoder_network=network.encoder,
             transition_network=network.transition, label_transition_network=network.label_transition,
             reward_network=network.reward, decoder_network=network.decoder,
+            state_encoder_pre_processing_network=(network.state_encoder_pre_processing
+                                                  if hyperparameters['state_encoder_pre_processing_network']
+                                                  else None),
+            state_decoder_pre_processing_network=(network.state_decoder_pre_processing
+                                                  if hyperparameters['state_decoder_pre_processing_network']
+                                                  else None),
             latent_policy_network=(network.discrete_policy if fixed_parameters['latent_policy'] else None),
             latent_state_size=hyperparameters['latent_state_size'],
             mixture_components=fixed_parameters['mixture_components'],
@@ -195,7 +223,7 @@ def search(
         environment = environments.training
         policy_evaluation_driver = environments.policy_evaluation_driver
 
-        policy = policies.SavedTFPolicy(fixed_parameters['policy_path'], specs.time_step_spec, specs.action_spec)
+        policy = SavedTFPolicy(fixed_parameters['policy_path'], specs.time_step_spec, specs.action_spec)
         dataset_components = vae_mdp.initialize_dataset_components(
             env=environment,
             policy=policy,
@@ -220,7 +248,7 @@ def search(
                 env_name=environment_name,
                 labeling_function=reinforcement_learning.labeling_functions[environment_name],
                 training_steps=training_steps,
-                logs=True,
+                logs=fixed_parameters['logs'],
                 log_dir=os.path.join(fixed_parameters['save_dir'], 'studies', 'logs', fixed_parameters['environment']),
                 log_name='{:d}'.format(trial._trial_id),
                 use_prioritized_replay_buffer=hyperparameters['prioritized_experience_replay'],
@@ -239,7 +267,9 @@ def search(
                 display_progressbar=fixed_parameters['display_progressbar'],
                 start_time=start_time,
                 wall_time=wall_time,
-                memory_limit=fixed_parameters['memory'] if fixed_parameters['memory'] > 0. else None)
+                memory_limit=fixed_parameters['memory'] if fixed_parameters['memory'] > 0. else None,
+                epsilon_greedy=hyperparameters['epsilon_greedy'],
+                epsilon_greedy_decay_rate=hyperparameters['epsilon_greedy_decay_rate'])
 
         try:
             result = train_model(initial_training_steps)
