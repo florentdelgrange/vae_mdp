@@ -57,11 +57,6 @@ def search(
         serr = str(err)
         print("An error occurred when loading the module '" + environment_suite_name + "': " + serr)
 
-    specs = get_environment_specs(
-        environment_suite=environment_suite,
-        environment_name=environment_name,
-        discrete_action_space=not fixed_parameters['action_discretizer'], )
-
     def suggest_hyperparameters(trial):
 
         defaults = {}
@@ -70,14 +65,25 @@ def search(
         neurons = trial.suggest_int('neurons', 16, 512, step=16)
         hidden = trial.suggest_int('hidden', 1, 5)
         activation = trial.suggest_categorical('activation', ['relu', 'leaky_relu'])
-        latent_state_size = trial.suggest_int(
-            'latent_state_size', specs.label_shape[0] + 2, max(20, specs.label_shape[0] + 8))
         relaxed_state_encoder_temperature = trial.suggest_float('relaxed_state_encoder_temperature', 1e-6, 1.)
         relaxed_state_prior_temperature = trial.suggest_float('relaxed_state_prior_temperature', 1e-6, 1.)
         kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-6, 1e-3, log=True)
         entropy_regularizer_decay_rate = trial.suggest_float('entropy_regularizer_decay_rate', 1e-6, 1e-3, log=True)
         epsilon_greedy = trial.suggest_float('epsilon_greedy', 0., 0.5)
         epsilon_greedy_decay_rate = trial.suggest_float('epsilon_greedy_decay_rate', 1e-6, 1e-3, log=True)
+
+        if fixed_parameters['time_stacked_states'] > 1:
+            time_stacked_states = trial.suggest_int('time_stacked_states', 1, fixed_parameters['time_stacked_states'])
+        else:
+            time_stacked_states = 1
+
+        specs = get_environment_specs(
+            environment_suite=environment_suite,
+            environment_name=environment_name,
+            discrete_action_space=not fixed_parameters['action_discretizer'],
+            time_stacked_states=time_stacked_states)
+        latent_state_size = trial.suggest_int(
+            'latent_state_size', specs.label_shape[0] + 2, max(20, specs.label_shape[0] + 8))
 
         if fixed_parameters['prioritized_experience_replay']:
             prioritized_experience_replay = True
@@ -100,11 +106,6 @@ def search(
             priority_exponent = 1.
             importance_sampling_exponent = 1.
             importance_sampling_exponent_growth_rate = 1.
-
-        if fixed_parameters['time_stacked_states'] > 1:
-            time_stacked_states = trial.suggest_int('time_stacked_states', 1, fixed_parameters['time_stacked_states'])
-        else:
-            time_stacked_states = 1
 
         if fixed_parameters['state_encoder_pre_processing_network']:
             state_encoder_pre_processing_network = trial.suggest_categorical(
@@ -131,7 +132,7 @@ def search(
                      'relaxed_state_encoder_temperature', 'relaxed_state_prior_temperature',
                      'kl_annealing_growth_rate', 'entropy_regularizer_decay_rate', 'prioritized_experience_replay',
                      'neurons', 'hidden', 'activation', 'priority_exponent', 'importance_sampling_exponent',
-                     'importance_sampling_exponent_growth_rate',
+                     'importance_sampling_exponent_growth_rate', 'specs',
                      'buckets_based_priorities', 'epsilon_greedy', 'epsilon_greedy_decay_rate', 'time_stacked_states',
                      'state_encoder_pre_processing_network', 'state_decoder_pre_processing_network'] + ([
                         'encoder_temperature', 'prior_temperature', 'number_of_discrete_actions',
@@ -145,7 +146,8 @@ def search(
 
         print("Suggested hyperparameters")
         for key in hyperparameters.keys():
-            print("{}={}".format(key, hyperparameters[key]))
+            if key != "specs":
+                print("{}={}".format(key, hyperparameters[key]))
 
         for component_name in [
                 'encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy',
@@ -156,6 +158,7 @@ def search(
         tf.random.set_seed(fixed_parameters['seed'])
 
         evaluation_window_size = fixed_parameters['evaluation_window_size']
+        specs = hyperparameters['specs']
         vae_mdp = variational_mdp.VariationalMarkovDecisionProcess(
             state_shape=specs.state_shape, action_shape=specs.action_shape,
             reward_shape=specs.reward_shape, label_shape=specs.label_shape,
@@ -186,7 +189,8 @@ def search(
             importance_sampling_exponent=hyperparameters['importance_sampling_exponent'],
             importance_sampling_exponent_growth_rate=hyperparameters['importance_sampling_exponent_growth_rate'],
             evaluation_window_size=evaluation_window_size,
-            evaluation_criterion=variational_mdp.EvaluationCriterion.MAX)
+            evaluation_criterion=variational_mdp.EvaluationCriterion.MAX,
+            time_stacked_states=hyperparameters['time_stacked_states'])
 
         if fixed_parameters['action_discretizer']:
             network = generate_network_components(hyperparameters, name='variational_action_discretizer')

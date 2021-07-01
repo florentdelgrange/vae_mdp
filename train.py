@@ -381,7 +381,7 @@ def main(argv):
                 params['max_steps'] if not params['decompose_training'] or phase == 1
                 else params['max_steps'] // 2),
             display_progressbar=params['display_progressbar'],
-            save_directory=params['save_dir'],
+            save_directory=params['save_dir'] if params['checkpoint'] else None,
             parallel_environments=params['parallel_env'] > 1,
             num_parallel_environments=params['parallel_env'],
             eval_steps=int(1e3) if not params['do_not_eval'] else 0,
