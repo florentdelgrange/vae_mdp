@@ -1689,9 +1689,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 aggressive_update=aggressive_inference_optimization,
                 prioritized_experience_replay=use_prioritized_replay_buffer)
 
-            if tf.math.logical_and(tf.greater_equal(epsilon_greedy, 0),
+            if tf.math.logical_and(tf.greater(epsilon_greedy, 0.),
                                    tf.greater_equal(global_step, start_annealing_step)):
-                epsilon_greedy.assign(epsilon_greedy * (1 - epsilon_greedy_decay_rate))
+                epsilon_greedy.assign(epsilon_greedy * (1. - epsilon_greedy_decay_rate))
 
             if checkpoint is not None and tf.equal(tf.math.mod(global_step, checkpoint_interval), 0):
                 manager.save()
