@@ -188,7 +188,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 encoder = LSTM(units=time_stacked_lstm_units)(encoder)
                 encoder = encoder_network(encoder)
             else:
-                encoder = encoder_network(state)
+                if state_encoder_pre_processing_network is not None:
+                    _state = state_encoder_pre_processing_network(state)
+                else:
+                    _state = state
+                encoder = encoder_network(_state)
             logits_layer = Dense(
                 units=latent_state_size - self.atomic_props_dims,
                 # allows avoiding exploding logits values and probability errors after applying a sigmoid
@@ -364,6 +368,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     decoder = TimeDistributed(state_decoder_pre_processing_network)(decoder)
 
             else:
+                if state_decoder_pre_processing_network is not None:
+                    decoder = state_decoder_pre_processing_network(decoder)
                 _state_shape = state_shape
 
             # 1 mean per dimension, nb Normal Gaussian

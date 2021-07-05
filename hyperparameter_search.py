@@ -190,7 +190,7 @@ def search(
             importance_sampling_exponent_growth_rate=hyperparameters['importance_sampling_exponent_growth_rate'],
             evaluation_window_size=evaluation_window_size,
             evaluation_criterion=variational_mdp.EvaluationCriterion.MAX,
-            time_stacked_states=hyperparameters['time_stacked_states'])
+            time_stacked_states=hyperparameters['time_stacked_states'] > 1)
 
         if fixed_parameters['action_discretizer']:
             network = generate_network_components(hyperparameters, name='variational_action_discretizer')
