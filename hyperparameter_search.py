@@ -228,6 +228,7 @@ def search(
         policy_evaluation_driver = environments.policy_evaluation_driver
 
         policy = SavedTFPolicy(fixed_parameters['policy_path'], specs.time_step_spec, specs.action_spec)
+        epsilon_greedy = tf.Variable(hyperparameters['epsilon_greedy'], trainable=False)
         dataset_components = vae_mdp.initialize_dataset_components(
             env=environment,
             policy=policy,
@@ -240,7 +241,8 @@ def search(
             discrete_action_space=not fixed_parameters['action_discretizer'],
             collect_steps_per_iteration=hyperparameters['collect_steps_per_iteration'],
             initial_collect_steps=int(1e4),
-            replay_buffer_capacity=int(1e6))
+            replay_buffer_capacity=int(1e6),
+            epsilon_greedy=epsilon_greedy)
 
         initial_training_steps = evaluation_window_size * num_steps // 100
         training_steps_per_iteration = num_steps // 100

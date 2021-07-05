@@ -65,6 +65,7 @@ class DatasetComponents(NamedTuple):
     wrapped_manager: Optional[tf.train.CheckpointManager]
     dataset: tf.data.Dataset
     dataset_iterator: Iterator
+    epsilon_greedy: tf.Variable
 
 
 class EvaluationCriterion(Enum):
@@ -1257,6 +1258,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             discrete_action_space: bool = False,
             collect_steps_per_iteration: int = 8,
             initial_collect_steps: int = int(1e4),
+            epsilon_greedy: Optional[tf.Variable] = 0.
     ) -> DatasetComponents:
 
         if self.time_stacked_states:
@@ -1266,6 +1268,18 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 return _labeling_function(observation[:, -1, ...])
 
             policy = TimeStackedStatesPolicyWrapper(policy, history_length=self.state_shape[0])
+
+        if tf.greater(epsilon_greedy, 0.):
+            policy = EpsilonMimicPolicy(
+                policy=policy,
+                latent_policy=LatentPolicyOverRealStateAndActionSpaces(
+                    time_step_spec=policy.time_step_spec,
+                    action_spec=policy.action_spec,
+                    labeling_function=labeling_function,
+                    latent_policy=self.get_latent_policy(),
+                    state_embedding_function=self.state_embedding_function,
+                    action_embedding_function=self.action_embedding_function),
+                epsilon=epsilon_greedy)
 
         # specs
         trajectory_spec = trajectory.from_transition(
@@ -1427,7 +1441,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             replay_buffer_num_frames_fn=replay_buffer_num_frames,
             wrapped_manager=manager,
             dataset=dataset,
-            dataset_iterator=dataset_iterator)
+            dataset_iterator=dataset_iterator,
+            epsilon_greedy=epsilon_greedy)
 
     def train_from_policy(
             self,
@@ -1562,36 +1577,28 @@ class VariationalMarkovDecisionProcess(tf.Module):
         else:
             env = environment
 
-        if epsilon_greedy > 0.:
-            epsilon_greedy = tf.Variable(epsilon_greedy, trainable=False, dtype=tf.float32)
-
-            if epsilon_greedy_decay_rate == -1:
-                epsilon_greedy_decay_rate = 1. - tf.exp(
-                    (tf.math.log(1e-3) - tf.math.log(epsilon_greedy))
-                    / (3. * (training_steps - start_annealing_step) / 5.))
-            epsilon_greedy.assign(
-                epsilon_greedy * tf.pow(
-                    1. - epsilon_greedy_decay_rate,
-                    tf.math.maximum(0., tf.cast(global_step, dtype=tf.float32) - start_annealing_step)))
-
-            policy = EpsilonMimicPolicy(
-                policy=policy,
-                latent_policy=LatentPolicyOverRealStateAndActionSpaces(
-                    time_step_spec=policy.time_step_spec,
-                    action_spec=policy.action_spec,
-                    labeling_function=labeling_function,
-                    latent_policy=self.get_latent_policy(),
-                    state_embedding_function=self.state_embedding_function,
-                    action_embedding_function=self.action_embedding_function),
-                epsilon=epsilon_greedy)
-
         if dataset_components is None:
+            if epsilon_greedy > 0.:
+                epsilon_greedy = tf.Variable(epsilon_greedy, trainable=False, dtype=tf.float32)
+
+                if epsilon_greedy_decay_rate == -1:
+                    epsilon_greedy_decay_rate = 1. - tf.exp(
+                        (tf.math.log(1e-3) - tf.math.log(epsilon_greedy))
+                        / (3. * (training_steps - start_annealing_step) / 5.))
+                epsilon_greedy.assign(
+                    epsilon_greedy * tf.pow(
+                        1. - epsilon_greedy_decay_rate,
+                        tf.math.maximum(0., tf.cast(global_step, dtype=tf.float32) - start_annealing_step)))
+
             dataset_components = self.initialize_dataset_components(
                 env=env, policy=policy, labeling_function=labeling_function, batch_size=batch_size, manager=manager,
                 use_prioritized_replay_buffer=use_prioritized_replay_buffer,
                 replay_buffer_capacity=replay_buffer_capacity, priority_exponent=priority_exponent,
                 buckets_based_priorities=buckets_based_priorities, discrete_action_space=discrete_action_space,
-                collect_steps_per_iteration=collect_steps_per_iteration, initial_collect_steps=initial_collect_steps)
+                collect_steps_per_iteration=collect_steps_per_iteration, initial_collect_steps=initial_collect_steps,
+                epsilon_greedy=epsilon_greedy)
+        else:
+            epsilon_greedy = dataset_components.epsilon_greedy
 
         replay_buffer = dataset_components.replay_buffer
         driver = dataset_components.driver
