@@ -30,6 +30,13 @@ register(
 )
 
 register(
+    id='LunarLanderContinuousRewardShapingAugmented-v2',
+    entry_point='reinforcement_learning.environments.lunar_lander:LunarLanderContinuousRewardShapingAugmented',
+    max_episode_steps=1000,
+    reward_threshold=200
+)
+
+register(
     id='LunarLanderRandomInitRewardShapingAugmented-v2',
     entry_point='reinforcement_learning.environments.lunar_lander:LunarLanderRandomInitRewardShapingAugmented',
     max_episode_steps=1000,
