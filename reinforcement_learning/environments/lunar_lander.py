@@ -136,6 +136,10 @@ class LunarLanderRewardShapingAugmented(LunarLander):
         return state, reward, done, d
 
 
+class LunarLanderContinuousRewardShapingAugmented(LunarLanderRewardShapingAugmented):
+    continuous = True
+
+
 class LunarLanderRandomInitRewardShapingAugmented(LunarLanderRandomInit, LunarLanderRewardShapingAugmented):
     def reset(self):
         return LunarLanderRandomInit.reset(self)
