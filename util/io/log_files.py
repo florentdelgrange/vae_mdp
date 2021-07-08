@@ -15,27 +15,24 @@ def get_event_arrays(
         log_dir: str,
         tags: Collection[str],
         regex: str = '**',
-        name: Optional[str] = None
-) -> Dict[str, pd.DataFrame]:
-    event_dict = {tag: {} for tag in tags}
+) -> pd.DataFrame:
 
-    if name is None:
-        name = os.path.join(log_dir, regex)
+    TaggedEvent = namedtuple('TaggedEvent', ['x_axis', 'y_axis', 'tags'])
+    events = TaggedEvent(x_axis=[], y_axis=[], tags=[])
 
     for filename in glob.glob(os.path.join(log_dir, regex)):
         event_file = os.path.join(log_dir, filename)
         for event in summary_iterator(event_file):
             for value in event.summary.value:
-                if value.tag in tags and event.step not in event_dict[value.tag]:
-                    event_dict[value.tag][event.step] = tensor_util.MakeNdarray(value.tensor)
+                if value.tag in tags:
+                    # event_dict[value.tag][event.step] = tensor_util.MakeNdarray(value.tensor)
+                    events.x_axis.append(event.step)
+                    events.y_axis.append(tensor_util.MakeNdarray(value.tensor))
+                    events.tags.append(value.tag)
 
-    df_by_tag = {}
-    for tag, event in event_dict.items():
-        df_by_tag[tag] = pd.DataFrame(data=np.array(list(event.values())),
-                                      index=np.array(list(event.keys())),
-                                      columns=[name])
-
-    return df_by_tag
+    return pd.DataFrame(data={'step': np.array(events.x_axis),
+                              'value': np.array(events.y_axis),
+                              'tag': events.tags, })
 
 
 def plot_event(
@@ -50,7 +47,7 @@ def plot_event(
     if scale_by_tag is None:
         scale_by_tag = {}
 
-    df_by_tag = {tag: None for tag in tags}
+    df = None
 
     if dir_regex is None:
         log_dirs = [log_dir]
@@ -58,19 +55,12 @@ def plot_event(
         log_dirs = glob.glob(os.path.join(log_dir, dir_regex))
 
     for i, log_dir in enumerate(log_dirs):
-        for tag, df in get_event_arrays(log_dir, tags, name='run_{:d}'.format(i)).items():
-            if df_by_tag[tag] is None:
-                df_by_tag[tag] = df
-            else:
-                df_by_tag[tag] = pd.concat([df_by_tag[tag], df], axis='columns')
+        if df is None:
+            df = get_event_arrays(log_dir, tags, name='run_{:d}'.format(i))
+        else:
+            df = df.append(get_event_arrays(log_dir, tags, name='run_{:d}'.format(i)))
 
-    for tag in tags:
-        df_by_tag[tag] = df_by_tag[tag].rename_axis("step", axis='index')
-        df_by_tag[tag] = df_by_tag[tag].rename_axis("run", axis='columns')
-        for column in df_by_tag[tag].columns:
-            df_by_tag[tag][column].fillna(df_by_tag[tag][column].median(), inplace=True)
-
-    return df_by_tag
+    return df
 
 
 def get_interquantile_range(df: pd.DataFrame):
@@ -78,27 +68,22 @@ def get_interquantile_range(df: pd.DataFrame):
 
 
 if __name__ == '__main__':
-    # x = get_event_arrays('/home/florent/workspace/logs/05-07-21/CartPole-v0/',
-    #                      regex='*seed=1111*PER*/*',
-    #                      tags=['eval_elbo', 'policy_evaluation_avg_rewards', ],
-    #                      name='test')
+    x = get_event_arrays('/home/florent/workspace/logs/05-07-21/CartPole-v0/',
+                         regex='*PER*/**',
+                         tags=['eval_elbo', 'policy_evaluation_avg_rewards', ],)
     import matplotlib.pyplot as plt
 
-    x: Dict[str, pd.DataFrame] = plot_event(log_dir='/home/florent/workspace/logs/05-07-21/CartPole-v0/',
-                                            dir_regex='*PER*',
-                                            tags=['eval_elbo', 'policy_evaluation_avg_rewards', ])
-    eval_elbo = x['eval_elbo']
-    policy_eval_avg_rew = x['policy_evaluation_avg_rewards']
+    #  x: pd.DataFrame = plot_event(log_dir='/home/florent/workspace/logs/05-07-21/CartPole-v0/',
+    #                               dir_regex='*PER*',
+    #                               tags=['eval_elbo', 'policy_evaluation_avg_rewards', ])
+    eval_elbo = x[x['tag'] == 'eval_elbo']
+    policy_eval_avg_rew = x[x['tag'] == 'policy_evaluation_avg_rewards']
 
-    fig, ax = plt.subplots()
+    # fig, ax = plt.subplots()
     #  eval_elbo.plot(title='eval elbo', ax=ax, grid=True)
     #  policy_eval_avg_rew.plot(title='eval policy', ax=ax, grid=True)
-    print(eval_elbo)
-    # sns.lineplot(data=eval_elbo, x='step', style='run')
-
-    # plt.show()
-
-    from IPython.display import display
-
-    display(eval_elbo)
-    display(policy_eval_avg_rew)
+    sns.set_theme(style="darkgrid")
+    sns.lineplot(data=eval_elbo, x='step', y='value', hue='tag')
+    plt.show()
+    sns.lineplot(data=policy_eval_avg_rew, x='step', y='value', style='tag')
+    plt.show()
