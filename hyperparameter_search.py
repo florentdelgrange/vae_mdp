@@ -155,8 +155,6 @@ def search(
             hyperparameters[component_name + '_layers'] = hyperparameters['hidden'] * [hyperparameters['neurons']]
         network = generate_network_components(hyperparameters, name='variational_mdp')
 
-        tf.random.set_seed(fixed_parameters['seed'])
-
         evaluation_window_size = fixed_parameters['evaluation_window_size']
         specs = hyperparameters['specs']
         vae_mdp = variational_mdp.VariationalMarkovDecisionProcess(

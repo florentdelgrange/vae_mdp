@@ -1,15 +1,16 @@
 import functools
 import importlib
 import os
+import random
 from collections import namedtuple
 
+import numpy as np
 import tensorflow as tf
 import tf_agents
 from absl import app
 from absl import flags
 from tensorflow.keras.layers import Dense
 from tensorflow.python.keras import Sequential
-from tensorflow.python.keras.layers import TimeDistributed, Flatten
 from tf_agents import specs
 from tf_agents.environments import tf_py_environment
 from tf_agents.environments.wrappers import HistoryWrapper
@@ -98,7 +99,8 @@ def generate_vae_name(params):
     if params['max_state_decoder_variance'] > 0:
         vae_name += '_max_state_decoder_variance={:g}'.format(params['max_state_decoder_variance'])
     if params['epsilon_greedy'] > 0:
-        vae_name += '_epsilon_greedy={:g}-decay={:g}'.format(params['epsilon_greedy'], params['epsilon_greedy_decay_rate'])
+        vae_name += '_epsilon_greedy={:g}-decay={:g}'.format(params['epsilon_greedy'],
+                                                             params['epsilon_greedy_decay_rate'])
     if params['marginal_entropy_regularizer_ratio'] > 0:
         vae_name += '_marginal_state_entropy_ratio={:g}'.format(params['marginal_entropy_regularizer_ratio'])
     if params['time_stacked_states'] > 1:
@@ -184,6 +186,13 @@ def main(argv):
     del argv
     params = FLAGS.flag_values_dict()
 
+    # set seed
+    seed = params['seed']
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
     if params['hyperparameter_search']:
         hyperparameter_search.search(
             fixed_parameters=params,
@@ -192,8 +201,6 @@ def main(argv):
             n_trials=params['hyperparameter_search_trials'],
             wall_time=None if params['wall_time'] == '.' else params['wall_time'])
         return 0
-
-    tf.random.set_seed(params['seed'])
 
     def check_missing_argument(name: str):
         if params[name] == '':
