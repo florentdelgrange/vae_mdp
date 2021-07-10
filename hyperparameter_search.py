@@ -60,6 +60,7 @@ def search(
     def suggest_hyperparameters(trial):
 
         defaults = {}
+        optimizer = trial.suggest_categorical('optimizer', ['Adam', 'SGD', 'RMSprop'])
         learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
         batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128, 256, 512])
         neurons = trial.suggest_int('neurons', 16, 512, step=16)
@@ -94,16 +95,20 @@ def search(
             collect_steps_per_iteration = trial.suggest_int(
                 'prioritized_experience_replay_collect_steps_per_iteration', 1, batch_size // 8)
             buckets_based_priorities = trial.suggest_categorical('buckets_based_priorities', [True, False])
-            priority_exponent = trial.suggest_float('priority_exponent', 1e-6, 1.)
+            priority_exponent = trial.suggest_float('priority_exponent', 0., 1.)
             importance_sampling_exponent = trial.suggest_float('importance_sampling_exponent', 1e-6, 1.)
             importance_sampling_exponent_growth_rate = trial.suggest_float(
                 'importance_sampling_exponent_growth_rate', 5e-6, 1e-2, log=True)
+
+            if priority_exponent == 0.:
+                prioritized_experience_replay = False
+
         else:
             collect_steps_per_iteration = trial.suggest_int(
                 'uniform_replay_buffer_collect_steps_per_iteration', 1, batch_size)
             # default values
             buckets_based_priorities = False
-            priority_exponent = 1.
+            priority_exponent = 0.
             importance_sampling_exponent = 1.
             importance_sampling_exponent_growth_rate = 1.
 
@@ -134,7 +139,8 @@ def search(
                      'neurons', 'hidden', 'activation', 'priority_exponent', 'importance_sampling_exponent',
                      'importance_sampling_exponent_growth_rate', 'specs',
                      'buckets_based_priorities', 'epsilon_greedy', 'epsilon_greedy_decay_rate', 'time_stacked_states',
-                     'state_encoder_pre_processing_network', 'state_decoder_pre_processing_network'] + ([
+                     'state_encoder_pre_processing_network', 'state_decoder_pre_processing_network',
+                     'optimizer'] + ([
                         'encoder_temperature', 'prior_temperature', 'number_of_discrete_actions',
                         'one_output_per_action'] if fixed_parameters['action_discretizer'] else []):
             defaults[attr] = locals()[attr]
@@ -209,7 +215,12 @@ def search(
                 reconstruction_mixture_components=1, )
 
         global_step = tf.Variable(0, trainable=False, dtype=tf.int64)
-        optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparameters['learning_rate'])
+        if hyperparameters['optimizer'] == 'Adam':
+            optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparameters['learning_rate'])
+        elif hyperparameters['optimizer'] == 'SGD':
+            optimizer = tf.keras.optimizers.SGD(learning_rate=hyperparameters['learning_rate'])
+        else:
+            optimizer = tf.keras.optimizers.RMSprop(learning_rate=hyperparameters['learning_rate'])
 
         environments = vae_mdp.initialize_environments(
             environment_suite=environment_suite,
