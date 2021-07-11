@@ -3,7 +3,6 @@ from collections import namedtuple
 from typing import Collection, List, Optional, Dict, Tuple
 import glob
 import numpy as np
-import pandas
 from scipy.stats import iqr
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.summary.summary_iterator import summary_iterator
@@ -15,7 +14,12 @@ def get_event_arrays(
         log_dir: str,
         tags: Collection[str],
         regex: str = '**',
+        tags_renaming: Optional[Dict[str, str]] = None,
+        run_name: Optional[str] = None,
+        event_name: Optional[str] = None
 ) -> pd.DataFrame:
+    if tags_renaming is None:
+        tags_renaming = {}
 
     TaggedEvent = namedtuple('TaggedEvent', ['x_axis', 'y_axis', 'tags'])
     events = TaggedEvent(x_axis=[], y_axis=[], tags=[])
@@ -25,14 +29,20 @@ def get_event_arrays(
         for event in summary_iterator(event_file):
             for value in event.summary.value:
                 if value.tag in tags:
-                    # event_dict[value.tag][event.step] = tensor_util.MakeNdarray(value.tensor)
                     events.x_axis.append(event.step)
                     events.y_axis.append(tensor_util.MakeNdarray(value.tensor))
-                    events.tags.append(value.tag)
+                    events.tags.append(tags_renaming.get(value.tag, value.tag))
 
-    return pd.DataFrame(data={'step': np.array(events.x_axis),
-                              'value': np.array(events.y_axis),
-                              'tag': events.tags, })
+    data = {'step': np.array(events.x_axis),
+            'value': np.array(events.y_axis),
+            'tag': events.tags, }
+
+    if run_name is not None:
+        data['run'] = run_name
+    if event_name is not None:
+        data['event'] = event_name
+
+    return pd.DataFrame(data)
 
 
 def plot_event(
@@ -67,23 +77,34 @@ def get_interquantile_range(df: pd.DataFrame):
     return iqr(np.array([df[column].values for column in df.columns]), axis=0)
 
 
+def add_moving_mean(df: pd.Dataframe) -> pd.DataFrame:
+    pass
+
 if __name__ == '__main__':
-    x = get_event_arrays('/home/florent/workspace/logs/05-07-21/CartPole-v0/',
+    cartpole = get_event_arrays('/home/florent/workspace/logs/05-07-21/CartPole-v0/',
                          regex='*PER*/**',
-                         tags=['eval_elbo', 'policy_evaluation_avg_rewards', ],)
+                         tags=['eval_elbo', 'policy_evaluation_avg_rewards', ],
+                         tags_renaming={'eval_elbo': 'ELBO'},
+                         run_name='prioritized replay',
+                         event_name='Cartpole-v0')
+    cartpole = cartpole.append(
+        get_event_arrays('/home/florent/workspace/logs/05-07-21/CartPole-v0/',
+                         regex='*[!PER]*/**',
+                         tags=['eval_elbo', 'policy_evaluation_avg_rewards', ],
+                         tags_renaming={'eval_elbo': 'ELBO'},
+                         run_name='uniform replay',
+                         event_name='CartPole-v0'))
     import matplotlib.pyplot as plt
 
-    #  x: pd.DataFrame = plot_event(log_dir='/home/florent/workspace/logs/05-07-21/CartPole-v0/',
-    #                               dir_regex='*PER*',
-    #                               tags=['eval_elbo', 'policy_evaluation_avg_rewards', ])
-    eval_elbo = x[x['tag'] == 'eval_elbo']
-    policy_eval_avg_rew = x[x['tag'] == 'policy_evaluation_avg_rewards']
+    eval_elbo = cartpole[cartpole['tag'] == 'ELBO']
+    policy_eval_avg_rew = cartpole[cartpole['tag'] == 'policy_evaluation_avg_rewards']
 
     # fig, ax = plt.subplots()
     #  eval_elbo.plot(title='eval elbo', ax=ax, grid=True)
     #  policy_eval_avg_rew.plot(title='eval policy', ax=ax, grid=True)
     sns.set_theme(style="darkgrid")
-    sns.lineplot(data=eval_elbo, x='step', y='value', hue='tag')
+    sns.lineplot(data=eval_elbo, x='step', y='value', style='run', hue='run')
     plt.show()
-    sns.lineplot(data=policy_eval_avg_rew, x='step', y='value', style='tag')
+    sns.lineplot(data=policy_eval_avg_rew, x='step', y='value', hue='run', style='run')
     plt.show()
+    sns.relplot(data=x, x='step', y='value', hue='run', style='run', col='tag', kind='line')
