@@ -12,7 +12,7 @@ import seaborn as sns
 
 def get_event_arrays(
         log_dir: str,
-        tags: Collection[str],
+        tags: Optional[Collection[str]] = None,
         regex: str = '**',
         tags_renaming: Optional[Dict[str, str]] = None,
         run_name: Optional[str] = None,
@@ -28,13 +28,18 @@ def get_event_arrays(
         event_file = os.path.join(log_dir, filename)
         for event in summary_iterator(event_file):
             for value in event.summary.value:
-                if value.tag in tags:
+                if tags is not None:
+                    if value.tag in tags:
+                        events.x_axis.append(event.step)
+                        events.y_axis.append(tensor_util.MakeNdarray(value.tensor))
+                        events.tags.append(tags_renaming.get(value.tag, value.tag))
+                else:
                     events.x_axis.append(event.step)
                     events.y_axis.append(tensor_util.MakeNdarray(value.tensor))
                     events.tags.append(tags_renaming.get(value.tag, value.tag))
 
     data = {'step': np.array(events.x_axis),
-            'value': np.array(events.y_axis),
+            'value': events.y_axis,
             'tag': events.tags, }
 
     if run_name is not None:
@@ -77,7 +82,7 @@ def get_interquantile_range(df: pd.DataFrame):
     return iqr(np.array([df[column].values for column in df.columns]), axis=0)
 
 
-def add_moving_mean(df: pd.Dataframe) -> pd.DataFrame:
+def add_moving_mean(df: pd.DataFrame) -> pd.DataFrame:
     pass
 
 if __name__ == '__main__':
@@ -98,6 +103,7 @@ if __name__ == '__main__':
 
     eval_elbo = cartpole[cartpole['tag'] == 'ELBO']
     policy_eval_avg_rew = cartpole[cartpole['tag'] == 'policy_evaluation_avg_rewards']
+    distortion = cartpole[cartpole['tag']]
 
     # fig, ax = plt.subplots()
     #  eval_elbo.plot(title='eval elbo', ax=ax, grid=True)
