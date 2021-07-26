@@ -8,6 +8,7 @@ from tensorflow.python.framework import tensor_util
 from tensorflow.python.summary.summary_iterator import summary_iterator
 import pandas as pd
 import seaborn as sns
+import matplotlib.pyplot as plt
 
 
 def get_event_arrays(
@@ -16,38 +17,61 @@ def get_event_arrays(
         regex: str = '**',
         tags_renaming: Optional[Dict[str, str]] = None,
         run_name: Optional[str] = None,
-        event_name: Optional[str] = None
+        event_name: Optional[str] = None,
+        value_dtype: Optional = np.float32,
+        smooth: Optional[Collection[str]] = None,
+        smooth_window: Optional[Dict[str, int]] = None
 ) -> pd.DataFrame:
     if tags_renaming is None:
         tags_renaming = {}
+    if smooth is None:
+        smooth = []
+    if smooth_window is None:
+        smooth_window = {}
 
     TaggedEvent = namedtuple('TaggedEvent', ['x_axis', 'y_axis', 'tags'])
-    events = TaggedEvent(x_axis=[], y_axis=[], tags=[])
+    df = None
 
     for filename in glob.glob(os.path.join(log_dir, regex)):
         event_file = os.path.join(log_dir, filename)
+        tagged_events = TaggedEvent(x_axis=[], y_axis=[], tags=[])
+
         for event in summary_iterator(event_file):
             for value in event.summary.value:
                 if tags is not None:
                     if value.tag in tags:
-                        events.x_axis.append(event.step)
-                        events.y_axis.append(tensor_util.MakeNdarray(value.tensor))
-                        events.tags.append(tags_renaming.get(value.tag, value.tag))
+                        tagged_events.x_axis.append(event.step)
+                        tagged_events.y_axis.append(tensor_util.MakeNdarray(value.tensor))
+                        tagged_events.tags.append(tags_renaming.get(value.tag, value.tag))
                 else:
-                    events.x_axis.append(event.step)
-                    events.y_axis.append(tensor_util.MakeNdarray(value.tensor))
-                    events.tags.append(tags_renaming.get(value.tag, value.tag))
+                    tagged_events.x_axis.append(event.step)
+                    tagged_events.y_axis.append(tensor_util.MakeNdarray(value.tensor))
+                    tagged_events.tags.append(tags_renaming.get(value.tag, value.tag))
 
-    data = {'step': np.array(events.x_axis),
-            'value': events.y_axis,
-            'tag': events.tags, }
+        data = pd.DataFrame(
+            {'step': np.array(tagged_events.x_axis, dtype=np.int64),
+             'value': (tagged_events.y_axis if value_dtype is None else
+                       np.array(tagged_events.y_axis, dtype=value_dtype)),
+             'tag': tagged_events.tags, })
+
+        if not data.empty:
+            for tag in set(smooth) & (set(tags) if tags is not None else set(smooth)):
+                moving_mean = (
+                    data[data['tag'] == tag]
+                        .rolling(window=smooth_window.get(tag, 10), min_periods=1, on='step')
+                        .mean()
+                        .rename(columns={'value': 'smooth'}))
+
+                data = data.join(moving_mean.set_index('step'), on='step')
+
+            df = data if df is None else df.append(data)
 
     if run_name is not None:
-        data['run'] = run_name
+        df['run'] = run_name
     if event_name is not None:
-        data['event'] = event_name
+        df['event'] = event_name
 
-    return pd.DataFrame(data)
+    return df
 
 
 def plot_event(
@@ -82,35 +106,50 @@ def get_interquantile_range(df: pd.DataFrame):
     return iqr(np.array([df[column].values for column in df.columns]), axis=0)
 
 
-def add_moving_mean(df: pd.DataFrame) -> pd.DataFrame:
-    pass
+def plot_policy_evaluation(
+        df: pd.DataFrame,
+        original_policy_expected_rewards: Optional[float] = None,
+        dpi: int = 150,
+        compare_experience_replay: bool = False,
+        relplot: bool = False
+):
+    N = 100
+    df = df[df['tag'] == 'policy_evaluation_avg_rewards']
 
-if __name__ == '__main__':
-    cartpole = get_event_arrays('/home/florent/workspace/logs/05-07-21/CartPole-v0/',
-                         regex='*PER*/**',
-                         tags=['eval_elbo', 'policy_evaluation_avg_rewards', ],
-                         tags_renaming={'eval_elbo': 'ELBO'},
-                         run_name='prioritized replay',
-                         event_name='Cartpole-v0')
-    cartpole = cartpole.append(
-        get_event_arrays('/home/florent/workspace/logs/05-07-21/CartPole-v0/',
-                         regex='*[!PER]*/**',
-                         tags=['eval_elbo', 'policy_evaluation_avg_rewards', ],
-                         tags_renaming={'eval_elbo': 'ELBO'},
-                         run_name='uniform replay',
-                         event_name='CartPole-v0'))
-    import matplotlib.pyplot as plt
-
-    eval_elbo = cartpole[cartpole['tag'] == 'ELBO']
-    policy_eval_avg_rew = cartpole[cartpole['tag'] == 'policy_evaluation_avg_rewards']
-    distortion = cartpole[cartpole['tag']]
-
-    # fig, ax = plt.subplots()
-    #  eval_elbo.plot(title='eval elbo', ax=ax, grid=True)
-    #  policy_eval_avg_rew.plot(title='eval policy', ax=ax, grid=True)
+    fig, ax = plt.subplots()
+    fig.dpi = dpi
+    plt.title("$\overline{\pi}$ (avg. rewards)")
     sns.set_theme(style="darkgrid")
-    sns.lineplot(data=eval_elbo, x='step', y='value', style='run', hue='run')
-    plt.show()
-    sns.lineplot(data=policy_eval_avg_rew, x='step', y='value', hue='run', style='run')
-    plt.show()
-    sns.relplot(data=x, x='step', y='value', hue='run', style='run', col='tag', kind='line')
+
+    if original_policy_expected_rewards is not None:
+        plt.plot(
+            np.linspace(0, df['step'].max(), N, dtype=np.int64),
+            np.ones(N) * original_policy_expected_rewards,
+            linestyle='--',
+            color='tab:green',
+            alpha=0.5,
+            linewidth=1)
+
+        plt.text(0, 200, '$\pi$  ', ha='right', color='tab:green', )
+
+    if compare_experience_replay and relplot:
+        sns.relplot(
+            data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
+            x='step',
+            y='rewards',
+            hue='experience replay',
+            style='experience replay',
+            row='experience replay',
+            kind='line')
+    elif compare_experience_replay:
+        sns.lineplot(
+            data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
+            x='step',
+            y='rewards',
+            hue='experience replay',
+            style='experience replay')
+    else:
+        sns.lineplot(
+            data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
+            x='step',
+            y='rewards', )
