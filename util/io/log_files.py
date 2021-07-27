@@ -106,19 +106,47 @@ def get_interquantile_range(df: pd.DataFrame):
     return iqr(np.array([df[column].values for column in df.columns]), axis=0)
 
 
+def plot_elbo_evaluation(
+        df: pd.DataFrame,
+        compare_experience_replay: bool = False,
+        relplot: bool = False,
+        eval_elbo_tag: str = 'eval_elbo'
+):
+    df = df[df['tag'] == eval_elbo_tag]
+
+    sns.set_theme(style="darkgrid")
+
+    if compare_experience_replay and relplot:
+        sns.relplot(
+            data=df.rename(columns={"value": "ELBO", "run": "experience replay"}),
+            x='step',
+            y='ELBO',
+            row='experience replay',
+            aspect=2.5,
+            kind='line',
+            facet_kws=dict(sharey=False))
+    else:
+        sns.lineplot(
+            data=df.rename(columns={"value": "ELBO", "run": "experience replay"}),
+            x='step',
+            y='ELBO',
+            hue='experience replay' if compare_experience_replay else None)
+
+
 def plot_policy_evaluation(
         df: pd.DataFrame,
         original_policy_expected_rewards: Optional[float] = None,
         compare_experience_replay: bool = False,
         relplot: bool = False,
         original_policy_as_label: bool = True,
+        policy_evaluation_avg_rewards_tag: str = 'policy_evaluation_avg_rewards'
 ):
-    N = 100
-    df = df[df['tag'] == 'policy_evaluation_avg_rewards']
+    df = df[df['tag'] == policy_evaluation_avg_rewards_tag]
 
     sns.set_theme(style="darkgrid")
 
     if original_policy_expected_rewards is not None and not original_policy_as_label:
+        N = 100
         plt.plot(
             np.linspace(0, df['step'].max(), N, dtype=np.int64),
             np.ones(N) * original_policy_expected_rewards,
@@ -138,21 +166,16 @@ def plot_policy_evaluation(
             data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
             x='step',
             y='rewards',
-            hue='experience replay',
+            # hue='experience replay',
             style='policy' if original_policy_as_label else 'experience replay',
             row='experience replay',
             aspect=2.5,
+            facet_kws=dict(sharey=False),
             kind='line')
-    elif compare_experience_replay:
-        sns.lineplot(
-            data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
-            x='step',
-            y='rewards',
-            hue='experience replay',
-            style='policy' if original_policy_as_label else 'experience replay',)
     else:
         sns.lineplot(
             data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
             x='step',
             y='rewards',
+            hue='experience replay' if compare_experience_replay else None,
             style='policy' if original_policy_as_label else 'experience replay', )
