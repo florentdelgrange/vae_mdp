@@ -109,19 +109,16 @@ def get_interquantile_range(df: pd.DataFrame):
 def plot_policy_evaluation(
         df: pd.DataFrame,
         original_policy_expected_rewards: Optional[float] = None,
-        dpi: int = 150,
         compare_experience_replay: bool = False,
-        relplot: bool = False
+        relplot: bool = False,
+        original_policy_as_label: bool = True,
 ):
     N = 100
     df = df[df['tag'] == 'policy_evaluation_avg_rewards']
 
-    fig, ax = plt.subplots()
-    fig.dpi = dpi
-    plt.title("$\overline{\pi}$ (avg. rewards)")
     sns.set_theme(style="darkgrid")
 
-    if original_policy_expected_rewards is not None:
+    if original_policy_expected_rewards is not None and not original_policy_as_label:
         plt.plot(
             np.linspace(0, df['step'].max(), N, dtype=np.int64),
             np.ones(N) * original_policy_expected_rewards,
@@ -132,14 +129,19 @@ def plot_policy_evaluation(
 
         plt.text(0, 200, '$\pi$  ', ha='right', color='tab:green', )
 
+    elif original_policy_expected_rewards is not None:
+        df = df.assign(policy='distilled')
+        df = df.append(df.assign(policy='original', value=200.))
+
     if compare_experience_replay and relplot:
         sns.relplot(
             data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
             x='step',
             y='rewards',
             hue='experience replay',
-            style='experience replay',
+            style='policy' if original_policy_as_label else 'experience replay',
             row='experience replay',
+            aspect=2.5,
             kind='line')
     elif compare_experience_replay:
         sns.lineplot(
@@ -147,9 +149,10 @@ def plot_policy_evaluation(
             x='step',
             y='rewards',
             hue='experience replay',
-            style='experience replay')
+            style='policy' if original_policy_as_label else 'experience replay',)
     else:
         sns.lineplot(
             data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
             x='step',
-            y='rewards', )
+            y='rewards',
+            style='policy' if original_policy_as_label else 'experience replay', )
