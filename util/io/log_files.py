@@ -133,6 +133,51 @@ def plot_elbo_evaluation(
             hue='experience replay' if compare_experience_replay else None)
 
 
+def plot_histograms_per_step(
+        df: pd.DataFrame,
+        compare_experience_replay: bool = False,
+        cbar: bool = False,
+):
+    sns.set_theme(style="darkgrid")
+
+    def gen_mean_bucket_values(bucket):
+        return np.repeat(
+            np.floor(bucket[..., :2].mean()), bucket[..., 2].astype(int, casting='unsafe')
+        ).astype(np.int32)
+
+    _df = None
+
+    for run in df['run'].unique():
+        hist_run = df[df['run'] == run]
+
+        data = np.array(
+            [np.concatenate([gen_mean_bucket_values(bucket) for bucket in value], axis=-1)
+             for value in hist_run['value']])
+
+        data = pd.DataFrame({
+            'state': data.flatten(),
+            # 'step': hist_run['step'].repeat(data.shape[-1]),
+            'step': np.array(
+                [[step] * len(states) for step, states in zip(hist_run["step"], data)],
+                dtype=np.int32
+            ).flatten(),
+        })
+        data['run'] = run
+
+        _df = data if _df is None else _df.append(data)
+
+    sns.displot(
+        data=_df.rename(columns={'run': 'experience replay'}),
+        x='step',
+        y='state',
+        bins=30,
+        cbar=cbar,
+        # hue='experience replay' if compare_experience_replay else None,
+        kind='hist',
+        col='experience replay' if compare_experience_replay else None,
+        common_bins=False)
+
+
 def plot_policy_evaluation(
         df: pd.DataFrame,
         original_policy_expected_rewards: Optional[float] = None,
