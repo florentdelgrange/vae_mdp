@@ -1,6 +1,6 @@
 import os
 from collections import namedtuple
-from typing import Collection, List, Optional, Dict, Tuple
+from typing import Collection, List, Optional, Dict, Tuple, Union
 import glob
 import numpy as np
 from scipy.stats import iqr
@@ -9,6 +9,7 @@ from tensorflow.python.summary.summary_iterator import summary_iterator
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 
 
 def get_event_arrays(
@@ -117,7 +118,7 @@ def plot_elbo_evaluation(
     sns.set_theme(style="darkgrid")
 
     if compare_experience_replay and relplot:
-        sns.relplot(
+        return sns.relplot(
             data=df.rename(columns={"value": "ELBO", "run": "experience replay"}),
             x='step',
             y='ELBO',
@@ -126,7 +127,7 @@ def plot_elbo_evaluation(
             kind='line',
             facet_kws=dict(sharey=False))
     else:
-        sns.lineplot(
+        return sns.lineplot(
             data=df.rename(columns={"value": "ELBO", "run": "experience replay"}),
             x='step',
             y='ELBO',
@@ -135,48 +136,88 @@ def plot_elbo_evaluation(
 
 def plot_histograms_per_step(
         df: pd.DataFrame,
-        compare_experience_replay: bool = False,
-        cbar: bool = False,
+        num_x_ticks: int = 5,
+        num_y_ticks: int = 5,
+        use_math_text: bool = False,
 ):
-    sns.set_theme(style="darkgrid")
 
-    def gen_mean_bucket_values(bucket):
-        return np.repeat(
-            np.floor(bucket[..., :2].mean()), bucket[..., 2].astype(int, casting='unsafe')
-        ).astype(np.int32)
+    tick = ticker.ScalarFormatter(useOffset=True, useMathText=use_math_text)
+    tick.set_powerlimits((0, 0))
 
-    _df = None
+    # we assume that all buckets have the same range, according to the way tf summaries records histograms
+    buckets = df['value'].head(1).to_numpy()[0][..., :2]
+    nrows = len(df['event'].unique()) if 'event' in df else 1
+    ncols = len(df['run'].unique()) if 'run' in df else 1
 
-    for run in df['run'].unique():
-        hist_run = df[df['run'] == run]
+    fig, axs = plt.subplots(nrows, ncols)
 
-        data = np.array(
-            [np.concatenate([gen_mean_bucket_values(bucket) for bucket in value], axis=-1)
-             for value in hist_run['value']])
+    def plot_histogram(df, ax, display_x_ticks=True, display_y_ticks=True, ax_title=None):
 
-        data = pd.DataFrame({
-            'state': data.flatten(),
-            # 'step': hist_run['step'].repeat(data.shape[-1]),
-            'step': np.array(
-                [[step] * len(states) for step, states in zip(hist_run["step"], data)],
-                dtype=np.int32
-            ).flatten(),
-        })
-        data['run'] = run
+        data = np.stack(df['value'].to_numpy())[..., 2]
 
-        _df = data if _df is None else _df.append(data)
+        def round_to_base(x, base, upper: bool = False):
+            if upper:
+                return base * np.ceil(x / base)
+            else:
+                return base * np.round(x / base)
 
-    sns.displot(
-        data=_df.rename(columns={'run': 'experience replay'}),
-        x='step',
-        y='state',
-        bins=30,
-        cbar=cbar,
-        # hue='experience replay' if compare_experience_replay else None,
-        kind='hist',
-        col='experience replay' if compare_experience_replay else None,
-        common_bins=False)
+        base = round_to_base(buckets.flatten().max() // 20, 50)
+        xticks = np.linspace(0, df['step'].unique().max(), num=data.shape[0], dtype=np.int32)
+        xticks = round_to_base(xticks, base=df['step'].unique().max() // (num_x_ticks * 2))
+        if use_math_text:
+            xticks = [u"${}$".format(tick.format_data(x) if x != 0. else str(0))
+                      for x in np.flipud(xticks).astype(float)]
+        else:
+            xticks = [tick.format_data(x) if x != 0. else str(0) for x in np.flipud(xticks).astype(float)]
+        yticks = np.array([round_to_base(bucket.mean(), base) for bucket in buckets], dtype=np.int32)
 
+        _df = pd.DataFrame(
+            data=np.flipud(data.transpose()),
+            columns=np.flipud(np.array(xticks)),
+            index=np.flipud(yticks))
+
+        ax = sns.heatmap(
+            _df,
+            cmap='Blues',
+            xticklabels=data.shape[0] // num_x_ticks if display_x_ticks else display_x_ticks,
+            yticklabels=len(buckets) // num_y_ticks if display_y_ticks else display_y_ticks,
+            cbar=False,
+            ax=ax)
+
+        if display_x_ticks:
+            ax.set_xlabel("step")
+        if display_y_ticks:
+            ax.set_ylabel("state")
+        if ax_title is not None:
+            ax.set_title(ax_title)
+
+        for label in ax.get_yticklabels():
+            label.set_rotation(0)
+
+        return ax
+
+    if nrows == 1 and ncols == 1:
+        plot_histogram(df, axs)
+    else:
+        if nrows == 1:
+            _axs = np.expand_dims(axs, 0)
+        elif ncols == 1:
+            _axs = np.expand_dims(axs, 1)
+        else:
+            _axs = axs
+        for row, axs_row in enumerate(_axs):
+            for column, ax in enumerate(axs_row):
+                _df = df[df['event'] == df['event'].unique()[row]] if 'event' in df else df
+                _df = df[df['run'] == df['run'].unique()[column]] if 'run' in df else df
+                plot_histogram(
+                    _df,
+                    ax,
+                    display_x_ticks=(row == nrows - 1),
+                    display_y_ticks=(column == 0),
+                    ax_title='experience replay = {}'.format(df['run'].unique()[column])
+                             if 'run' in df and row == 0 else None)
+
+    return axs
 
 def plot_policy_evaluation(
         df: pd.DataFrame,
@@ -192,7 +233,7 @@ def plot_policy_evaluation(
 
     if original_policy_expected_rewards is not None and not original_policy_as_label:
         N = 100
-        plt.plot(
+        g = plt.plot(
             np.linspace(0, df['step'].max(), N, dtype=np.int64),
             np.ones(N) * original_policy_expected_rewards,
             linestyle='--',
@@ -201,13 +242,14 @@ def plot_policy_evaluation(
             linewidth=1)
 
         plt.text(0, 200, '$\pi$  ', ha='right', color='tab:green', )
+        return g
 
     elif original_policy_expected_rewards is not None:
         df = df.assign(policy='distilled')
         df = df.append(df.assign(policy='original', value=200.))
 
     if compare_experience_replay and relplot:
-        sns.relplot(
+        return sns.relplot(
             data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
             x='step',
             y='rewards',
@@ -218,7 +260,7 @@ def plot_policy_evaluation(
             facet_kws=dict(sharey=False),
             kind='line')
     else:
-        sns.lineplot(
+        return sns.lineplot(
             data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
             x='step',
             y='rewards',
