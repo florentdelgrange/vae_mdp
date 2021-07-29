@@ -11,8 +11,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-
-def get_event_arrays(
+def get_event_dataframe(
         log_dir: str,
         tags: Optional[Collection[str]] = None,
         regex: str = '**',
@@ -71,34 +70,6 @@ def get_event_arrays(
         df['run'] = run_name
     if event_name is not None:
         df['event'] = event_name
-
-    return df
-
-
-def plot_event(
-        log_dir: str,
-        tags: Collection[str],
-        tags_renaming: Optional[Dict[str, str]] = None,
-        scale_by_tag: Optional[Dict[str, Tuple[float, float]]] = None,
-        dir_regex: Optional[str] = None,
-):
-    if tags_renaming is None:
-        tags_renaming = {}
-    if scale_by_tag is None:
-        scale_by_tag = {}
-
-    df = None
-
-    if dir_regex is None:
-        log_dirs = [log_dir]
-    else:
-        log_dirs = glob.glob(os.path.join(log_dir, dir_regex))
-
-    for i, log_dir in enumerate(log_dirs):
-        if df is None:
-            df = get_event_arrays(log_dir, tags, name='run_{:d}'.format(i))
-        else:
-            df = df.append(get_event_arrays(log_dir, tags, name='run_{:d}'.format(i)))
 
     return df
 
@@ -217,7 +188,7 @@ def plot_histograms_per_step(
                     ax_title='experience replay = {}'.format(df['run'].unique()[column])
                              if 'run' in df and row == 0 else None)
 
-    return axs
+    return fig
 
 def plot_policy_evaluation(
         df: pd.DataFrame,
