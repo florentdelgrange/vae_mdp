@@ -57,6 +57,13 @@ register(
     max_episode_steps=150,
 )
 
+register(
+    id='AcrobotRandomInit-v1',
+    entry_point='reinforcement_learning.environments.acrobot:AcrobotEnvRandomInit',
+    reward_threshold=-100.0,
+    max_episode_steps=500,
+)
+
 
 class EnvironmentLoader:
     def __init__(self, environment_suite, seed=None, time_stacked_states=1):
