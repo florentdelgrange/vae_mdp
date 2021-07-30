@@ -11,9 +11,7 @@ import tf_agents.specs
 from tf_agents.environments import suite_gym, parallel_py_environment
 from tf_agents.environments import tf_py_environment
 import tensorflow as tf
-
-tf.config.set_visible_devices([], 'GPU')  # allows testing during training
-from reinforcement_learning import labeling_functions
+from reinforcement_learning import labeling_functions, reward_scaling
 import tensorflow_probability as tfp
 
 tfd = tfp.distributions
@@ -49,7 +47,7 @@ if __name__ == '__main__':
     num_parallel_env = 4
     num_steps = 30000
 
-    for environment_name in ('CartPole-v0', 'MountainCar-v0', 'LunarLander-v2'):
+    for environment_name in ['MountainCar-v0']:
         labeling_function = labeling_functions[environment_name]
         py_env = tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
             [lambda: suite_gym.load(environment_name)] * num_parallel_env)
@@ -63,7 +61,8 @@ if __name__ == '__main__':
                 steps=num_steps,
                 labeling_function=labeling_function,
                 estimate_transition_function_from_samples=estimate_probability_function,
-                assert_estimated_transition_function_distribution=True)
+                assert_estimated_transition_function_distribution=True,
+                reward_scaling=reward_scaling[environment_name])
 
             tf.print("{} environment".format(environment_name))
             tf.print("Empirical probability transition function estimation: {}".format(estimate_probability_function))
