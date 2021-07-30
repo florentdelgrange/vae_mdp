@@ -337,7 +337,7 @@ def main(argv):
         if params['decompose_training']:
             models.append(models[0])
 
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+    optimizer = getattr(tf.optimizers, params['optimizer'])(learning_rate=params['learning_rate'])
     step = tf.Variable(0, trainable=False, dtype=tf.int64)
 
     for phase, vae_mdp_model in enumerate(models):
@@ -572,7 +572,7 @@ if __name__ == '__main__':
     flags.DEFINE_string(
         "load_vae",
         default='',
-        help='Path of a VAE model already trained to load (saved via the tf.saved_model function).'
+        help='Path of a (trained) VAE model to load (saved via the tf.saved_model function).'
     )
     flags.DEFINE_multi_integer(
         "encoder_layers",
@@ -763,6 +763,16 @@ if __name__ == '__main__':
         "state_decoder_pre_processing_layers",
         default=[256, 256],
         help='Number of units to use for each layer of the state decoder pre-processing network.'
+    )
+    flags.DEFINE_string(
+        "optimizer",
+        default='Adam',
+        help='Optimizer name (see tf.optimizers).'
+    )
+    flags.DEFINE_float(
+        'learning_rate',
+        default=1e-4,
+        help='Learning rate for the optimizer.'
     )
     FLAGS = flags.FLAGS
 
