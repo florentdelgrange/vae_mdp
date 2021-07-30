@@ -2102,6 +2102,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             labeling_function: Callable[[tf.Tensor], tf.Tensor],
             estimate_transition_function_from_samples: bool = False,
             assert_estimated_transition_function_distribution: bool = False,
+            replay_buffer_max_frames: Optional[int] = int(1e5),
             reward_scaling: Optional[float] = 1.,
     ):
         if self.latent_policy_network is None:
@@ -2128,6 +2129,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     action=action)),
             estimate_transition_function_from_samples=estimate_transition_function_from_samples,
             assert_transition_distribution=assert_estimated_transition_function_distribution,
+            replay_buffer_max_frames=replay_buffer_max_frames,
             reward_scaling=reward_scaling)
 
 
