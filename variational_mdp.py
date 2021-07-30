@@ -5,7 +5,11 @@ from enum import Enum
 from typing import Tuple, Optional, Callable, Dict, Iterator, NamedTuple
 import numpy as np
 import psutil
-import reverb
+try:
+    import reverb
+except ImportError as ie:
+    print("Reverb is not installed on your system,"
+          "meaning prioritized experience replay cannot be used.", ie)
 import time
 import datetime
 import gc
@@ -21,7 +25,6 @@ import tf_agents.agents.tf_agent
 from tensorflow.python.keras.layers import TimeDistributed, Flatten, LSTM
 from tensorflow.python.keras.models import Sequential
 from tf_agents import specs, trajectories
-from tf_agents.environments.wrappers import HistoryWrapper
 from tf_agents.policies import tf_policy, py_tf_eager_policy
 from tf_agents.trajectories import time_step as ts
 from tf_agents.drivers import dynamic_step_driver, py_driver
@@ -936,11 +939,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
             ])
             distortion = -1. * reconstruction_distribution.log_prob(reward, next_state)
 
-        return (
-            tf.reduce_mean(-1. * (distortion + rate)),
-            tf.concat([tf.cast(latent_state, tf.int64), tf.cast(next_latent_state, tf.int64)], axis=0),
-            None
-        )
+        return {
+            'distortion': tf.reduce_mean(distortion),
+            'rate': tf.reduce_mean(rate),
+            'elbo': tf.reduce_mean(-1. * (distortion + rate)),
+            'latent_states': tf.concat([tf.cast(latent_state, tf.int64), tf.cast(next_latent_state, tf.int64)], axis=0),
+            'latent_actions': None
+        }
 
     def mean_latent_bits_used(self, inputs, eps=1e-3, deterministic=True):
         """
@@ -1197,6 +1202,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             environment_seed: Optional[int] = None,
             use_prioritized_replay_buffer: bool = False,
             policy_evaluation_num_episodes: int = 0,
+            policy_evaluation_env_name: Optional[str] = None,
             labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None,
     ):
         # reverb replay buffers are not compatible with batched environments
@@ -1225,8 +1231,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
         if policy_evaluation_num_episodes > 0:
             if labeling_function is None:
                 raise ValueError('Must pass a labeling function if a policy evaluation environment is requested')
+            if policy_evaluation_env_name is None:
+                policy_evaluation_env_name = env_name
 
-            py_eval_env = env_loader.load(env_name)
+            py_eval_env = env_loader.load(policy_evaluation_env_name)
             eval_env = tf_py_environment.TFPyEnvironment(py_eval_env)
 
             if self.time_stacked_states:
@@ -1467,7 +1475,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             optimizer: tf.keras.optimizers.Optimizer = tf.keras.optimizers.Adam(1e-4),
             checkpoint: Optional[tf.train.Checkpoint] = None,
             manager: Optional[tf.train.CheckpointManager] = None,
-            log_interval: int = 80,
+            log_interval: int = 200,
             checkpoint_interval: int = 250,
             eval_steps: int = int(1e3),
             eval_and_save_model_interval: int = int(1e4),
@@ -1481,6 +1489,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             display_progressbar: bool = False,
             save_directory: Optional[str] = '.',
             policy_evaluation_num_episodes: int = 30,
+            policy_evaluation_env_name: Optional[str] = None,
             environment_seed: Optional[int] = None,
             aggressive_training: bool = False,
             approximate_convergence_error: float = 5e-1,
@@ -1550,7 +1559,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             target=None,
             stateful_metrics=list(self.loss_metrics.keys()) + [
                 'loss', 't_1', 't_2', 'entropy_regularizer_scale_factor', 'step', "num_episodes", "env_steps",
-                "replay_buffer_frames", 'kl_annealing_scale_factor', "decoder_jsdiv", 'state_rate',
+                "replay_buffer_frames", 'kl_annealing_scale_factor', 'state_rate',
                 "state_distortion", 'action_rate', 'action_distortion', 'mean_state_bits_used', 'wis_exponent',
                 'priority_logistic_smoothness', 'priority_logistic_mean',
                 'priority_logistic_max', 'priority_logistic_min'
@@ -1569,7 +1578,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 collect_steps_per_iteration=collect_steps_per_iteration,
                 environment_seed=environment_seed,
                 use_prioritized_replay_buffer=use_prioritized_replay_buffer,
-                policy_evaluation_num_episodes=policy_evaluation_num_episodes)
+                policy_evaluation_num_episodes=policy_evaluation_num_episodes,
+                policy_evaluation_env_name=policy_evaluation_env_name)
 
             env = environment if environment is not None else environments.training
             policy_evaluation_driver = policy_evaluation_driver if policy_evaluation_driver is not None \
@@ -1773,6 +1783,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         if additional_metrics is None:
             additional_metrics = {}
+
         if not aggressive_training and not self.latent_policy_training_phase:
             gradients = self.compute_apply_gradients(*dataset_batch)
         elif not aggressive_training and self.latent_policy_training_phase:
@@ -1878,8 +1889,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
             train_summary_writer: Optional[tf.summary.SummaryWriter] = None,
             eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None
     ):
-        eval_elbo = tf.metrics.Mean()
-        data = {'state': None, 'action': None}
+        metrics = {'eval_elbo': tf.metrics.Mean(),
+                   'eval_distortion': tf.metrics.Mean(),
+                   'eval_rate': tf.metrics.Mean()}
+        data = {'states': None, 'actions': None}
         avg_rewards = None
 
         if eval_steps > 0:
@@ -1890,12 +1903,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
             for step in range(eval_steps):
                 x = next(dataset_iterator)[:6]
 
-                elbo, latent_states, latent_actions = self.eval(*x)
-                for value in ('state', 'action'):
-                    latent = latent_states if value == 'state' else latent_actions
+                evaluation = self.eval(*x)
+                for value in ('states', 'actions'):
+                    latent = evaluation['latent_' + value]
                     data[value] = latent if data[value] is None else tf.concat([data[value], latent], axis=0)
-                eval_elbo(elbo)
-                eval_progressbar.add(batch_size, values=[('eval_ELBO', eval_elbo.result())])
+                for value in ('elbo', 'distortion', 'rate'):
+                    metrics['eval_' + value](evaluation[value])
+                eval_progressbar.add(batch_size, values=[('eval_ELBO', metrics['eval_elbo'].result())])
 
         if eval_policy_driver is not None:
             avg_rewards = self.eval_policy(
@@ -1905,19 +1919,20 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         if train_summary_writer is not None and eval_steps > 0:
             with train_summary_writer.as_default():
-                tf.summary.scalar('eval_elbo', eval_elbo.result(), step=global_step)
-                for value in ('state', 'action'):
+                for key, value in metrics.items():
+                    tf.summary.scalar(key, value.result(), step=global_step)
+                for value in ('states', 'actions'):
                     if data[value] is not None:
-                        if value == 'state':
+                        if value == 'states':
                             data[value] = tf.reduce_sum(
                                 data[value] * 2 ** tf.range(tf.cast(self.latent_state_size, dtype=tf.int64)),
                                 axis=-1)
-                        tf.summary.histogram('{}_frequency'.format(value), data[value], step=global_step)
-            print('eval ELBO: ', eval_elbo.result().numpy())
+                        tf.summary.histogram('{}_frequency'.format(value[:-1]), data[value], step=global_step)
+            print('eval ELBO: ', metrics['eval_elbo'].result().numpy())
 
         if eval_policy_driver is not None or eval_steps > 0:
             self.assign_score(
-                score=avg_rewards if eval_policy_driver is not None else eval_elbo,
+                score=avg_rewards if eval_policy_driver is not None else metrics['eval_elbo'].result(),
                 checkpoint_model=save_directory is not None and log_name is not None,
                 save_directory=save_directory,
                 model_name=log_name,
@@ -1925,7 +1940,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         gc.collect()
 
-        return eval_elbo
+        return metrics['eval_elbo'].result()
 
     def eval_policy(
             self,
