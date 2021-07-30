@@ -74,8 +74,7 @@ def estimate_local_losses_from_samples(
     latent_environment = DiscreteActionTFEnvironmentWrapper(
         tf_env=environment,
         action_embedding_function=action_embedding_function,
-        number_of_discrete_actions=number_of_discrete_actions,
-        reward_scaling=reward_scaling)
+        number_of_discrete_actions=number_of_discrete_actions,)
     # set the latent policy over real states
     policy = LatentPolicyOverRealStateSpace(
         time_step_spec=latent_environment.time_step_spec(),
@@ -219,8 +218,8 @@ def estimate_local_reward_loss(
     if next_latent_state is None:
         next_latent_state = state_embedding_function(next_state, next_label)
 
-    return tf.reduce_mean(tf.abs(
-        reward - reward_scaling * latent_reward_function(latent_state, latent_action, next_latent_state)))
+    return tf.reduce_mean(reward_scaling * tf.abs(
+        reward - latent_reward_function(latent_state, latent_action, next_latent_state)))
 
 
 @tf.function
