@@ -206,10 +206,6 @@ def main(argv):
         if params[name] == '':
             raise RuntimeError('Missing argument: --{}'.format(name))
 
-    if params['dataset_path'] == '':
-        for param in ('policy_path', 'environment'):
-            check_missing_argument(param)
-
     if params['collect_steps_per_iteration'] <= 0:
         params['collect_steps_per_iteration'] = params['batch_size'] // 8
 
