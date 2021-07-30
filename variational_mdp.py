@@ -1892,7 +1892,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         metrics = {'eval_elbo': tf.metrics.Mean(),
                    'eval_distortion': tf.metrics.Mean(),
                    'eval_rate': tf.metrics.Mean()}
-        data = {'state': None, 'action': None}
+        data = {'states': None, 'actions': None}
         avg_rewards = None
 
         if eval_steps > 0:
@@ -1908,7 +1908,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     latent = evaluation['latent_' + value]
                     data[value] = latent if data[value] is None else tf.concat([data[value], latent], axis=0)
                 for value in ('elbo', 'distortion', 'rate'):
-                    metrics[value](evaluation[value])
+                    metrics['eval_' + value](evaluation[value])
                 eval_progressbar.add(batch_size, values=[('eval_ELBO', metrics['eval_elbo'].result())])
 
         if eval_policy_driver is not None:
@@ -1920,7 +1920,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         if train_summary_writer is not None and eval_steps > 0:
             with train_summary_writer.as_default():
                 for key, value in metrics.items():
-                    tf.summary.scalar(key, value.result())
+                    tf.summary.scalar(key, value.result(), step=global_step)
                 for value in ('states', 'actions'):
                     if data[value] is not None:
                         if value == 'states':
