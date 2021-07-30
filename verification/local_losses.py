@@ -187,11 +187,20 @@ def estimate_local_losses_from_samples(
                 _transition_function_estimation_num_frames, transition_function_estimation_time))
         print("Time to estimate the local probability loss function (from {:d} transitions):"
               " {:.3f}".format(steps, local_probability_loss_time))
+    time_metrics = {
+        'fill_replay_buffer': collect_time,
+        'local_reward_loss': local_reward_loss_time,
+        'local_probability_loss': local_probability_loss_time,
+        'transition_fun':
+            transition_function_estimation_time if estimate_transition_function_from_samples else 0.,
+    }
+
+    replay_buffer.clear()
 
     return namedtuple(
         'LocalLossesEstimationMetrics',
-        ['local_reward_loss', 'local_probability_loss', 'print_time_metrics'])(
-          local_reward_loss,   local_probability_loss,   print_time_metrics)
+        ['local_reward_loss', 'local_probability_loss', 'print_time_metrics', 'time_metrics'])(
+          local_reward_loss,   local_probability_loss,   print_time_metrics, time_metrics)
 
 
 def generate_binary_latent_state_space(latent_state_size):
