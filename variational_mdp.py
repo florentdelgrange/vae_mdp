@@ -687,13 +687,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
             label: Optional[tf.Tensor] = None,
             labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None
     ) -> tf.Tensor:
-        if (label is None) == (labeling_function is None):
-            raise ValueError("Must either pass a label or a labeling_function")
 
         if labeling_function is not None:
             label = labeling_function(state)
 
-        label = tf.cast(label, dtype=tf.float32)
+        if label is not None:
+            label = tf.cast(label, dtype=tf.float32)
 
         return self.binary_encode(state, label).mode()
 
