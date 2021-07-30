@@ -93,3 +93,4 @@ labeling_functions['LunarLanderContinuousRewardShapingAugmented-v2'] = labeling_
 labeling_functions['LunarLanderContinuousRandomInitRewardShapingAugmented-v2'] = labeling_functions['LunarLander-v2']
 labeling_functions['MountainCarContinuous-v0'] = labeling_functions['MountainCar-v0']
 labeling_functions['PendulumRandomInit-v0'] = labeling_functions['Pendulum-v0']
+labeling_functions['AcrobotRandomInit-v1'] = labeling_functions['Acrobot-v1']
