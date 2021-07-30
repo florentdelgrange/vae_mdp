@@ -151,7 +151,8 @@ def estimate_local_losses_from_samples(
 
     local_reward_loss = estimate_local_reward_loss(
         state, label, latent_action, reward, next_state, next_label,
-        latent_reward_function, latent_state, next_latent_state)
+        latent_reward_function, latent_state, next_latent_state,
+        reward_scaling)
 
     local_reward_loss_time = time.time() - local_reward_loss_time
 
@@ -211,13 +212,15 @@ def estimate_local_reward_loss(
         latent_state: Optional[tf.Tensor] = None,
         next_latent_state: Optional[tf.Tensor] = None,
         state_embedding_function: Optional[Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor]] = None,
+        reward_scaling: Optional[float] = 1.
 ):
     if latent_state is None:
         latent_state = state_embedding_function(state, label)
     if next_latent_state is None:
         next_latent_state = state_embedding_function(next_state, next_label)
 
-    return tf.reduce_mean(tf.abs(reward - latent_reward_function(latent_state, latent_action, next_latent_state)))
+    return tf.reduce_mean(tf.abs(
+        reward - reward_scaling * latent_reward_function(latent_state, latent_action, next_latent_state)))
 
 
 @tf.function
