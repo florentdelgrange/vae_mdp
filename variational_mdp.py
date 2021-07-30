@@ -2101,7 +2101,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             steps: int,
             labeling_function: Callable[[tf.Tensor], tf.Tensor],
             estimate_transition_function_from_samples: bool = False,
-            assert_estimated_transition_function_distribution: bool = False
+            assert_estimated_transition_function_distribution: bool = False,
+            reward_scaling: Optional[float] = 1.,
     ):
         if self.latent_policy_network is None:
             raise ValueError('This VAE is not built for policy abstraction.')
@@ -2110,7 +2111,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             environment=environment,
             steps=steps,
             latent_policy=self.get_latent_policy(),
-            latent_state_size=self.latent_state_size,
             number_of_discrete_actions=self.number_of_discrete_actions,
             state_embedding_function=self.state_embedding_function,
             action_embedding_function=self.action_embedding_function,
@@ -2127,7 +2127,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     latent_state=tf.cast(latent_state, tf.float32),
                     action=action)),
             estimate_transition_function_from_samples=estimate_transition_function_from_samples,
-            assert_transition_distribution=assert_estimated_transition_function_distribution)
+            assert_transition_distribution=assert_estimated_transition_function_distribution,
+            reward_scaling=reward_scaling)
 
 
 def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) -> VariationalMarkovDecisionProcess:

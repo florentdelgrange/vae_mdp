@@ -23,7 +23,6 @@ def estimate_local_losses_from_samples(
         environment: TFPyEnvironment,
         latent_policy: tf_policy.TFPolicy,
         steps: int,
-        latent_state_size: int,
         number_of_discrete_actions: int,
         state_embedding_function: Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor],
         action_embedding_function: Callable[[tf.Tensor, tf.Tensor], tf.Tensor],
@@ -33,7 +32,8 @@ def estimate_local_losses_from_samples(
         estimate_transition_function_from_samples: bool = False,
         assert_transition_distribution: bool = False,
         fill_in_replay_buffer: bool = True,
-        replay_buffer_max_frames: int = int(1e5)
+        replay_buffer_max_frames: int = int(1e5),
+        reward_scaling: Optional[float] = 1.
 ):
     """
     Estimates reward and probability local losses from samples.
@@ -74,7 +74,8 @@ def estimate_local_losses_from_samples(
     latent_environment = DiscreteActionTFEnvironmentWrapper(
         tf_env=environment,
         action_embedding_function=action_embedding_function,
-        number_of_discrete_actions=number_of_discrete_actions)
+        number_of_discrete_actions=number_of_discrete_actions,
+        reward_scaling=reward_scaling)
     # set the latent policy over real states
     policy = LatentPolicyOverRealStateSpace(
         time_step_spec=latent_environment.time_step_spec(),

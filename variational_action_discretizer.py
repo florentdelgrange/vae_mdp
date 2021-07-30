@@ -1055,16 +1055,15 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             steps: int,
             labeling_function: Callable[[tf.Tensor], tf.Tensor],
             estimate_transition_function_from_samples: bool = False,
-            assert_estimated_transition_function_distribution: bool = False
+            assert_estimated_transition_function_distribution: bool = False,
+            reward_scaling: Optional[float] = 1.,
     ):
         if self.latent_policy_network is None:
             raise ValueError('This VAE is not built for policy abstraction.')
 
-        _labeling_function = dataset_generator.ergodic_batched_labeling_function(labeling_function)
-
         return estimate_local_losses_from_samples(
             environment=environment, latent_policy=self.get_latent_policy(),
-            steps=steps, latent_state_size=self.latent_state_size,
+            steps=steps,
             number_of_discrete_actions=self.number_of_discrete_actions,
             state_embedding_function=self.state_embedding_function,
             action_embedding_function=lambda state, latent_action: self.action_embedding_function(
@@ -1083,7 +1082,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     latent_state=tf.cast(latent_state, tf.float32),
                     latent_action=tf.math.log(latent_action + epsilon),
                     log_latent_action=True)),
-            estimate_transition_function_from_samples=estimate_transition_function_from_samples)
+            estimate_transition_function_from_samples=estimate_transition_function_from_samples,
+            reward_scaling=reward_scaling)
 
 
 def load(tf_model_path: str, full_optimization: bool = False,
