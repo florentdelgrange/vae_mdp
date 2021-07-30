@@ -8,8 +8,8 @@ import psutil
 try:
     import reverb
 except ImportError as ie:
-    print("Reverb is not installed on your system,"
-          "meaning prioritized experience replay cannot be used.", ie)
+    print(ie, "Reverb is not installed on your system, "
+              "meaning prioritized experience replay cannot be used.")
 import time
 import datetime
 import gc
@@ -2120,8 +2120,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     tf.cast(latent_state, dtype=tf.float32),
                     action,
                     tf.cast(next_latent_state, dtype=tf.float32)).mode()),
-            labeling_function=(
-                lambda x: labeling_function(x)[:, -1, ...] if self.time_stacked_states else labeling_function),
+            labeling_function=
+                (lambda x: labeling_function(x)[:, -1, ...]) if self.time_stacked_states else labeling_function,
             latent_transition_function=(
                 lambda latent_state, action:
                 self.discrete_latent_transition_probability_distribution(
