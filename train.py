@@ -206,10 +206,6 @@ def main(argv):
         if params[name] == '':
             raise RuntimeError('Missing argument: --{}'.format(name))
 
-    if params['dataset_path'] == '':
-        for param in ('policy_path', 'environment'):
-            check_missing_argument(param)
-
     if params['collect_steps_per_iteration'] <= 0:
         params['collect_steps_per_iteration'] = params['batch_size'] // 8
 
@@ -395,6 +391,7 @@ def main(argv):
             policy_evaluation_num_episodes=(
                 0 if not (params['action_discretizer'] or params['latent_policy'])
                      or (phase == 0 and len(models) > 1) else 30),
+            policy_evaluation_env_name=params['policy_environment'],
             annealing_period=params['annealing_period'],
             aggressive_training=params['aggressive_training'],
             initial_collect_steps=params['initial_collect_steps'],
@@ -411,11 +408,10 @@ def main(argv):
 
 
 if __name__ == '__main__':
-    flags.DEFINE_string(
-        "dataset_path",
-        help="Path of the directory containing the dataset files in hdf5 format.",
-        default='')
-    flags.DEFINE_integer("batch_size", default=128, help="Batch size.")
+    flags.DEFINE_integer(
+        "batch_size",
+        default=128,
+        help="Batch size.")
     flags.DEFINE_integer(
         "mixture_components",
         default=1,
@@ -436,7 +432,10 @@ if __name__ == '__main__':
         "activation",
         default="relu",
         help="Activation function for all hidden layers.")
-    flags.DEFINE_integer("latent_size", default=17, help='Number of bits used for the discrete latent state space.')
+    flags.DEFINE_integer(
+        "latent_size",
+        default=12,
+        help='Number of bits used for the discrete latent state space.')
     flags.DEFINE_float(
         "max_state_decoder_variance",
         default="0.",
@@ -467,8 +466,8 @@ if __name__ == '__main__':
         default=False,
         help="If set, VAEs for state discretization will learn a abstraction of the input policy conditioned on"
              "latent states."
-             "Remark 1: only works for environment with discrete actions."
-             "Remark 2: Action discretizer VAEs always learn a latent policy."
+             "Only works for environment with discrete actions."
+             "Remark: action discretizer VAEs always learn a latent policy."
     )
     flags.DEFINE_float(
         "encoder_temperature_decay_rate",
@@ -613,22 +612,23 @@ if __name__ == '__main__':
     flags.DEFINE_string(
         "environment",
         default='',
-        help="Name of the agent's environment."
+        help="Name of the training environment."
     )
     flags.DEFINE_string(
         "env_suite",
         default='suite_gym',
         help='Name of the tf_agents environment suite.'
     )
+    flags.DEFINE_string(
+        "policy_environment",
+        default=None,
+        help='Name of the environment used for latent policy evaluation.'
+             'Default behavior is to use the training environment.'
+    )
     flags.DEFINE_integer(
         "parallel_env",
         default=1,
         help='Number of parallel environments to be used during training.'
-    )
-    flags.DEFINE_float(
-        'state_scaling',
-        default=1.,
-        help='Scaler for the input states of the environment.'
     )
     flags.DEFINE_integer(
         'annealing_period',

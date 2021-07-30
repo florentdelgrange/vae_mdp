@@ -892,11 +892,13 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         distortion = -1. * reconstruction_distribution.log_prob(action, reward, next_state)
 
-        return (
-            tf.reduce_mean(-1. * (distortion + rate)),
-            tf.concat([tf.cast(latent_state, tf.int64), tf.cast(next_latent_state, tf.int64)], axis=0),
-            tf.cast(tf.argmax(latent_action, axis=1), tf.int64)
-        )
+        return {
+            'distortion': tf.reduce_mean(distortion),
+            'rate': tf.reduce_mean(rate),
+            'elbo': tf.reduce_mean(-1. * (distortion + rate)),
+            'latent_states': tf.concat([tf.cast(latent_state, tf.int64), tf.cast(next_latent_state, tf.int64)], axis=0),
+            'latent_actions': tf.cast(tf.argmax(latent_action, axis=1), tf.int64)
+        }
 
     def mean_latent_bits_used(self, inputs, eps=1e-3, deterministic=True):
         state, label, action, reward, next_state, next_label = inputs[:6]
@@ -1045,7 +1047,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         else:
             return self._compute_apply_gradients(
                 state, label, action, reward, next_state, next_label,
-                sample_key, self.action_discretizer_variables, sample_probability)
+                self.action_discretizer_variables, sample_key, sample_probability)
 
     def estimate_local_losses_from_samples(
             self,
