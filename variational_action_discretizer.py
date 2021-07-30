@@ -1056,6 +1056,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             labeling_function: Callable[[tf.Tensor], tf.Tensor],
             estimate_transition_function_from_samples: bool = False,
             assert_estimated_transition_function_distribution: bool = False,
+            replay_buffer_max_frames: Optional[int] = int(1e5),
             reward_scaling: Optional[float] = 1.,
     ):
         if self.latent_policy_network is None:
@@ -1083,6 +1084,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     latent_action=tf.math.log(latent_action + epsilon),
                     log_latent_action=True)),
             estimate_transition_function_from_samples=estimate_transition_function_from_samples,
+            replay_buffer_max_frames=replay_buffer_max_frames,
             reward_scaling=reward_scaling)
 
 
