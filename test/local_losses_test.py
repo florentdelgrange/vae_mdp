@@ -49,7 +49,7 @@ if __name__ == '__main__':
     num_parallel_env = 4
     num_steps = 30000
 
-    for environment_name in ('CartPole-v0', 'MountainCar-v0', 'LunarLander-v2'):
+    for environment_name in ['MountainCar-v0']:
         labeling_function = labeling_functions[environment_name]
         py_env = tf_agents.environments.parallel_py_environment.ParallelPyEnvironment(
             [lambda: suite_gym.load(environment_name)] * num_parallel_env)
