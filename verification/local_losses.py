@@ -74,7 +74,7 @@ def estimate_local_losses_from_samples(
     latent_environment = DiscreteActionTFEnvironmentWrapper(
         tf_env=environment,
         action_embedding_function=action_embedding_function,
-        number_of_discrete_actions=number_of_discrete_actions,)
+        number_of_discrete_actions=number_of_discrete_actions, )
     # set the latent policy over real states
     policy = LatentPolicyOverRealStateSpace(
         time_step_spec=latent_environment.time_step_spec(),
@@ -182,13 +182,12 @@ def estimate_local_losses_from_samples(
     local_probability_loss_time2 = time.time()
     if empirical_latent_transition_function is not None:
         local_probability_loss_transition_function_estimation = estimate_local_probability_loss(
-        state, label, latent_action, next_state, next_label,
-        empirical_latent_transition_function, latent_state, next_latent_state_no_label)
+            state, label, latent_action, next_state, next_label,
+            empirical_latent_transition_function, latent_state, next_latent_state_no_label)
     else:
         local_probability_loss_transition_function_estimation = None
 
     local_probability_loss_time2 = time.time() - local_probability_loss_time2
-
 
     def print_time_metrics():
         print("Time to fill in the Replay Buffer ({:d} frames): {:.3f}".format(replay_buffer_max_frames, collect_time))
@@ -199,6 +198,7 @@ def estimate_local_losses_from_samples(
         if estimate_transition_function_from_samples:
             print("Time to estimate the probability transition function (from {:d} transitions): {:3f}".format(
                 _transition_function_estimation_num_frames, local_probability_loss_time2))
+
     time_metrics = {
         'fill_replay_buffer': collect_time,
         'local_reward_loss': local_reward_loss_time,
@@ -212,10 +212,10 @@ def estimate_local_losses_from_samples(
 
     return namedtuple(
         'LocalLossesEstimationMetrics',
-        ['local_reward_loss', 'local_probability_loss', 'local_probability_loss_transition_function_estimation'
+        ['local_reward_loss', 'local_probability_loss', 'local_probability_loss_transition_function_estimation',
          'print_time_metrics', 'time_metrics'])(
-          local_reward_loss,   local_probability_loss, local_probability_loss_transition_function_estimation,
-        print_time_metrics, time_metrics)
+            local_reward_loss, local_probability_loss, local_probability_loss_transition_function_estimation,
+            print_time_metrics, time_metrics)
 
 
 def generate_binary_latent_state_space(latent_state_size):
