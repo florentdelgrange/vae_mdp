@@ -893,9 +893,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         distortion = -1. * reconstruction_distribution.log_prob(action, reward, next_state)
 
         return {
-            'distortion': tf.reduce_mean(distortion),
-            'rate': tf.reduce_mean(rate),
-            'elbo': tf.reduce_mean(-1. * (distortion + rate)),
+            'distortion': distortion,
+            'rate': rate,
+            'elbo': -1. * (distortion + rate),
             'latent_states': tf.concat([tf.cast(latent_state, tf.int64), tf.cast(next_latent_state, tf.int64)], axis=0),
             'latent_actions': tf.cast(tf.argmax(latent_action, axis=1), tf.int64)
         }

@@ -402,7 +402,11 @@ def main(argv):
             buckets_based_priorities=params['buckets_based_priority'],
             collect_steps_per_iteration=params['collect_steps_per_iteration'],
             wall_time=params['wall_time'] if params['wall_time'] != '.' else None,
-            memory_limit=params['memory'] if params['memory'] > 0. else None)
+            memory_limit=params['memory'] if params['memory'] > 0. else None,
+            local_losses_evaluation=params['local_losses_evaluation'],
+            local_losses_eval_steps=params['local_losses_evaluation_steps'],
+            local_losses_eval_replay_buffer_size=params['local_losses_replay_buffer_size'],
+            local_losses_reward_scaling=reinforcement_learning.reward_scaling.get(environment_name, 1.))
 
     return 0
 
@@ -773,6 +777,21 @@ if __name__ == '__main__':
         'learning_rate',
         default=1e-4,
         help='Learning rate for the optimizer.'
+    )
+    flags.DEFINE_bool(
+        'local_losses_evaluation',
+        default=False,
+        help='Whether to estimate local losses during evaluation or not.'
+    )
+    flags.DEFINE_integer(
+        'local_losses_evaluation_steps',
+        default=int(3e4),
+        help='Number of steps to perform to estimate the local losses'
+    )
+    flags.DEFINE_integer(
+        'local_losses_replay_buffer_size',
+        default=int(1e5),
+        help='Size of the replay buffer used to estimate the local losses'
     )
     FLAGS = flags.FLAGS
 
