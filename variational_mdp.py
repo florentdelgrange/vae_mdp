@@ -5,11 +5,12 @@ from enum import Enum
 from typing import Tuple, Optional, Callable, Dict, Iterator, NamedTuple
 import numpy as np
 import psutil
+
 try:
     import reverb
 except ImportError as ie:
-    print("Reverb is not installed on your system,"
-          "meaning prioritized experience replay cannot be used.", ie)
+    print(ie, "Reverb is not installed on your system, "
+              "meaning prioritized experience replay cannot be used.")
 import time
 import datetime
 import gc
@@ -687,13 +688,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
             label: Optional[tf.Tensor] = None,
             labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None
     ) -> tf.Tensor:
-        if (label is None) == (labeling_function is None):
-            raise ValueError("Must either pass a label or a labeling_function")
 
         if labeling_function is not None:
             label = labeling_function(state)
 
-        label = tf.cast(label, dtype=tf.float32)
+        if label is not None:
+            label = tf.cast(label, dtype=tf.float32)
 
         return self.binary_encode(state, label).mode()
 
@@ -940,9 +940,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             distortion = -1. * reconstruction_distribution.log_prob(reward, next_state)
 
         return {
-            'distortion': tf.reduce_mean(distortion),
-            'rate': tf.reduce_mean(rate),
-            'elbo': tf.reduce_mean(-1. * (distortion + rate)),
+            'distortion': distortion,
+            'rate': rate,
+            'elbo': -1. * (distortion + rate),
             'latent_states': tf.concat([tf.cast(latent_state, tf.int64), tf.cast(next_latent_state, tf.int64)], axis=0),
             'latent_actions': None
         }
@@ -1204,11 +1204,16 @@ class VariationalMarkovDecisionProcess(tf.Module):
             policy_evaluation_num_episodes: int = 0,
             policy_evaluation_env_name: Optional[str] = None,
             labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None,
+            local_losses_evaluation: bool = False,
+            local_losses_eval_steps: Optional[int] = 0,
+            local_losses_eval_replay_buffer_size: Optional[int] = int(1e5),
+            local_losses_reward_scaling: Optional[float] = 1.
     ):
         # reverb replay buffers are not compatible with batched environments
         parallel_environments = parallel_environments and not use_prioritized_replay_buffer
         # get the highest integer from the range(1, num_parallel_env + 1) which can be (integer-)divided by
         # collect_steps_per_iteration
+        _num_parallel_environments = num_parallel_environments
         num_parallel_environments = np.argmax(
             np.gcd(np.arange(1, num_parallel_environments + 1), collect_steps_per_iteration)
         ) + 1
@@ -1249,8 +1254,28 @@ class VariationalMarkovDecisionProcess(tf.Module):
             eval_env = None
             policy_evaluation_driver = None
 
-        return namedtuple('Environments', ['training', 'evaluation', 'policy_evaluation_driver'])(
-            env, eval_env, policy_evaluation_driver)
+        if local_losses_evaluation and self.latent_policy_network is not None:
+            py_local_loss_eval_env = parallel_py_environment.ParallelPyEnvironment(
+                [lambda: env_loader.load(env_name)] * _num_parallel_environments)
+            local_losses_eval_env = tf_py_environment.TFPyEnvironment(py_local_loss_eval_env)
+            local_losses_eval_env.reset()
+
+            local_losses_estimator = lambda: self.estimate_local_losses_from_samples(
+                environment=local_losses_eval_env,
+                steps=local_losses_eval_steps,
+                labeling_function=labeling_function,
+                estimate_transition_function_from_samples=True,
+                replay_buffer_max_frames=local_losses_eval_replay_buffer_size,
+                reward_scaling=local_losses_reward_scaling)
+
+        else:
+            local_losses_eval_env = None
+            local_losses_estimator = None
+
+        return namedtuple(
+            'Environments',
+            ['training', 'evaluation', 'policy_evaluation_driver', 'local_losses_eval_env', 'local_losses_estimator'])(
+            env, eval_env, policy_evaluation_driver, local_losses_eval_env, local_losses_estimator)
 
     def initialize_dataset_components(
             self,
@@ -1501,7 +1526,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
             close_at_the_end: bool = True,
             start_time: Optional[float] = None,
             wall_time: Optional[str] = None,
-            memory_limit: Optional[float] = None
+            memory_limit: Optional[float] = None,
+            local_losses_evaluation: bool = False,
+            local_losses_eval_steps: Optional[int] = int(3e4),
+            local_losses_eval_replay_buffer_size: Optional[int] = int(1e5),
+            local_losses_reward_scaling: Optional[float] = 1.,
     ):
         if wall_time is not None:
             if start_time is None:
@@ -1579,13 +1608,19 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 environment_seed=environment_seed,
                 use_prioritized_replay_buffer=use_prioritized_replay_buffer,
                 policy_evaluation_num_episodes=policy_evaluation_num_episodes,
-                policy_evaluation_env_name=policy_evaluation_env_name)
+                policy_evaluation_env_name=policy_evaluation_env_name,
+                local_losses_evaluation=local_losses_evaluation,
+                local_losses_eval_steps=local_losses_eval_steps,
+                local_losses_eval_replay_buffer_size=local_losses_eval_replay_buffer_size,
+                local_losses_reward_scaling=local_losses_reward_scaling)
 
             env = environment if environment is not None else environments.training
             policy_evaluation_driver = policy_evaluation_driver if policy_evaluation_driver is not None \
                 else environments.policy_evaluation_driver
+            local_losses_estimator = environments.local_losses_estimator
         else:
             env = environment
+            local_losses_estimator = None
 
         if dataset_components is None:
             if epsilon_greedy > 0.:
@@ -1710,7 +1745,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 eval_policy_driver=policy_evaluation_driver,
                 aggressive_training=aggressive_training and global_step.numpy() < aggressive_training_steps,
                 aggressive_update=aggressive_inference_optimization,
-                prioritized_experience_replay=use_prioritized_replay_buffer)
+                prioritized_experience_replay=use_prioritized_replay_buffer,
+                local_losses_estimator=local_losses_estimator)
 
             if tf.math.logical_and(tf.greater(epsilon_greedy, 0.),
                                    tf.greater_equal(global_step, start_annealing_step)):
@@ -1777,7 +1813,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
             eval_steps, save_directory, log_name, train_summary_writer, log_interval, logs,
             start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None,
             eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
-            aggressive_training=False, aggressive_update=True, prioritized_experience_replay=False
+            aggressive_training=False, aggressive_update=True, prioritized_experience_replay=False,
+            local_losses_estimator=None
     ):
         dataset_batch = next(dataset_iterator)
 
@@ -1822,7 +1859,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                                batch_size=batch_size, eval_steps=eval_steps,
                                global_step=global_step, save_directory=save_directory, log_name=log_name,
                                train_summary_writer=train_summary_writer,
-                               eval_policy_driver=eval_policy_driver)
+                               eval_policy_driver=eval_policy_driver,
+                               local_losses_estimator=local_losses_estimator)
         if global_step.numpy() % log_interval == 0:
             if logs:
                 with train_summary_writer.as_default():
@@ -1887,13 +1925,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
             save_directory: Optional[str] = None,
             log_name: Optional[str] = None,
             train_summary_writer: Optional[tf.summary.SummaryWriter] = None,
-            eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None
+            eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
+            local_losses_estimator: Optional[Callable] = None
     ):
         metrics = {'eval_elbo': tf.metrics.Mean(),
                    'eval_distortion': tf.metrics.Mean(),
                    'eval_rate': tf.metrics.Mean()}
         data = {'states': None, 'actions': None}
         avg_rewards = None
+        local_losses_metrics = None
 
         if eval_steps > 0:
             eval_progressbar = Progbar(
@@ -1901,14 +1941,19 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
             tf.print("\nEvalutation over {} steps".format(eval_steps))
             for step in range(eval_steps):
-                x = next(dataset_iterator)[:6]
+                x = next(dataset_iterator)
 
-                evaluation = self.eval(*x)
+                if len(x) >= 8:
+                    is_weights = tf.reduce_min(x[7]) / x[7]  # we consider is_exponent=1 for evaluation
+                else:
+                    is_weights = 1.
+
+                evaluation = self.eval(*(x[:6]))
                 for value in ('states', 'actions'):
                     latent = evaluation['latent_' + value]
                     data[value] = latent if data[value] is None else tf.concat([data[value], latent], axis=0)
                 for value in ('elbo', 'distortion', 'rate'):
-                    metrics['eval_' + value](evaluation[value])
+                    metrics['eval_' + value](tf.reduce_mean(is_weights * evaluation[value]))
                 eval_progressbar.add(batch_size, values=[('eval_ELBO', metrics['eval_elbo'].result())])
 
         if eval_policy_driver is not None:
@@ -1916,6 +1961,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 eval_policy_driver=eval_policy_driver,
                 train_summary_writer=train_summary_writer,
                 global_step=global_step)
+
+        if local_losses_estimator is not None:
+            local_losses_metrics = local_losses_estimator()
 
         if train_summary_writer is not None and eval_steps > 0:
             with train_summary_writer.as_default():
@@ -1928,6 +1976,24 @@ class VariationalMarkovDecisionProcess(tf.Module):
                                 data[value] * 2 ** tf.range(tf.cast(self.latent_state_size, dtype=tf.int64)),
                                 axis=-1)
                         tf.summary.histogram('{}_frequency'.format(value[:-1]), data[value], step=global_step)
+                if local_losses_metrics is not None:
+                    tf.summary.scalar('local_reward_loss', local_losses_metrics.local_reward_loss, step=global_step)
+                    if (local_losses_metrics.local_probability_loss_transition_function_estimation is not None and
+                            local_losses_metrics.local_probability_loss_transition_function_estimation <=
+                            local_losses_metrics.local_probability_loss):
+                        local_probability_loss = \
+                            local_losses_metrics.local_probability_loss_transition_function_estimation
+                        local_probability_loss_time = local_losses_metrics.time_metrics[
+                            'local_probability_loss_transition_function_estimation']
+                    else:
+                        local_probability_loss = local_losses_metrics.local_probability_loss
+                        local_probability_loss_time = local_losses_metrics.time_metrics['local_probability_loss']
+                    tf.summary.scalar('local_probability_loss', local_probability_loss, step=global_step)
+                    tf.summary.scalar(
+                        'local_losses_computation_time',
+                        local_losses_metrics.time_metrics['local_reward_loss'] + local_probability_loss_time,
+                        step=global_step)
+
             print('eval ELBO: ', metrics['eval_elbo'].result().numpy())
 
         if eval_policy_driver is not None or eval_steps > 0:
@@ -2102,7 +2168,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             steps: int,
             labeling_function: Callable[[tf.Tensor], tf.Tensor],
             estimate_transition_function_from_samples: bool = False,
-            assert_estimated_transition_function_distribution: bool = False
+            assert_estimated_transition_function_distribution: bool = False,
+            replay_buffer_max_frames: Optional[int] = int(1e5),
+            reward_scaling: Optional[float] = 1.,
     ):
         if self.latent_policy_network is None:
             raise ValueError('This VAE is not built for policy abstraction.')
@@ -2111,7 +2179,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
             environment=environment,
             steps=steps,
             latent_policy=self.get_latent_policy(),
-            latent_state_size=self.latent_state_size,
             number_of_discrete_actions=self.number_of_discrete_actions,
             state_embedding_function=self.state_embedding_function,
             action_embedding_function=self.action_embedding_function,
@@ -2120,15 +2187,17 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     tf.cast(latent_state, dtype=tf.float32),
                     action,
                     tf.cast(next_latent_state, dtype=tf.float32)).mode()),
-            labeling_function=(
-                lambda x: labeling_function(x)[:, -1, ...] if self.time_stacked_states else labeling_function),
+            labeling_function=
+            (lambda x: labeling_function(x)[:, -1, ...]) if self.time_stacked_states else labeling_function,
             latent_transition_function=(
                 lambda latent_state, action:
                 self.discrete_latent_transition_probability_distribution(
                     latent_state=tf.cast(latent_state, tf.float32),
                     action=action)),
             estimate_transition_function_from_samples=estimate_transition_function_from_samples,
-            assert_transition_distribution=assert_estimated_transition_function_distribution)
+            assert_transition_distribution=assert_estimated_transition_function_distribution,
+            replay_buffer_max_frames=replay_buffer_max_frames,
+            reward_scaling=reward_scaling)
 
 
 def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) -> VariationalMarkovDecisionProcess:

@@ -893,9 +893,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         distortion = -1. * reconstruction_distribution.log_prob(action, reward, next_state)
 
         return {
-            'distortion': tf.reduce_mean(distortion),
-            'rate': tf.reduce_mean(rate),
-            'elbo': tf.reduce_mean(-1. * (distortion + rate)),
+            'distortion': distortion,
+            'rate': rate,
+            'elbo': -1. * (distortion + rate),
             'latent_states': tf.concat([tf.cast(latent_state, tf.int64), tf.cast(next_latent_state, tf.int64)], axis=0),
             'latent_actions': tf.cast(tf.argmax(latent_action, axis=1), tf.int64)
         }
@@ -1055,16 +1055,16 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             steps: int,
             labeling_function: Callable[[tf.Tensor], tf.Tensor],
             estimate_transition_function_from_samples: bool = False,
-            assert_estimated_transition_function_distribution: bool = False
+            assert_estimated_transition_function_distribution: bool = False,
+            replay_buffer_max_frames: Optional[int] = int(1e5),
+            reward_scaling: Optional[float] = 1.,
     ):
         if self.latent_policy_network is None:
             raise ValueError('This VAE is not built for policy abstraction.')
 
-        _labeling_function = dataset_generator.ergodic_batched_labeling_function(labeling_function)
-
         return estimate_local_losses_from_samples(
             environment=environment, latent_policy=self.get_latent_policy(),
-            steps=steps, latent_state_size=self.latent_state_size,
+            steps=steps,
             number_of_discrete_actions=self.number_of_discrete_actions,
             state_embedding_function=self.state_embedding_function,
             action_embedding_function=lambda state, latent_action: self.action_embedding_function(
@@ -1083,7 +1083,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     latent_state=tf.cast(latent_state, tf.float32),
                     latent_action=tf.math.log(latent_action + epsilon),
                     log_latent_action=True)),
-            estimate_transition_function_from_samples=estimate_transition_function_from_samples)
+            estimate_transition_function_from_samples=estimate_transition_function_from_samples,
+            replay_buffer_max_frames=replay_buffer_max_frames,
+            reward_scaling=reward_scaling)
 
 
 def load(tf_model_path: str, full_optimization: bool = False,

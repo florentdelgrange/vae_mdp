@@ -46,7 +46,7 @@ labeling_functions = {
         ], axis=-1),
     'CartPole-v0':  # safe labels
         lambda observation: tf.stack([
-            tf.abs(observation[..., 0]) < 1.5,   # cart position is less than 1.5
+            tf.abs(observation[..., 0]) < 1.5,  # cart position is less than 1.5
             tf.abs(observation[..., 2]) < 0.15,  # pole angle is inferior to 9 degrees
         ], axis=-1),
     'LunarLander-v2':
@@ -64,7 +64,7 @@ labeling_functions = {
             # tf.abs(observation[..., 4]) <= math.pi / 6,  # weak lander angle
             # observation[..., 5] == 0.,  # angular velocity is 0
             tf.math.logical_and(tf.cast(observation[..., 6], dtype=tf.bool),
-                                tf.cast(observation[..., 7], dtype=tf.bool))   # ground contact
+                                tf.cast(observation[..., 7], dtype=tf.bool))  # ground contact
         ], axis=-1),
     'MountainCar-v0': lambda observation: tf.stack([
         observation[..., 0] >= 0.5,  # has reached the goal
@@ -79,18 +79,27 @@ labeling_functions = {
         observation[..., 2] >= 0.,  # cos of the second pendulum angle
         observation[..., 3] >= 0.,  # cos of the first pendulum angle
         observation[..., 4] >= 0.,  # angular velocity of the first pendulum
-        observation[..., 5] >= 0.   # angular velocity of the second pendulum
+        observation[..., 5] >= 0.  # angular velocity of the second pendulum
     ], axis=-1)
 }
 
-labeling_functions['LunarLanderContinuous-v2'] = labeling_functions['LunarLander-v2']
-labeling_functions['LunarLanderNoRewardShaping-v2'] = labeling_functions['LunarLander-v2']
-labeling_functions['LunarLanderRandomInit-v2'] = labeling_functions['LunarLander-v2']
-labeling_functions['LunarLanderContinuousRandomInit-v2'] = labeling_functions['LunarLander-v2']
-labeling_functions['LunarLanderRewardShapingAugmented-v2'] = labeling_functions['LunarLander-v2']
-labeling_functions['LunarLanderRandomInitRewardShapingAugmented-v2'] = labeling_functions['LunarLander-v2']
-labeling_functions['LunarLanderContinuousRewardShapingAugmented-v2'] = labeling_functions['LunarLander-v2']
-labeling_functions['LunarLanderContinuousRandomInitRewardShapingAugmented-v2'] = labeling_functions['LunarLander-v2']
-labeling_functions['MountainCarContinuous-v0'] = labeling_functions['MountainCar-v0']
-labeling_functions['PendulumRandomInit-v0'] = labeling_functions['Pendulum-v0']
-labeling_functions['AcrobotRandomInit-v1'] = labeling_functions['Acrobot-v1']
+reward_scaling = {
+    'Pendulum-v0': 1. / (math.pi ** 2 + 0.1 * 8 ** 2 + 0.001 * 2 ** 2),
+    'CartPole-v0': 1. / 2,
+    'LunarLander-v2': 1. / 150,
+    'MountainCar-v0': 1. / 2,
+    'Acrobot-v1': 1. / 2
+}  # to scale the rewards in [-1./2, 1./2]
+
+for d in [labeling_functions, reward_scaling]:
+    d['LunarLanderContinuous-v2'] = d['LunarLander-v2']
+    d['LunarLanderNoRewardShaping-v2'] = d['LunarLander-v2']
+    d['LunarLanderRandomInit-v2'] = d['LunarLander-v2']
+    d['LunarLanderContinuousRandomInit-v2'] = d['LunarLander-v2']
+    d['LunarLanderRewardShapingAugmented-v2'] = d['LunarLander-v2']
+    d['LunarLanderRandomInitRewardShapingAugmented-v2'] = d['LunarLander-v2']
+    d['LunarLanderContinuousRewardShapingAugmented-v2'] = d['LunarLander-v2']
+    d['LunarLanderContinuousRandomInitRewardShapingAugmented-v2'] = d['LunarLander-v2']
+    d['MountainCarContinuous-v0'] = d['MountainCar-v0']
+    d['PendulumRandomInit-v0'] = d['Pendulum-v0']
+    d['AcrobotRandomInit-v1'] = d['Acrobot-v1']

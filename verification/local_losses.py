@@ -23,7 +23,6 @@ def estimate_local_losses_from_samples(
         environment: TFPyEnvironment,
         latent_policy: tf_policy.TFPolicy,
         steps: int,
-        latent_state_size: int,
         number_of_discrete_actions: int,
         state_embedding_function: Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor],
         action_embedding_function: Callable[[tf.Tensor, tf.Tensor], tf.Tensor],
@@ -33,7 +32,8 @@ def estimate_local_losses_from_samples(
         estimate_transition_function_from_samples: bool = False,
         assert_transition_distribution: bool = False,
         fill_in_replay_buffer: bool = True,
-        replay_buffer_max_frames: int = int(1e5)
+        replay_buffer_max_frames: int = int(1e5),
+        reward_scaling: Optional[float] = 1.
 ):
     """
     Estimates reward and probability local losses from samples.
@@ -74,7 +74,7 @@ def estimate_local_losses_from_samples(
     latent_environment = DiscreteActionTFEnvironmentWrapper(
         tf_env=environment,
         action_embedding_function=action_embedding_function,
-        number_of_discrete_actions=number_of_discrete_actions)
+        number_of_discrete_actions=number_of_discrete_actions, )
     # set the latent policy over real states
     policy = LatentPolicyOverRealStateSpace(
         time_step_spec=latent_environment.time_step_spec(),
@@ -150,7 +150,8 @@ def estimate_local_losses_from_samples(
 
     local_reward_loss = estimate_local_reward_loss(
         state, label, latent_action, reward, next_state, next_label,
-        latent_reward_function, latent_state, next_latent_state)
+        latent_reward_function, latent_state, next_latent_state,
+        reward_scaling)
 
     local_reward_loss_time = time.time() - local_reward_loss_time
 
@@ -159,13 +160,14 @@ def estimate_local_losses_from_samples(
         transition_function_estimation_time = time.time()
         _samples = sample_from_replay_buffer(single_deterministic_pass=True)
         _transition_function_estimation_num_frames = _samples.batch_size
-        latent_transition_function = TransitionFrequencyEstimator(
+        empirical_latent_transition_function = TransitionFrequencyEstimator(
             _samples.latent_state, _samples.latent_action, _samples.next_latent_state,
             backup_transition_function=latent_transition_function,
             assert_distribution=assert_transition_distribution)
 
         transition_function_estimation_time = time.time() - transition_function_estimation_time
     else:
+        empirical_latent_transition_function = None
         _transition_function_estimation_num_frames = 0
         transition_function_estimation_time = 0
 
@@ -177,20 +179,43 @@ def estimate_local_losses_from_samples(
 
     local_probability_loss_time = time.time() - local_probability_loss_time
 
+    local_probability_loss_time2 = time.time()
+    if empirical_latent_transition_function is not None:
+        local_probability_loss_transition_function_estimation = estimate_local_probability_loss(
+            state, label, latent_action, next_state, next_label,
+            empirical_latent_transition_function, latent_state, next_latent_state_no_label)
+    else:
+        local_probability_loss_transition_function_estimation = None
+
+    local_probability_loss_time2 = time.time() - local_probability_loss_time2
+
     def print_time_metrics():
         print("Time to fill in the Replay Buffer ({:d} frames): {:.3f}".format(replay_buffer_max_frames, collect_time))
         print("Time to estimate the local reward loss function (from {:d} transitions):"
               " {:.3f}".format(steps, local_reward_loss_time))
-        if estimate_transition_function_from_samples:
-            print("Time to estimate the probability transition function (from {:d} transitions): {:3f}".format(
-                _transition_function_estimation_num_frames, transition_function_estimation_time))
         print("Time to estimate the local probability loss function (from {:d} transitions):"
               " {:.3f}".format(steps, local_probability_loss_time))
+        if estimate_transition_function_from_samples:
+            print("Time to estimate the probability transition function (from {:d} transitions): {:3f}".format(
+                _transition_function_estimation_num_frames, local_probability_loss_time2))
+
+    time_metrics = {
+        'fill_replay_buffer': collect_time,
+        'local_reward_loss': local_reward_loss_time,
+        'local_probability_loss': local_probability_loss_time,
+        'transition_fun':
+            transition_function_estimation_time if estimate_transition_function_from_samples else 0.,
+        'local_probability_loss_transition_function_estimation': local_probability_loss_time2
+    }
+
+    replay_buffer.clear()
 
     return namedtuple(
         'LocalLossesEstimationMetrics',
-        ['local_reward_loss', 'local_probability_loss', 'print_time_metrics'])(
-          local_reward_loss,   local_probability_loss,   print_time_metrics)
+        ['local_reward_loss', 'local_probability_loss', 'local_probability_loss_transition_function_estimation',
+         'print_time_metrics', 'time_metrics'])(
+            local_reward_loss, local_probability_loss, local_probability_loss_transition_function_estimation,
+            print_time_metrics, time_metrics)
 
 
 def generate_binary_latent_state_space(latent_state_size):
@@ -210,13 +235,15 @@ def estimate_local_reward_loss(
         latent_state: Optional[tf.Tensor] = None,
         next_latent_state: Optional[tf.Tensor] = None,
         state_embedding_function: Optional[Callable[[tf.Tensor, Optional[tf.Tensor]], tf.Tensor]] = None,
+        reward_scaling: Optional[float] = 1.
 ):
     if latent_state is None:
         latent_state = state_embedding_function(state, label)
     if next_latent_state is None:
         next_latent_state = state_embedding_function(next_state, next_label)
 
-    return tf.reduce_mean(tf.abs(reward - latent_reward_function(latent_state, latent_action, next_latent_state)))
+    return tf.reduce_mean(reward_scaling * tf.abs(
+        reward - latent_reward_function(latent_state, latent_action, next_latent_state)))
 
 
 @tf.function
