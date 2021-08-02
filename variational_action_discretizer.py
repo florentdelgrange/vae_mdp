@@ -1062,13 +1062,17 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         if self.latent_policy_network is None:
             raise ValueError('This VAE is not built for policy abstraction.')
 
+        if self.time_stacked_states:
+            labeling_function = lambda x: labeling_function(x)[:, -1, ...]
+        _labeling_function = dataset_generator.ergodic_batched_labeling_function(labeling_function)
+
         return estimate_local_losses_from_samples(
             environment=environment, latent_policy=self.get_latent_policy(),
             steps=steps,
             number_of_discrete_actions=self.number_of_discrete_actions,
             state_embedding_function=self.state_embedding_function,
             action_embedding_function=lambda state, latent_action: self.action_embedding_function(
-                state, latent_action, labeling_function=latent_action),
+                state, latent_action, labeling_function=_labeling_function),
             latent_reward_function=lambda latent_state, latent_action,
                                           next_latent_state: (
                 self.reward_probability_distribution(
