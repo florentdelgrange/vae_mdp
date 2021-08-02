@@ -387,7 +387,7 @@ def main(argv):
             save_directory=params['save_dir'] if params['checkpoint'] else None,
             parallel_environments=params['parallel_env'] > 1,
             num_parallel_environments=params['parallel_env'],
-            eval_steps=int(1e3) if not params['do_not_eval'] else 0,
+            eval_steps=int(1e4) if not params['do_not_eval'] else 0,
             policy_evaluation_num_episodes=(
                 0 if not (params['action_discretizer'] or params['latent_policy'])
                      or (phase == 0 and len(models) > 1) else 30),
