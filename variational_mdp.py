@@ -1463,8 +1463,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             num_discrete_actions=self.action_shape[0],
             prioritized_replay_buffer=use_prioritized_replay_buffer)
 
-        dataset = dataset_generator(transition_generator).batch(batch_size=batch_size, drop_remainder=True)
-        dataset_iterator = iter(dataset.prefetch(tf.data.experimental.AUTOTUNE))
+        dataset = dataset_generator(transition_generator)
+        dataset_iterator = iter(
+            dataset.batch(batch_size=batch_size, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE))
 
         return DatasetComponents(
             replay_buffer=replay_buffer,
@@ -1502,7 +1503,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             manager: Optional[tf.train.CheckpointManager] = None,
             log_interval: int = 200,
             checkpoint_interval: int = 250,
-            eval_steps: int = int(1e3),
+            eval_steps: int = int(1e4),
             eval_and_save_model_interval: int = int(1e4),
             logs: bool = True,
             log_dir: str = 'log',
@@ -1652,6 +1653,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         replay_buffer_num_frames = dataset_components.replay_buffer_num_frames_fn
         manager = dataset_components.wrapped_manager
         dataset_iterator = dataset_components.dataset_iterator
+        dataset = dataset_components.dataset
 
         if replay_buffer_num_frames() < batch_size:
             print("Initial collect steps...")
@@ -1733,9 +1735,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 additional_training_metrics['memory'] = memory_used
 
             loss = self.training_step(
-                dataset_iterator=dataset_iterator, batch_size=batch_size,
+                dataset=dataset, dataset_iterator=dataset_iterator, batch_size=batch_size,
                 annealing_period=annealing_period, global_step=global_step,
-                dataset_size=replay_buffer_num_frames(), display_progressbar=display_progressbar,
+                display_progressbar=display_progressbar,
                 start_step=start_step, epoch=0, progressbar=progressbar,
                 eval_and_save_model_interval=eval_and_save_model_interval,
                 eval_steps=eval_steps,
@@ -1808,7 +1810,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 'continue': not (wall_time_exceeded or close_at_the_end or memory_limit_exceeded)}
 
     def training_step(
-            self, dataset_iterator, batch_size, annealing_period, global_step, dataset_size,
+            self, dataset, dataset_iterator, batch_size, annealing_period, global_step,
             display_progressbar, start_step, epoch, progressbar, eval_and_save_model_interval,
             eval_steps, save_directory, log_name, train_summary_writer, log_interval, logs,
             start_annealing_step, additional_metrics: Optional[Dict[str, tf.Tensor]] = None,
@@ -1855,8 +1857,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         # eval, save and log
         if global_step.numpy() % eval_and_save_model_interval == 0:
-            self.eval_and_save(dataset_iterator=dataset_iterator,
-                               batch_size=batch_size, eval_steps=eval_steps,
+            self.eval_and_save(dataset=dataset,
+                               eval_steps=eval_steps,
                                global_step=global_step, save_directory=save_directory, log_name=log_name,
                                train_summary_writer=train_summary_writer,
                                eval_policy_driver=eval_policy_driver,
@@ -1918,16 +1920,29 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
     def eval_and_save(
             self,
-            dataset_iterator,
-            batch_size: int,
             eval_steps: int,
             global_step: tf.Variable,
+            dataset: Optional = None,
+            dataset_iterator: Optional = None,
+            batch_size: Optional[int] = None,
             save_directory: Optional[str] = None,
             log_name: Optional[str] = None,
             train_summary_writer: Optional[tf.summary.SummaryWriter] = None,
             eval_policy_driver: Optional[tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver] = None,
             local_losses_estimator: Optional[Callable] = None
     ):
+
+        if (dataset is None) == (dataset_iterator is None or batch_size is None):
+            raise ValueError("Must either provide a dataset or a dataset iterator + batch size.")
+
+        if dataset is not None:
+            batch_size = eval_steps
+            tf.print("batch size:", batch_size)
+            dataset_iterator = iter(dataset.batch(
+                batch_size=batch_size,
+                drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE))
+            eval_steps = 1 if eval_steps > 0 else 0
+
         metrics = {'eval_elbo': tf.metrics.Mean(),
                    'eval_distortion': tf.metrics.Mean(),
                    'eval_rate': tf.metrics.Mean()}
@@ -1940,8 +1955,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 target=(eval_steps + 1) * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
 
             tf.print("\nEvalutation over {} steps".format(eval_steps))
+
             for step in range(eval_steps):
                 x = next(dataset_iterator)
+
+                tf.print('shape', x[0].shape)
 
                 if len(x) >= 8:
                     is_weights = tf.reduce_min(x[7]) / x[7]  # we consider is_exponent=1 for evaluation
@@ -1955,6 +1973,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 for value in ('elbo', 'distortion', 'rate'):
                     metrics['eval_' + value](tf.reduce_mean(is_weights * evaluation[value]))
                 eval_progressbar.add(batch_size, values=[('eval_ELBO', metrics['eval_elbo'].result())])
+            tf.print('\n')
 
         if eval_policy_driver is not None:
             avg_rewards = self.eval_policy(
@@ -1979,7 +1998,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 if local_losses_metrics is not None:
                     tf.summary.scalar('local_reward_loss', local_losses_metrics.local_reward_loss, step=global_step)
                     if (local_losses_metrics.local_probability_loss_transition_function_estimation is not None and
-                            local_losses_metrics.local_probability_loss_transition_function_estimation <=
+                            local_losses_metrics.local_probability_loss_transition_function_estimation <
                             local_losses_metrics.local_probability_loss):
                         local_probability_loss = \
                             local_losses_metrics.local_probability_loss_transition_function_estimation
@@ -1993,6 +2012,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
                         'local_losses_computation_time',
                         local_losses_metrics.time_metrics['local_reward_loss'] + local_probability_loss_time,
                         step=global_step)
+                    tf.print('Local reward loss: {:.2f}'.format(local_losses_metrics.local_reward_loss))
+                    tf.print('Local probability loss: {:.2f}'.format(local_losses_metrics.local_probability_loss))
+                    tf.print('Local probability loss (empirical probability function): {:.2f}'
+                             ''.format(local_losses_metrics.local_probability_loss_transition_function_estimation))
 
             print('eval ELBO: ', metrics['eval_elbo'].result().numpy())
 
