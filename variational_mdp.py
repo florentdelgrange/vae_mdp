@@ -1740,7 +1740,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 display_progressbar=display_progressbar,
                 start_step=start_step, epoch=0, progressbar=progressbar,
                 eval_and_save_model_interval=eval_and_save_model_interval,
-                eval_steps=eval_steps,
+                eval_steps=eval_steps * batch_size,
                 save_directory=save_directory, log_name=log_name, train_summary_writer=train_summary_writer,
                 log_interval=log_interval, logs=logs, start_annealing_step=start_annealing_step,
                 additional_metrics=additional_training_metrics,
