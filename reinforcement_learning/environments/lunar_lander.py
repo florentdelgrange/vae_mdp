@@ -124,6 +124,10 @@ class LunarLanderNoRewardShaping(LunarLander):
         return state, reward, done, d
 
 
+class LunarLanderContinuousNoRewardShaping(LunarLanderNoRewardShaping):
+    continuous = True
+
+
 class LunarLanderRewardShapingAugmented(LunarLander):
 
     def __init__(self):
@@ -146,6 +150,18 @@ class LunarLanderRandomInitRewardShapingAugmented(LunarLanderRandomInit, LunarLa
 
     def step(self, action):
         return super().step(action)
+
+
+class LunarLanderRandomInitNoRewardShaping(LunarLanderRandomInit, LunarLanderNoRewardShaping):
+    def reset(self):
+        return LunarLanderRandomInit.reset(self)
+
+    def step(self, action):
+        return super().step(action)
+
+
+class LunarLanderContinuousRandomInitNoRewardShaping(LunarLanderRandomInitNoRewardShaping):
+    continuous = True
 
 
 class LunarLanderContinuousRandomInitRewardShapingAugmented(LunarLanderRandomInitRewardShapingAugmented):
