@@ -11,10 +11,11 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
+
 def get_event_dataframe(
         log_dir: str,
         tags: Optional[Collection[str]] = None,
-        regex: str = '**',
+        regex: str = '**/*.v2',
         tags_renaming: Optional[Dict[str, str]] = None,
         run_name: Optional[str] = None,
         event_name: Optional[str] = None,
@@ -31,6 +32,9 @@ def get_event_dataframe(
 
     TaggedEvent = namedtuple('TaggedEvent', ['x_axis', 'y_axis', 'tags'])
     df = None
+
+    if len(glob.glob(os.path.join(log_dir, regex))) == 0:
+        raise IOError("No such file or directory:", os.path.join(log_dir, regex))
 
     for filename in glob.glob(os.path.join(log_dir, regex)):
         event_file = os.path.join(log_dir, filename)
@@ -80,29 +84,45 @@ def get_interquantile_range(df: pd.DataFrame):
 
 def plot_elbo_evaluation(
         df: pd.DataFrame,
+        compare_environments: bool = False,
         compare_experience_replay: bool = False,
         relplot: bool = False,
-        eval_elbo_tag: str = 'eval_elbo'
+        eval_elbo_tag: str = 'eval_elbo',
+        aspect=2.5
 ):
     df = df[df['tag'] == eval_elbo_tag]
 
     sns.set_theme(style="darkgrid")
 
-    if compare_experience_replay and relplot:
+    if compare_experience_replay or compare_environments and relplot:
         return sns.relplot(
-            data=df.rename(columns={"value": "ELBO", "run": "experience replay"}),
+            data=df.rename(columns={
+                "value": "ELBO",
+                "run": "experience replay",
+                "event": "environment"}),
             x='step',
             y='ELBO',
-            row='experience replay',
-            aspect=2.5,
+            row='experience replay' if compare_experience_replay else None,
+            col='environment' if compare_environments else None,
+            aspect=aspect,
             kind='line',
-            facet_kws=dict(sharey=False))
+            facet_kws=dict(sharex=False, sharey=False))
     else:
+        if compare_environments:
+            hue = 'environment'
+        elif compare_experience_replay:
+            hue = 'experience replay'
+        else:
+            hue = None
         return sns.lineplot(
-            data=df.rename(columns={"value": "ELBO", "run": "experience replay"}),
+            data=df.rename(columns={
+                "value": "ELBO",
+                "run": "experience replay",
+                "event": "environment"}),
             x='step',
             y='ELBO',
-            hue='experience replay' if compare_experience_replay else None)
+            legend='brief',
+            hue=hue)
 
 
 def plot_histograms_per_step(
@@ -111,7 +131,6 @@ def plot_histograms_per_step(
         num_y_ticks: int = 5,
         use_math_text: bool = False,
 ):
-
     tick = ticker.ScalarFormatter(useOffset=True, useMathText=use_math_text)
     tick.set_powerlimits((0, 0))
 
@@ -186,23 +205,37 @@ def plot_histograms_per_step(
                     display_x_ticks=(row == nrows - 1),
                     display_y_ticks=(column == 0),
                     ax_title='experience replay = {}'.format(df['run'].unique()[column])
-                             if 'run' in df and row == 0 else None)
+                    if 'run' in df and row == 0 else None)
 
     return fig
 
+
 def plot_policy_evaluation(
         df: pd.DataFrame,
-        original_policy_expected_rewards: Optional[float] = None,
+        plot_best: bool = False,
+        original_policy_expected_rewards: Optional[Union[float, Dict[str, float]]] = None,
         compare_experience_replay: bool = False,
+        compare_environments: bool = False,
         relplot: bool = False,
         original_policy_as_label: bool = True,
-        policy_evaluation_avg_rewards_tag: str = 'policy_evaluation_avg_rewards'
+        policy_evaluation_avg_rewards_tag: str = 'policy_evaluation_avg_rewards',
+        aspect=2.5,
 ):
     df = df[df['tag'] == policy_evaluation_avg_rewards_tag]
 
     sns.set_theme(style="darkgrid")
 
-    if original_policy_expected_rewards is not None and not original_policy_as_label:
+    df = df.assign(policy='distilled')
+
+    if plot_best and not relplot:
+        _df = None
+        for env in df['event'].unique():
+            __df = df[df['event'] == env]
+            __df = __df.append(__df.assign(policy='distilled (best)', value=__df['value'].max()))
+            _df = __df if _df is None else _df.append(__df)
+        df = _df
+
+    if original_policy_expected_rewards is not None and not original_policy_as_label and not compare_environments:
         N = 100
         g = plt.plot(
             np.linspace(0, df['step'].max(), N, dtype=np.int64),
@@ -216,24 +249,45 @@ def plot_policy_evaluation(
         return g
 
     elif original_policy_expected_rewards is not None:
-        df = df.assign(policy='distilled')
-        df = df.append(df.assign(policy='original', value=200.))
+        if isinstance(original_policy_expected_rewards, dict):
+            _df = None
+            for env in df['event'].unique():
+                __df = df[df['event'] == env]
+                if env in original_policy_expected_rewards:
+                    __df = __df.append(__df.assign(policy='original', value=original_policy_expected_rewards[env]))
+                _df = __df if _df is None else _df.append(__df)
+            df = _df
+        else:
+            df = df.append(df.assign(policy='original', value=original_policy_expected_rewards))
 
-    if compare_experience_replay and relplot:
+    if compare_experience_replay or compare_environments and relplot:
         return sns.relplot(
-            data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
+            data=df.rename(columns={
+                "value": "avg. rewards",
+                "run": "experience replay",
+                "event": "environment"}),
             x='step',
-            y='rewards',
+            y='avg. rewards',
             # hue='experience replay',
             style='policy' if original_policy_as_label else 'experience replay',
-            row='experience replay',
-            aspect=2.5,
-            facet_kws=dict(sharey=False),
+            row='experience replay' if compare_experience_replay else None,
+            col='environment' if compare_environments else None,
+            aspect=aspect,
+            facet_kws=dict(sharex=False, sharey=False),
             kind='line')
     else:
+        if compare_environments:
+            hue = 'environment'
+        elif compare_experience_replay:
+            hue = 'experience replay'
+        else:
+            hue = None
         return sns.lineplot(
-            data=df.rename(columns={"value": "rewards", "run": "experience replay"}),
+            data=df.rename(columns={
+                "value": "avg. rewards",
+                "run": "experience replay",
+                "event": "environment"}),
             x='step',
-            y='rewards',
-            hue='experience replay' if compare_experience_replay else None,
-            style='policy' if original_policy_as_label else 'experience replay', )
+            y='avg. rewards',
+            hue=hue,
+            style='policy' if (original_policy_as_label or plot_best) else 'experience replay', )
