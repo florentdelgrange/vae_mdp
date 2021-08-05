@@ -113,6 +113,7 @@ def generate_vae_name(params):
         'full_covariance',
         'latent_policy',
         'decompose_training',
+        'activation',
     ]
     nb_additional_params = sum(
         map(lambda x: params[x], additional_parameters))
