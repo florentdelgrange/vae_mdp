@@ -1994,7 +1994,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                             data[value] = tf.reduce_sum(
                                 data[value] * 2 ** tf.range(tf.cast(self.latent_state_size, dtype=tf.int64)),
                                 axis=-1)
-                        tf.summary.histogram('{}_frequency'.format(value[:-1]), data[value], step=global_step)
+                        tf.summary.histogram('{}_frequency'.format(value[:-1]), data[value],
+                                             step=global_step, buckets=32)
                 if local_losses_metrics is not None:
                     tf.summary.scalar('local_reward_loss', local_losses_metrics.local_reward_loss, step=global_step)
                     if (local_losses_metrics.local_probability_loss_transition_function_estimation is not None and
