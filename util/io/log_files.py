@@ -166,7 +166,7 @@ def plot_histograms_per_step(
         else:
             xticks = [tick.format_data(x) if x != 0. else str(0) for x in np.flipud(xticks).astype(float)]
         power2 = np.power(2, np.ceil(np.log(buckets.flatten().max())/np.log(2)))
-        yticks = np.array([np.round(power2 / len(buckets) * (bucket + 1))
+        yticks = np.array([round_to_base(power2 / len(buckets) * (bucket + 1), power2 // num_y_ticks)
                            for bucket in range(len(buckets))],
                           dtype=np.int32)
 
