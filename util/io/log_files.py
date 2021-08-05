@@ -88,8 +88,11 @@ def plot_elbo_evaluation(
         compare_experience_replay: bool = False,
         relplot: bool = False,
         eval_elbo_tag: str = 'eval_elbo',
-        aspect=2.5
+        aspect: float = 2.5,
+        estimator: str = 'mean'
 ):
+    if estimator == 'median':
+        estimator = np.median
     df = df[df['tag'] == eval_elbo_tag]
 
     sns.set_theme(style="darkgrid")
@@ -106,7 +109,9 @@ def plot_elbo_evaluation(
             col='environment' if compare_environments else None,
             aspect=aspect,
             kind='line',
-            facet_kws=dict(sharex=False, sharey=False))
+            facet_kws=dict(sharex=False, sharey=False),
+            estimator=estimator,
+            ci=90 if estimator != 'mean' else 'sd')
     else:
         if compare_environments:
             hue = 'environment'
@@ -122,13 +127,15 @@ def plot_elbo_evaluation(
             x='step',
             y='ELBO',
             legend='brief',
-            hue=hue)
+            hue=hue,
+            estimator=estimator,
+            ci=90 if estimator != 'mean' else 'sd')
 
 
 def plot_histograms_per_step(
         df: pd.DataFrame,
         num_x_ticks: int = 5,
-        num_y_ticks: int = 5,
+        num_y_ticks: int = 4,
         use_math_text: bool = False,
 ):
     tick = ticker.ScalarFormatter(useOffset=True, useMathText=use_math_text)
@@ -151,7 +158,6 @@ def plot_histograms_per_step(
             else:
                 return base * np.round(x / base)
 
-        base = round_to_base(buckets.flatten().max() // 20, 50)
         xticks = np.linspace(0, df['step'].unique().max(), num=data.shape[0], dtype=np.int32)
         xticks = round_to_base(xticks, base=df['step'].unique().max() // (num_x_ticks * 2))
         if use_math_text:
@@ -159,18 +165,22 @@ def plot_histograms_per_step(
                       for x in np.flipud(xticks).astype(float)]
         else:
             xticks = [tick.format_data(x) if x != 0. else str(0) for x in np.flipud(xticks).astype(float)]
-        yticks = np.array([round_to_base(bucket.mean(), base) for bucket in buckets], dtype=np.int32)
+        power2 = np.power(2, np.ceil(np.log(buckets.flatten().max())/np.log(2)))
+        yticks = np.array([np.round(power2 / len(buckets) * (bucket + 1))
+                           for bucket in range(len(buckets))],
+                          dtype=np.int32)
 
         _df = pd.DataFrame(
             data=np.flipud(data.transpose()),
             columns=np.flipud(np.array(xticks)),
             index=np.flipud(yticks))
 
+        yticks_interval = int(round_to_base(len(buckets), num_y_ticks, upper=True)) // num_y_ticks
         ax = sns.heatmap(
             _df,
             cmap='Blues',
             xticklabels=data.shape[0] // num_x_ticks if display_x_ticks else display_x_ticks,
-            yticklabels=len(buckets) // num_y_ticks if display_y_ticks else display_y_ticks,
+            yticklabels=yticks_interval if display_y_ticks else display_y_ticks,
             cbar=False,
             ax=ax)
 
@@ -219,15 +229,19 @@ def plot_policy_evaluation(
         relplot: bool = False,
         original_policy_as_label: bool = True,
         policy_evaluation_avg_rewards_tag: str = 'policy_evaluation_avg_rewards',
-        aspect=2.5,
+        aspect: float = 2.5,
+        estimator: str = 'mean'
 ):
+    if estimator == 'median':
+        estimator = np.median
+
     df = df[df['tag'] == policy_evaluation_avg_rewards_tag]
 
     sns.set_theme(style="darkgrid")
 
     df = df.assign(policy='distilled')
 
-    if plot_best and not relplot:
+    if plot_best:
         _df = None
         for env in df['event'].unique():
             __df = df[df['event'] == env]
@@ -261,7 +275,7 @@ def plot_policy_evaluation(
             df = df.append(df.assign(policy='original', value=original_policy_expected_rewards))
 
     if compare_experience_replay or compare_environments and relplot:
-        return sns.relplot(
+        g = sns.relplot(
             data=df.rename(columns={
                 "value": "avg. rewards",
                 "run": "experience replay",
@@ -273,8 +287,21 @@ def plot_policy_evaluation(
             row='experience replay' if compare_experience_replay else None,
             col='environment' if compare_environments else None,
             aspect=aspect,
+            estimator=estimator,
+            ci=90 if estimator != 'mean' else 'sd',
             facet_kws=dict(sharex=False, sharey=False),
-            kind='line')
+            kind='line',
+            legend='brief',
+            style_order=['distilled', 'original', 'distilled (best)'])
+
+        if plot_best:
+            for i, env in enumerate(df['event'].unique()):
+                _df = df[df['event'] == env]
+                _df = _df[_df['policy'] == 'distilled']
+                step = _df['step'][_df['value'] == _df['value'].max()]
+                g.axes[0, i].scatter(step.to_numpy(), [_df['value'].max()] * len(step.to_numpy()), marker='x')
+                # g.axes[0, i].legend()
+        return g
     else:
         if compare_environments:
             hue = 'environment'
@@ -290,4 +317,6 @@ def plot_policy_evaluation(
             x='step',
             y='avg. rewards',
             hue=hue,
+            estimator=estimator,
+            ci=90 if estimator != 'mean' else 'sd',
             style='policy' if (original_policy_as_label or plot_best) else 'experience replay', )
