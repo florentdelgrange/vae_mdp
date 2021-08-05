@@ -9,6 +9,27 @@ register(
 )
 
 register(
+    id='LunarLanderContinuousNoRewardShaping-v2',
+    entry_point='reinforcement_learning.environments.lunar_lander:LunarLanderContinuousNoRewardShaping',
+    max_episode_steps=1000,
+    reward_threshold=200,
+)
+
+register(
+    id='LunarLanderRandomInitNoRewardShaping-v2',
+    entry_point='reinforcement_learning.environments.lunar_lander:LunarLanderRandomInitNoRewardShaping',
+    max_episode_steps=1000,
+    reward_threshold=200,
+)
+
+register(
+    id='LunarLanderContinuousRandomInitNoRewardShaping-v2',
+    entry_point='reinforcement_learning.environments.lunar_lander:LunarLanderContinuousRandomInitNoRewardShaping',
+    max_episode_steps=1000,
+    reward_threshold=200,
+)
+
+register(
     id='LunarLanderRewardShapingAugmented-v2',
     entry_point='reinforcement_learning.environments.lunar_lander:LunarLanderRewardShapingAugmented',
     max_episode_steps=1000,

@@ -84,9 +84,9 @@ labeling_functions = {
 }
 
 reward_scaling = {
-    'Pendulum-v0': 1. / (math.pi ** 2 + 0.1 * 8 ** 2 + 0.001 * 2 ** 2),
+    'Pendulum-v0': 1. / (2 * (math.pi ** 2 + 0.1 * 8 ** 2 + 0.001 * 2 ** 2)),
     'CartPole-v0': 1. / 2,
-    'LunarLander-v2': 1. / 150,
+    'LunarLander-v2': 1. / 400,
     'MountainCar-v0': 1. / 2,
     'Acrobot-v1': 1. / 2
 }  # to scale the rewards in [-1./2, 1./2]
@@ -96,8 +96,10 @@ for d in [labeling_functions, reward_scaling]:
     d['LunarLanderNoRewardShaping-v2'] = d['LunarLander-v2']
     d['LunarLanderRandomInit-v2'] = d['LunarLander-v2']
     d['LunarLanderContinuousRandomInit-v2'] = d['LunarLander-v2']
+    d['LunarLanderContinuousRandomInitNoRewardShaping-v2'] = d['LunarLander-v2']
     d['LunarLanderRewardShapingAugmented-v2'] = d['LunarLander-v2']
     d['LunarLanderRandomInitRewardShapingAugmented-v2'] = d['LunarLander-v2']
+    d['LunarLanderRandomInitNoRewardShaping-v2'] = d['LunarLander-v2']
     d['LunarLanderContinuousRewardShapingAugmented-v2'] = d['LunarLander-v2']
     d['LunarLanderContinuousRandomInitRewardShapingAugmented-v2'] = d['LunarLander-v2']
     d['MountainCarContinuous-v0'] = d['MountainCar-v0']
