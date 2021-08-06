@@ -137,18 +137,20 @@ def plot_histograms_per_step(
         num_x_ticks: int = 5,
         num_y_ticks: int = 4,
         use_math_text: bool = False,
+        aspect: float = 2.5
 ):
     tick = ticker.ScalarFormatter(useOffset=True, useMathText=use_math_text)
     tick.set_powerlimits((0, 0))
 
     # we assume that all buckets have the same range, according to the way tf summaries records histograms
-    buckets = df['value'].head(1).to_numpy()[0][..., :2]
     nrows = len(df['event'].unique()) if 'event' in df else 1
     ncols = len(df['run'].unique()) if 'run' in df else 1
 
-    fig, axs = plt.subplots(nrows, ncols)
+    fig, axs = plt.subplots(nrows, ncols, figsize=(4 * ncols, aspect * nrows))
+    fig.tight_layout()
 
     def plot_histogram(df, ax, display_x_ticks=True, display_y_ticks=True, ax_title=None):
+        buckets = df['value'].head(1).to_numpy()[0][..., :2]
 
         data = np.stack(df['value'].to_numpy())[..., 2]
 
@@ -166,7 +168,7 @@ def plot_histograms_per_step(
         else:
             xticks = [tick.format_data(x) if x != 0. else str(0) for x in np.flipud(xticks).astype(float)]
         power2 = np.power(2, np.ceil(np.log(buckets.flatten().max())/np.log(2)))
-        yticks = np.array([np.round(power2 / len(buckets) * (bucket + 1))
+        yticks = np.array([round_to_base(power2 / len(buckets) * (bucket + 1), power2 // num_y_ticks)
                            for bucket in range(len(buckets))],
                           dtype=np.int32)
 
@@ -187,12 +189,13 @@ def plot_histograms_per_step(
         if display_x_ticks:
             ax.set_xlabel("step")
         if display_y_ticks:
-            ax.set_ylabel("state")
+            ax.set_ylabel("latent state")
         if ax_title is not None:
             ax.set_title(ax_title)
 
         for label in ax.get_yticklabels():
-            label.set_rotation(0)
+            if display_y_ticks:
+                label.set_rotation(0)
 
         return ax
 
@@ -208,7 +211,7 @@ def plot_histograms_per_step(
         for row, axs_row in enumerate(_axs):
             for column, ax in enumerate(axs_row):
                 _df = df[df['event'] == df['event'].unique()[row]] if 'event' in df else df
-                _df = df[df['run'] == df['run'].unique()[column]] if 'run' in df else df
+                _df = _df[_df['run'] == _df['run'].unique()[column]] if 'run' in _df else _df
                 plot_histogram(
                     _df,
                     ax,
@@ -216,7 +219,7 @@ def plot_histograms_per_step(
                     display_y_ticks=(column == 0),
                     ax_title='experience replay = {}'.format(df['run'].unique()[column])
                     if 'run' in df and row == 0 else None)
-
+    plt.subplots_adjust(hspace=0.1, wspace=0.05)
     return fig
 
 

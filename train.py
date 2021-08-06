@@ -59,7 +59,7 @@ def generate_vae_name(params):
 
     vae_name = ''
     if not params['action_discretizer'] or params['full_vae_optimization'] or params['decompose_training']:
-        vae_name = 'vae_LS{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_seed={:d}'.format(
+        vae_name = 'vae_LS{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}_activation={}_seed={:d}'.format(
             params['latent_size'],
             params['entropy_regularizer_scale_factor'],
             params['entropy_regularizer_decay_rate'],
@@ -68,6 +68,7 @@ def generate_vae_name(params):
             params['kl_annealing_growth_rate'],
             params['relaxed_state_encoder_temperature'],
             params['relaxed_state_prior_temperature'],
+            params['activation'],
             int(params['seed']))
     if params['action_discretizer']:
         if vae_name != '':
@@ -113,7 +114,6 @@ def generate_vae_name(params):
         'full_covariance',
         'latent_policy',
         'decompose_training',
-        'activation',
     ]
     nb_additional_params = sum(
         map(lambda x: params[x], additional_parameters))
