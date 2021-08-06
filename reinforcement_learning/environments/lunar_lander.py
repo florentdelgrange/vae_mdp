@@ -11,6 +11,8 @@ INITIAL_RANDOM = INITIAL_RANDOM
 
 
 class LunarLanderRandomInit(LunarLander):
+    smooth_random = True
+
     def reset(self):
         self._destroy()
         self.world.contactListener_keepref = ContactDetector(self)
@@ -49,9 +51,17 @@ class LunarLanderRandomInit(LunarLander):
         self.moon.color1 = (0.0, 0.0, 0.0)
         self.moon.color2 = (0.0, 0.0, 0.0)
 
-        initial_x = self.np_random.uniform(0., W)
-        initial_y = self.np_random.uniform(self.helipad_y, H)
-        initial_angle = self.np_random.uniform(-np.pi / 2, np.pi / 2)
+        if self.smooth_random:
+            initial_x = np.clip(self.np_random.normal(loc=W / 2., scale=W / 3.),
+                                a_min=0., a_max=W)
+            initial_y = np.clip(self.np_random.normal(loc=H - (H - self.helipad_y) / 3., scale=self.helipad_y / 3.),
+                                a_min=self.helipad_y, a_max=H)
+            initial_angle = self.np_random.normal(loc=0., scale=np.pi / 3.)
+        else:
+            initial_x = self.np_random.uniform(0., W)
+            initial_y = self.np_random.uniform(self.helipad_y, H)
+            initial_angle = self.np_random.uniform(-np.pi / 2, np.pi / 2)
+
         self.lander = self.world.CreateDynamicBody(
             position=(initial_x, initial_y),
             angle=initial_angle,
