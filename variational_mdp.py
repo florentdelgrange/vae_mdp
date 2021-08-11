@@ -87,7 +87,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  transition_network: Model,
                  reward_network: Model,
                  decoder_network: Model,
-                 label_transition_network: Model,
+                 label_transition_network: Optional[Model] = None,
                  latent_policy_network: Optional[Model] = None,
                  state_encoder_pre_processing_network: Optional[Model] = None,
                  state_decoder_pre_processing_network: Optional[Model] = None,
@@ -180,8 +180,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.priority_handler = None
 
         if not pre_loaded_model:
-            label_transition_network._name = 'variational_mdp_label_transition_network_core'
-            transition_network._name = 'variational_mdp_transition_network_core'
 
             # Encoder network
             if time_stacked_states:
@@ -189,7 +187,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     encoder = TimeDistributed(state_encoder_pre_processing_network)(state)
                 else:
                     encoder = state
-                # encoder = Flatten()(encoder)
                 encoder = LSTM(units=time_stacked_lstm_units)(encoder)
                 encoder = encoder_network(encoder)
             else:
@@ -202,12 +199,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 units=latent_state_size - self.atomic_props_dims,
                 # allows avoiding exploding logits values and probability errors after applying a sigmoid
                 activation=lambda x: self._encoder_softclip(x),
-                name='variational_mdp_encoder_latent_distribution_logits'
+                name='encoder_latent_distribution_logits'
             )(encoder)
             self.encoder_network = Model(
                 inputs=state,
                 outputs=logits_layer,
-                name='variational_mdp_state_encoder')
+                name='state_encoder')
 
             # Latent policy network
             latent_state = Input(shape=(latent_state_size,), name="latent_state")
@@ -219,12 +216,12 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 self.latent_policy_network = Dense(
                     units=self.number_of_discrete_actions,
                     activation=None,
-                    name='variational_mdp_latent_policy_one_hot_logits'
+                    name='latent_policy_one_hot_logits'
                 )(self.latent_policy_network)
                 self.latent_policy_network = Model(
                     inputs=latent_state,
                     outputs=self.latent_policy_network,
-                    name='variational_mdp_latent_policy_network')
+                    name='latent_policy_network')
             else:
                 self.latent_policy_network = None
                 self.number_of_discrete_actions = -1
@@ -233,127 +230,157 @@ class VariationalMarkovDecisionProcess(tf.Module):
             # inputs are binary concrete random variables, outputs are locations of logistic distributions
             next_label = Input(shape=(self.atomic_props_dims,), name='next_label')
             if self.number_of_discrete_actions != -1:
-                transition_network_input = Concatenate(name='variational_mdp_transition_network_input')(
-                    [latent_state, next_label])
-                transition = transition_network(transition_network_input)
+                if label_transition_network is not None:
+                    transition_network_input = Concatenate(name='transition_network_input')(
+                        [latent_state, next_label])
+                else:
+                    transition_network_input = latent_state
+                _transition_network = transition_network(transition_network_input)
                 no_latent_state_logits = latent_state_size - self.atomic_props_dims
                 transition_output_layer = Dense(
                     units=no_latent_state_logits * self.number_of_discrete_actions,
                     activation=None,
-                    name='variational_mdp_transition_network_raw_output_layer'
-                )(transition)
+                    name='transition_network_raw_output_layer'
+                )(_transition_network)
                 transition_output_layer = Reshape(
                     target_shape=(no_latent_state_logits, self.number_of_discrete_actions),
-                    name='variational_mdp_transition_network_output_layer_reshape'
+                    name='transition_network_output_layer_reshape'
                 )(transition_output_layer)
+
+                action_transition_output = transition_output_layer
+
                 _action = tf.keras.layers.RepeatVector(
-                    no_latent_state_logits, name='variational_mdp_repeat_action')(action)
-                transition_output_layer = tf.keras.layers.Multiply(name="variational_mdp_multiply_action_transition")(
+                    no_latent_state_logits, name='transition_output_repeat_action')(action)
+                transition_output_layer = tf.keras.layers.Multiply(name="multiply_action_transition")(
                     [_action, transition_output_layer])
                 transition_output_layer = Lambda(
                     lambda x: tf.reduce_sum(x, axis=-1),
-                    name='variational_mdp_transition_logits_reduce_sum_action_mask_layer'
+                    name='transition_logits_reduce_sum_action_mask_layer'
                 )(transition_output_layer)
             else:
-                transition_network_input = Concatenate(
-                    name="variational_mdp_transition_network_input")([latent_state, action, next_label])
+                if label_transition_network is not None:
+                    transition_network_input = Concatenate(
+                        name="transition_network_input")([latent_state, action, next_label])
+                else:
+                    transition_network_input = Concatenate(
+                        name="transition_network_input")([latent_state, action])
                 _transition_network = transition_network(transition_network_input)
+                action_transition_output = None
                 transition_output_layer = Dense(
                     units=latent_state_size - self.atomic_props_dims,
                     activation=None,
-                    name='variational_mdp_latent_transition_distribution_logits'
+                    name='latent_transition_distribution_logits'
                 )(_transition_network)
-            self.transition_network = Model(
-                inputs=[latent_state, action, next_label],
-                outputs=transition_output_layer,
-                name="variational_mdp_transition_network")
 
             # Label transition network
             # Gives logits of a Bernoulli distribution giving the probability of the next label given the
             # current latent state and the action chosen
             if self.number_of_discrete_actions != -1:
-                _label_transition_network = label_transition_network(latent_state)
+                if label_transition_network is not None:
+                    _label_transition_network = label_transition_network(latent_state)
+                else:
+                    _label_transition_network = _transition_network
                 _label_transition_network = Dense(
                     units=self.atomic_props_dims * self.number_of_discrete_actions,
                     activation=None,
-                    name="variational_mdp_label_transition_network_raw_output_layer"
+                    name="label_transition_network_raw_output_layer"
                 )(_label_transition_network)
                 _label_transition_network = Reshape(
                     target_shape=(self.atomic_props_dims, self.number_of_discrete_actions),
-                    name='variational_mdp_reshape_label_transition_output'
+                    name='reshape_label_transition_output'
                 )(_label_transition_network)
+
+                self.action_label_transition_network = Model(
+                    inputs=latent_state,
+                    outputs=_label_transition_network,
+                    name='action_label_transition_network')
+                self.action_transition_network = Model(
+                    inputs=[latent_state, next_label] if label_transition_network is not None else latent_state,
+                    outputs=(action_transition_output if label_transition_network is not None else
+                             [_label_transition_network, action_transition_output]),
+                    name="action_transition_network")
+
                 _action = tf.keras.layers.RepeatVector(
                     self.atomic_props_dims,
-                    name='variational_mdp_repeat_action')(action)
+                    name='label_transition_output_repeat_action')(action)
                 _label_transition_network = tf.keras.layers.Multiply()([_action, _label_transition_network])
                 _label_transition_network = Lambda(
                     lambda x: tf.reduce_sum(x, axis=-1),
-                    name='variational_mdp_label_transition_reduce_sum_action_mask_layer'
+                    name='label_transition_reduce_sum_action_mask_layer'
                 )(_label_transition_network)
             else:
-                label_transition_network_input = Concatenate(
-                    name="variational_mdp_label_transition_network_input")([latent_state, action])
-                _label_transition_network = label_transition_network(label_transition_network_input)
+                if label_transition_network is not None:
+                    label_transition_network_input = Concatenate(
+                        name="label_transition_network_input")([latent_state, action])
+                    _label_transition_network = label_transition_network(label_transition_network_input)
+                else:
+                    _label_transition_network = _transition_network
                 _label_transition_network = Dense(
                     units=self.atomic_props_dims,
                     activation=None,
-                    name='variational_mdp_next_label_transition_logits'
+                    name='next_label_transition_logits'
                 )(_label_transition_network)
             self.label_transition_network = Model(
                 inputs=[latent_state, action],
                 outputs=_label_transition_network,
-                name='variational_mdp_label_transition_network')
+                name='label_transition_network')
+            self.transition_network = Model(
+                inputs=([latent_state, action, next_label] if label_transition_network is not None else
+                        [latent_state, action]),
+                outputs=(transition_output_layer if label_transition_network is not None else
+                         [_label_transition_network, transition_output_layer]),
+                name="transition_network")
 
             # Reward network
             next_latent_state = Input(shape=(latent_state_size,), name="next_latent_state")
             if self.number_of_discrete_actions != -1:
-                reward_network_input = Concatenate(name="variational_mdp_reward_network_input")(
+                reward_network_input = Concatenate(name="reward_network_input")(
                     [latent_state, next_latent_state])
                 _reward_network = reward_network(reward_network_input)
                 reward_mean = Dense(
                     units=np.prod(reward_shape) * self.number_of_discrete_actions,
                     activation=None,
-                    name='variational_mdp_reward_mean_raw_output')(_reward_network)
+                    name='reward_mean_raw_output')(_reward_network)
                 reward_mean = Reshape(target_shape=(reward_shape + (self.number_of_discrete_actions,)))(reward_mean)
                 _action = tf.keras.layers.RepeatVector(np.prod(reward_shape))(action)
                 _action = Reshape(target_shape=(reward_shape + (self.number_of_discrete_actions,)))(_action)
-                reward_mean = tf.keras.layers.Multiply(name="variational_mdp_multiply_action_reward_stack")(
+                reward_mean = tf.keras.layers.Multiply(name="multiply_action_reward_stack")(
                     [_action, reward_mean])
                 reward_mean = Lambda(
-                    lambda x: tf.reduce_sum(x, axis=-1), name='variational_mdp_reward_mean_reduce_sum_action_mask_layer'
+                    lambda x: tf.reduce_sum(x, axis=-1), name='reward_mean_reduce_sum_action_mask_layer'
                 )(reward_mean)
                 reward_raw_covar = Dense(
                     units=np.prod(reward_shape) * self.number_of_discrete_actions,
                     activation=None,
-                    name='variational_mdp_reward_covar_raw_output')(_reward_network)
+                    name='reward_covar_raw_output')(_reward_network)
                 reward_raw_covar = Reshape(
                     target_shape=reward_shape + (self.number_of_discrete_actions,))(reward_raw_covar)
                 reward_raw_covar = tf.keras.layers.Multiply(
-                    name='variational_mdp_multiply_action_raw_covar_stack')([_action, reward_raw_covar])
+                    name='multiply_action_raw_covar_stack')([_action, reward_raw_covar])
                 reward_raw_covar = Lambda(
                     lambda x: tf.reduce_sum(x, axis=-1),
-                    name='variational_mdp_reward_raw_covar_reduce_sum_action_mask_layer'
+                    name='reward_raw_covar_reduce_sum_action_mask_layer'
                 )(reward_raw_covar)
             else:
-                reward_network_input = Concatenate(name="variational_mdp_reward_network_input")(
+                reward_network_input = Concatenate(name="reward_network_input")(
                     [latent_state, action, next_latent_state])
                 _reward_network = reward_network(reward_network_input)
                 reward_mean = Dense(
                     units=np.prod(reward_shape),
                     activation=None,
-                    name='variational_mdp_reward_mean_0')(_reward_network)
+                    name='reward_mean_0')(_reward_network)
                 reward_raw_covar = Dense(
                     units=np.prod(reward_shape),
                     activation=None,
-                    name='variational_mdp_state_reward_raw_diag_covariance_0'
+                    name='state_reward_raw_diag_covariance_0'
                 )(_reward_network)
-            reward_mean = Reshape(reward_shape, name='variational_mdp_reward_mean')(reward_mean)
+            reward_mean = Reshape(reward_shape, name='reward_mean')(reward_mean)
             reward_raw_covar = Reshape(
-                reward_shape, name='variational_mdp_reward_raw_diag_covariance')(reward_raw_covar)
+                reward_shape, name='reward_raw_diag_covariance')(reward_raw_covar)
             self.reward_network = Model(
                 inputs=[latent_state, action, next_latent_state],
                 outputs=[reward_mean, reward_raw_covar],
-                name='variational_mdp_reward_network')
+                name='reward_network')
 
             # Reconstruction network
             decoder = decoder_network(next_latent_state)
@@ -382,11 +409,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 Dense(
                     units=mixture_components * np.prod(_state_shape),
                     activation=None,
-                    name='variational_mdp_GMM_mean_0'),
+                    name='state_decoder_GMM_mean_0'),
                 Reshape(
                     target_shape=(mixture_components,) + _state_shape,
-                    name="variational_mdp_GMM_mean")],
-                name="variational_mdp_state_decoder_mean")
+                    name="state_decoder_GMM_mean")],
+                name="state_decoder_mean")
 
             if self.full_covariance and len(_state_shape) == 1:
                 d = np.prod(_state_shape) * (np.prod(_state_shape) + 1) / 2
@@ -394,32 +421,32 @@ class VariationalMarkovDecisionProcess(tf.Module):
                     Dense(
                         units=mixture_components * d,
                         activation=None,
-                        name='variational_mdp_state_decoder_GMM_tril_params_0'),
+                        name='state_decoder_GMM_tril_params_0'),
                     Reshape(
                         target_shape=(mixture_components, d,),
-                        name='variational_mdp_state_decoder_GMM_tril_params_1'),
+                        name='state_decoder_GMM_tril_params_1'),
                     Lambda(
                         lambda x: tfb.FillScaleTriL()(x),
-                        name='variational_mdp_state_decoder_GMM_scale_tril')],
-                    name='variational_mdp_state_decoder_scale_tril')
+                        name='state_decoder_GMM_scale_tril')],
+                    name='state_decoder_scale_tril')
             else:
                 # n diagonal co-variance matrices
                 decoder_raw_output = Sequential([
                     Dense(
                         units=mixture_components * np.prod(_state_shape),
                         activation=None,
-                        name='variational_mdp_state_decoder_GMM_raw_diag_covariance_0'),
+                        name='state_decoder_GMM_raw_diag_covariance_0'),
                     Reshape(
                         (mixture_components,) + _state_shape,
-                        name="variational_mdp_state_decoder_GMM_raw_diag_covar")],
-                    name='variational_mdp_state_decoder_raw_diag_covar')
+                        name="state_decoder_GMM_raw_diag_covar")],
+                    name='state_decoder_raw_diag_covar')
 
             # prior distribution over the mixture components
             decoder_prior = Sequential([
                 Dense(
                     units=mixture_components,
                     activation='softmax',
-                    name="variational_mdp_state_decoder_GMM_priors")])
+                    name="state_decoder_GMM_priors")])
 
             if time_stacked_states:
                 decoder_output_mean = TimeDistributed(decoder_output_mean)(decoder)
@@ -433,25 +460,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             self.reconstruction_network = Model(
                 inputs=next_latent_state,
                 outputs=[decoder_output_mean, decoder_raw_output, decoder_prior],
-                name='variational_mdp_state_reconstruction_network')
-
-            if self.number_of_discrete_actions != -1:
-                self.action_label_transition_network = Sequential([
-                    latent_state,
-                    self.label_transition_network.get_layer('variational_mdp_label_transition_network_core'),
-                    self.label_transition_network.get_layer(
-                        'variational_mdp_label_transition_network_raw_output_layer'),
-                    self.label_transition_network.get_layer('variational_mdp_reshape_label_transition_output')
-                ], name='variational_mdp_action_label_transition_network')
-
-                x = self.transition_network.get_layer('variational_mdp_transition_network_input')(
-                    [latent_state, next_label])
-                x = self.transition_network.get_layer('variational_mdp_transition_network_core')(x)
-                x = self.transition_network.get_layer(
-                    'variational_mdp_transition_network_raw_output_layer')(x)
-                x = self.transition_network.get_layer('variational_mdp_transition_network_output_layer_reshape')(x)
-                self.action_transition_network = Model(
-                    inputs=[latent_state, next_label], outputs=x, name='variational_mdp_action_transition_network')
+                name='state_reconstruction_network')
 
         else:
             self.encoder_network = encoder_network
@@ -470,7 +479,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             'reward_mse': tf.keras.metrics.MeanSquaredError(name='reward_mse'),
             'distortion': tf.keras.metrics.Mean(name='distortion'),
             'rate': tf.keras.metrics.Mean(name='rate'),
-            'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
+            # 'annealed_rate': tf.keras.metrics.Mean(name='annealed_rate'),
             'entropy_regularizer': tf.keras.metrics.Mean(name='entropy_regularizer'),
             'encoder_entropy': tf.keras.metrics.Mean(name='encoder_entropy'),
             'marginal_encoder_entropy': tf.keras.metrics.Mean(name='marginal_encoder_entropy'),
@@ -575,20 +584,26 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
     def relaxed_markov_chain_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor, temperature: float = 1e-5) -> tfd.Distribution:
+        if self._has_dedicated_label_transition_network:
+            next_label_logits = self.action_label_transition_network(latent_state)
+            next_state_logits = lambda _next_label: self.action_transition_network([latent_state, _next_label])
+        else:
+            next_label_logits, _next_state_logits = self.action_transition_network(latent_state)
+            next_state_logits = lambda _: _next_state_logits
+
         return tfd.JointDistributionSequential([
             tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
                 components_distribution=tfd.Independent(
                     tfd.Bernoulli(
-                        logits=tf.transpose(self.action_label_transition_network(latent_state), perm=[0, 2, 1]),
+                        logits=tf.transpose(next_label_logits, perm=[0, 2, 1]),
                         allow_nan_stats=False, ),
                     reinterpreted_batch_ndims=1),
                 allow_nan_stats=False,
             ), lambda _next_label: tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
                 components_distribution=tfd.Independent(tfd.Logistic(
-                    loc=(tf.transpose(self.action_transition_network([latent_state, _next_label]), perm=[0, 2, 1])
-                         / temperature),
+                    loc=tf.transpose(next_state_logits(_next_label), perm=[0, 2, 1]) / temperature,
                     scale=1. / temperature,
                     allow_nan_stats=False, ), reinterpreted_batch_ndims=1),
                 allow_nan_stats=False)])
@@ -604,11 +619,18 @@ class VariationalMarkovDecisionProcess(tf.Module):
               z ~ BinaryConcrete(logits, temperature) = sigmoid(z_logistic)
               with z_logistic ~ Logistic(loc=logits / temperature, scale=1. / temperature))
         """
+        if self._has_dedicated_label_transition_network:
+            next_label_logits = self.label_transition_network([latent_state, action])
+            next_state_logits = lambda _next_label: self.transition_network([latent_state, action, _next_label])
+        else:
+            next_label_logits, _next_state_logits = self.transition_network([latent_state, action])
+            next_state_logits = lambda _: _next_state_logits
+
         if next_label is not None:
-            next_latent_state_logits = self.transition_network([latent_state, action, next_label])
+            _next_state_logits = next_state_logits(next_label)
             return tfd.Independent(
                 tfd.Logistic(
-                    loc=next_latent_state_logits / temperature,
+                    loc=_next_state_logits / temperature,
                     scale=1. / temperature,
                     allow_nan_stats=False),
                 allow_nan_stats=False, )
@@ -616,13 +638,13 @@ class VariationalMarkovDecisionProcess(tf.Module):
             return tfd.JointDistributionSequential([
                 tfd.Independent(
                     tfd.Bernoulli(
-                        logits=self.label_transition_network([latent_state, action]),
+                        logits=next_label_logits,
                         allow_nan_stats=False,
-                        name='variational_mdp_label_transition_distribution'),
+                        name='label_transition_distribution'),
                     allow_nan_stats=False),
                 lambda _next_label: tfd.Independent(
                     tfd.Logistic(
-                        loc=self.transition_network([latent_state, action, _next_label]) / temperature,
+                        loc=next_state_logits(_next_label) / temperature,
                         scale=1. / temperature,
                         allow_nan_stats=False),
                     allow_nan_stats=False)],
@@ -630,19 +652,26 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
     def discrete_markov_chain_latent_transition_probability_distribution(
             self, latent_state: tf.Tensor) -> tfd.Distribution:
+        if self._has_dedicated_label_transition_network:
+            next_label_logits = self.action_label_transition_network(latent_state)
+            next_state_logits = lambda _next_label: self.action_transition_network([latent_state, _next_label])
+        else:
+            next_label_logits, _next_state_logits = self.action_transition_network(latent_state)
+            next_state_logits = lambda _: _next_state_logits
+
         return tfd.JointDistributionSequential([
             tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
                 components_distribution=tfd.Independent(
                     tfd.Bernoulli(
-                        logits=tf.transpose(self.action_label_transition_network(latent_state), perm=[0, 2, 1]),
+                        logits=tf.transpose(next_label_logits, perm=[0, 2, 1]),
                         dtype=tf.float32,
                         allow_nan_stats=False),
                     reinterpreted_batch_ndims=1)
             ), lambda _next_label: tfd.MixtureSameFamily(
                 mixture_distribution=tfd.Categorical(logits=self.latent_policy_network(latent_state)),
                 components_distribution=tfd.Independent(tfd.Bernoulli(
-                    logits=tf.transpose(self.action_transition_network([latent_state, _next_label]), perm=[0, 2, 1]),
+                    logits=tf.transpose(next_state_logits(_next_label), perm=[0, 2, 1]),
                     allow_nan_stats=False), reinterpreted_batch_ndims=1))])
 
     def discrete_latent_transition_probability_distribution(
@@ -652,18 +681,25 @@ class VariationalMarkovDecisionProcess(tf.Module):
         Retrieves a Bernoulli probability distribution P(z'|z, a) over successor latent states, given a binary latent
         state z and an action a.
         """
+        if self._has_dedicated_label_transition_network:
+            next_label_logits = self.label_transition_network([latent_state, action])
+            next_state_logits = lambda _next_label: self.transition_network([latent_state, action, _next_label])
+        else:
+            next_label_logits, _next_state_logits = self.transition_network([latent_state, action])
+            next_state_logits = lambda _: _next_state_logits
+
         if next_label is not None:
-            next_latent_state_logits = self.transition_network([latent_state, action, next_label])
-            return tfd.Independent(tfd.Bernoulli(logits=next_latent_state_logits, allow_nan_stats=False))
+            _next_state_logits = next_state_logits(next_label)
+            return tfd.Independent(tfd.Bernoulli(logits=_next_state_logits, allow_nan_stats=False))
         else:
             return tfd.JointDistributionSequential([
                 tfd.Independent(tfd.Bernoulli(
-                    logits=self.label_transition_network([latent_state, action]),
+                    logits=next_label_logits,
                     allow_nan_stats=False,
                     dtype=tf.float32)),
                 lambda _next_label: tfd.Independent(
                     tfd.Bernoulli(
-                        logits=self.transition_network([latent_state, action, _next_label]),
+                        logits=next_state_logits(_next_label),
                         allow_nan_stats=False))])
 
     def reward_probability_distribution(
@@ -798,7 +834,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
         self.loss_metrics['reward_mse'](reward, reconstruction_sample[-2])
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
-        self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
+        # self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
         self.loss_metrics['entropy_regularizer'](
             tf.stop_gradient(self.entropy_regularizer_scale_factor * entropy_regularizer))
         self.loss_metrics['transition_log_probs'](
@@ -961,6 +997,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
         check = lambda x: 1 if 1 - eps > x > eps else 0
         mean_bits_used += tf.reduce_sum(tf.map_fn(check, mean), axis=0).numpy()
         return {'mean_state_bits_used': mean_bits_used}
+
+    @property
+    def _has_dedicated_label_transition_network(self):
+        return len(self.transition_network.outputs) == 1
 
     @property
     def encoder_temperature(self):
@@ -1937,7 +1977,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         if dataset is not None:
             batch_size = eval_steps
-            tf.print("batch size:", batch_size)
             dataset_iterator = iter(dataset.batch(
                 batch_size=batch_size,
                 drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE))
@@ -1954,7 +1993,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             eval_progressbar = Progbar(
                 target=(eval_steps + 1) * batch_size, interval=0.1, stateful_metrics=['eval_ELBO'])
 
-            tf.print("\nEvalutation over {} steps".format(eval_steps))
+            tf.print("\nEvalutation over {} step(s)".format(eval_steps))
 
             for step in range(eval_steps):
                 x = next(dataset_iterator)
