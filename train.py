@@ -265,7 +265,7 @@ def main(argv):
                 state_decoder_pre_processing_network=(network.state_decoder_pre_processing
                                                       if params['state_decoder_pre_processing_network'] else None),
                 transition_network=network.transition,
-                label_transition_network=network.label_transition,
+                label_transition_network=(network.label_transition if params['label_transition_function'] else None),
                 reward_network=network.reward,
                 decoder_network=network.decoder,
                 latent_policy_network=(network.discrete_policy if params['latent_policy'] else None),
@@ -307,7 +307,8 @@ def main(argv):
                 number_of_discrete_actions=params['number_of_discrete_actions'],
                 action_encoder_network=network.encoder,
                 transition_network=network.transition,
-                action_label_transition_network=network.label_transition,
+                action_label_transition_network=(
+                    network.label_transition if params['label_transition_function'] else None),
                 reward_network=network.reward, action_decoder_network=network.decoder,
                 latent_policy_network=network.discrete_policy,
                 encoder_temperature=params['encoder_temperature'],
@@ -389,6 +390,7 @@ def main(argv):
             parallel_environments=params['parallel_env'] > 1,
             num_parallel_environments=params['parallel_env'],
             eval_steps=int(1e3) if not params['do_not_eval'] else 0,
+            eval_and_save_model_interval=params['evaluation_interval'],
             policy_evaluation_num_episodes=(
                 0 if not (params['action_discretizer'] or params['latent_policy'])
                      or (phase == 0 and len(models) > 1) else 30),
@@ -793,6 +795,16 @@ if __name__ == '__main__':
         'local_losses_replay_buffer_size',
         default=int(1e5),
         help='Size of the replay buffer used to estimate the local losses'
+    )
+    flags.DEFINE_integer(
+        'evaluation_interval',
+        default=int(1e4),
+        help='Number of training steps to perform between evaluating the VAE.'
+    )
+    flags.DEFINE_bool(
+        'label_transition_function',
+        default=True,
+        help='Whether to use a label transition distribution for the transition function or not.'
     )
     FLAGS = flags.FLAGS
 
