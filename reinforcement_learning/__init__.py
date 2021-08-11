@@ -56,15 +56,15 @@ labeling_functions = {
             # tf.abs(observation[..., 0]) >= 0.8,  # close to the edge of the frame
             # close to the lunar pad
             tf.math.logical_and(tf.abs(observation[..., 1]) <= 0.3, tf.abs(observation[..., 0]) <= 0.3),
-            # observation[..., 2] == 0.,  # horizontal speed is 0
-            # observation[..., 3] == 0.,   # vertical speed is 0
-            tf.abs(observation[..., 2] + observation[..., 3]) <= 1e-4,  # speed is almost 0
+            tf.logical_and(observation[..., 2] == 0.,  # horizontal speed is 0
+                           observation[..., 3] == 0.),   # vertical speed is 0
+            # tf.abs(observation[..., 2] + observation[..., 3]) <= 1e-4,  # speed is almost 0
             # observation[..., 3] <= -0.5,  # fast vertical (landing) speed
-            tf.abs(observation[..., 4]) <= math.pi / 3,  # lander angle is safe
+            # tf.abs(observation[..., 4]) <= math.pi / 3,  # lander angle is safe
             # tf.abs(observation[..., 4]) <= math.pi / 6,  # weak lander angle
             # observation[..., 5] == 0.,  # angular velocity is 0
-            tf.math.logical_and(tf.cast(observation[..., 6], dtype=tf.bool),
-                                tf.cast(observation[..., 7], dtype=tf.bool))  # ground contact
+            tf.logical_and(tf.cast(observation[..., 6], dtype=tf.bool),
+                           tf.cast(observation[..., 7], dtype=tf.bool))  # ground contact
         ], axis=-1),
     'MountainCar-v0': lambda observation: tf.stack([
         observation[..., 0] >= 0.5,  # has reached the goal
