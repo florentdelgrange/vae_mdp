@@ -122,6 +122,8 @@ def generate_vae_name(params):
     if nb_additional_params > 0:
         vae_name += ('_params={}' + '-{}' * (nb_additional_params - 1)).format(
             *filter(lambda x: params[x], additional_parameters))
+    if not params['label_transition_function']:
+        vae_name += '_no_label_net'
 
     return vae_name
 
