@@ -47,7 +47,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             relaxed_state_encoding: bool = False,
             full_optimization: bool = True,
             reconstruction_mixture_components: int = 1,
-            action_regularizer_scaling: float = 1.,
+            action_entropy_regularizer_scaling: float = 1.,
             importance_sampling_exponent: Optional[float] = None,
             importance_sampling_exponent_growth_rate: Optional[float] = None
     ):
@@ -101,7 +101,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         self.prior_temperature = tf.Variable(prior_temperature, dtype=tf.float32, trainable=False)
         self.encoder_temperature_decay_rate = tf.constant(encoder_temperature_decay_rate, dtype=tf.float32)
         self.prior_temperature_decay_rate = tf.constant(prior_temperature_decay_rate, dtype=tf.float32)
-        self._action_regularizer_scaling = tf.constant(action_regularizer_scaling, dtype=tf.float32)
+        self._action_entropy_regularizer_scaling = tf.constant(action_entropy_regularizer_scaling, dtype=tf.float32)
         if importance_sampling_exponent is not None:
             self.is_exponent = importance_sampling_exponent
         if importance_sampling_exponent_growth_rate is not None:
@@ -893,7 +893,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         if self.entropy_regularizer_scale_factor < 0. and not enforce_deterministic_action_encoder:
             action_regularizer = 0.
         else:
-            action_regularizer = -1. * self._action_regularizer_scaling * tf.reduce_mean(
+            action_regularizer = -1. * self._action_entropy_regularizer_scaling * tf.reduce_mean(
                 self.discrete_action_encoding(latent_state, action).entropy(), axis=0)
 
         return state_regularizer + action_regularizer

@@ -81,7 +81,7 @@ def generate_vae_name(params):
             'action_discretizer',
             'LA{}_ER{}-decay={:g}-min={:g}_KLA{}-growth={:g}_TD{:.2f}-{:.2f}'.format(
                 params['number_of_discrete_actions'],
-                params['entropy_regularizer_scale_factor'],
+                params['entropy_regularizer_scale_factor'] * params['action_entropy_regularizer_scaling'],
                 params['entropy_regularizer_decay_rate'],
                 params['entropy_regularizer_scale_factor_min_value'],
                 params['kl_annealing_scale_factor'],
@@ -326,6 +326,7 @@ def main(argv):
                     mixture_components if params['action_mixture_components'] == 0
                     else params['action_mixture_components']
                 ),
+                action_entropy_regularizer_scaling=params["action_entropy_regularizer_scaling"],
             )
             vae.kl_scale_factor = params['kl_annealing_scale_factor']
             vae.kl_growth_rate = params['kl_annealing_growth_rate']
@@ -809,6 +810,11 @@ if __name__ == '__main__':
         'label_transition_function',
         default=True,
         help='Whether to use a label transition distribution for the transition function or not.'
+    )
+    flags.DEFINE_float(
+        'action_entropy_regularizer_scaling',
+        default=1.,
+        help="Scale factor of the action entropy regularizer."
     )
     FLAGS = flags.FLAGS
 
