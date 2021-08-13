@@ -78,7 +78,9 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             importance_sampling_exponent_growth_rate=vae_mdp.is_exponent_growth_rate,
             optimizer=vae_mdp._optimizer,
             evaluation_window_size=tf.shape(vae_mdp.evaluation_window)[0],
-            evaluation_criterion=vae_mdp.evaluation_criterion)
+            evaluation_criterion=vae_mdp.evaluation_criterion,
+            reward_bounds=None if vae_mdp._reward_softclip is None else (
+                vae_mdp._reward_softclip.low, vae_mdp._reward_softclip.high))
 
         if encoder_temperature is None:
             encoder_temperature = 1. / (number_of_discrete_actions - 1)
@@ -249,7 +251,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                 _reward_network = reward_network(_reward_network)
                 reward_mean = Dense(
                     units=np.prod(self.reward_shape),
-                    activation=None,
+                    activation=None if self._reward_softclip is None else lambda x: self._reward_softclip(x),
                     name='action_reward_mean_0'
                 )(_reward_network)
                 reward_mean = Reshape(self.reward_shape, name='action_reward_mean')(
@@ -279,7 +281,7 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
                     _reward_network = _reward_network(reward_network_pre_processing)
                     reward_mean = Dense(
                         units=np.prod(self.reward_shape),
-                        activation=None,
+                        activation=None if self._reward_softclip is None else lambda x: self._reward_softclip(x),
                         name='reward_mean_0_action{}'.format(action)
                     )(_reward_network)
                     reward_mean = Reshape(

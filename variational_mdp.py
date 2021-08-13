@@ -118,7 +118,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
                  action_transition_network: Optional[Model] = None,
                  importance_sampling_exponent: Optional[float] = 1.,
                  importance_sampling_exponent_growth_rate: Optional[float] = 0.,
-                 time_stacked_lstm_units: int = 128):
+                 time_stacked_lstm_units: int = 128,
+                 reward_bounds: Optional[Tuple[float, float]] = None):
 
         super(VariationalMarkovDecisionProcess, self).__init__()
 
@@ -167,7 +168,15 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         state = Input(shape=state_shape, name="state")
         action = Input(shape=action_shape, name="action")
-        self._encoder_softclip = tfb.SoftClip(high=10., low=-10.)  # , hinge_softness=10.)
+        self._encoder_softclip = tfb.SoftClip(low=-10., high=10.)  # , hinge_softness=10.)
+
+        if reward_bounds is not None:
+            if len(reward_bounds) != 2 or reward_bounds[0] > reward_bounds[1]:
+                raise ValueError("Please provide valid reward bounds."
+                                 "Values provided: {}".format(str(reward_bounds)))
+            self._reward_softclip = lambda x: tfb.SoftClip(low=self.reward_bounds[0], high=reward_bounds[1])
+        else:
+            self._reward_softclip = None
 
         # the evaluation window contains eiter the N max evaluation scores encountered during training if the evaluation
         # criterion is MAX, or the N last evaluation scores encountered if the evaluation criterion is MEAN.
@@ -339,7 +348,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 _reward_network = reward_network(reward_network_input)
                 reward_mean = Dense(
                     units=np.prod(reward_shape) * self.number_of_discrete_actions,
-                    activation=None,
+                    activation=None if self._reward_softclip is None else lambda x: self._reward_softclip(x),
                     name='reward_mean_raw_output')(_reward_network)
                 reward_mean = Reshape(target_shape=(reward_shape + (self.number_of_discrete_actions,)))(reward_mean)
                 _action = tf.keras.layers.RepeatVector(np.prod(reward_shape))(action)
@@ -367,7 +376,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 _reward_network = reward_network(reward_network_input)
                 reward_mean = Dense(
                     units=np.prod(reward_shape),
-                    activation=None,
+                    activation=None if self._reward_softclip is None else lambda x: self._reward_softclip(x),
                     name='reward_mean_0')(_reward_network)
                 reward_raw_covar = Dense(
                     units=np.prod(reward_shape),

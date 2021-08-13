@@ -258,6 +258,13 @@ def main(argv):
         specs.state_shape, specs.action_shape, specs.reward_shape, specs.label_shape, \
         specs.time_step_spec, specs.action_spec
 
+    if params['reward_lower_bound'] is None and params['reward_upper_bound'] is None:
+        reward_bounds = None
+    else:
+        for bound, value in zip(['lower', 'upper'], [-1. * np.inf, np.inf]):
+            params['reward_{}_bound'.format(bound)] = value
+        reward_bounds = (params['reward_lower_bound'], params['reward_upper_bound'])
+
     def build_vae_model():
         if params['load_vae'] == '':
             network = generate_network_components(params, name='state')
@@ -293,8 +300,8 @@ def main(argv):
                 full_optimization=not params['decompose_training'] and params['latent_policy'],
                 importance_sampling_exponent=params['importance_sampling_exponent'],
                 importance_sampling_exponent_growth_rate=params['importance_sampling_exponent_growth_rate'],
-                evaluation_window_size=params['evaluation_window_size']
-            )
+                evaluation_window_size=params['evaluation_window_size'],
+                reward_bounds=reward_bounds,)
         else:
             vae = variational_mdp.load(params['load_vae'])
             vae.encoder_temperature = relaxed_state_encoder_temperature
@@ -815,6 +822,16 @@ if __name__ == '__main__':
         'action_entropy_regularizer_scaling',
         default=1.,
         help="Scale factor of the action entropy regularizer."
+    )
+    flags.DEFINE_float(
+        "reward_upper_bound",
+        default=None,
+        help='maximum values that rewards can have'
+    )
+    flags.DEFINE_float(
+        "reward_lower_bound",
+        default=None,
+        help='minimum values that rewards can have'
     )
     FLAGS = flags.FLAGS
 
