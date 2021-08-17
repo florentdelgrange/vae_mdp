@@ -174,7 +174,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             if len(reward_bounds) != 2 or reward_bounds[0] > reward_bounds[1]:
                 raise ValueError("Please provide valid reward bounds."
                                  "Values provided: {}".format(str(reward_bounds)))
-            self._reward_softclip = lambda x: tfb.SoftClip(low=self.reward_bounds[0], high=reward_bounds[1])
+            self._reward_softclip = tfb.SoftClip(low=reward_bounds[0], high=reward_bounds[1])
         else:
             self._reward_softclip = None
 

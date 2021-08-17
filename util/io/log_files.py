@@ -15,7 +15,7 @@ import matplotlib.ticker as ticker
 def get_event_dataframe(
         log_dir: str,
         tags: Optional[Collection[str]] = None,
-        regex: str = '**/*.v2',
+        exclude_pattern: Optional[str] = None,
         tags_renaming: Optional[Dict[str, str]] = None,
         run_name: Optional[str] = None,
         event_name: Optional[str] = None,
@@ -33,10 +33,15 @@ def get_event_dataframe(
     TaggedEvent = namedtuple('TaggedEvent', ['x_axis', 'y_axis', 'tags'])
     df = None
 
-    if len(glob.glob(os.path.join(log_dir, regex))) == 0:
-        raise IOError("No such file or directory:", os.path.join(log_dir, regex))
+    files = glob.glob(log_dir, recursive=True)
+    if exclude_pattern is not None:
+        files = set(files) - set(glob.glob(exclude_pattern, recursive=True))
+    if len(files) == 0:
+        raise IOError("No such file or directory:",
+                      "{}".format(log_dir) + (" \\ {}".format(exclude_pattern)
+                                              if exclude_pattern is not None else ""))
 
-    for filename in glob.glob(os.path.join(log_dir, regex)):
+    for filename in files:
         event_file = os.path.join(log_dir, filename)
         tagged_events = TaggedEvent(x_axis=[], y_axis=[], tags=[])
 
@@ -137,18 +142,30 @@ def plot_histograms_per_step(
         num_x_ticks: int = 5,
         num_y_ticks: int = 4,
         use_math_text: bool = False,
-        aspect: float = 2.5
+        aspect: float = 2.5,
+        col: str = 'run',
+        display_ylabel: bool = True
 ):
     tick = ticker.ScalarFormatter(useOffset=True, useMathText=use_math_text)
     tick.set_powerlimits((0, 0))
 
     # we assume that all buckets have the same range, according to the way tf summaries records histograms
-    nrows = len(df['event'].unique()) if 'event' in df else 1
-    ncols = len(df['run'].unique()) if 'run' in df else 1
+    if col == 'run':
+        nrows = len(df['event'].unique()) if 'event' in df else 1
+        ncols = len(df['run'].unique()) if 'run' in df else 1
+    elif col == 'event':
+        ncols = len(df['event'].unique()) if 'event' in df else 1
+        nrows = len(df['run'].unique()) if 'run' in df else 1
+    else:
+        raise ValueError("The col parameter should be either 'event' or 'run'")
 
-    fig, axs = plt.subplots(nrows, ncols, figsize=(4 * ncols, aspect * nrows))
-    fig.tight_layout()
+    if col == 'run':
+        fig, axs = plt.subplots(nrows, ncols, figsize=(2.8 * ncols, aspect * nrows))
+    else:
+        fig, axs = plt.subplots(nrows, ncols, figsize=(4.3 * ncols, aspect * nrows), sharey=(col == 'event'))
+        fig.tight_layout()
 
+    # fig, axs = plt.subplots(nrows, ncols, figsize=(2.75 * ncols, .75 * aspect * nrows))
     def plot_histogram(df, ax, display_x_ticks=True, display_y_ticks=True, ax_title=None):
         buckets = df['value'].head(1).to_numpy()[0][..., :2]
 
@@ -167,7 +184,7 @@ def plot_histograms_per_step(
                       for x in np.flipud(xticks).astype(float)]
         else:
             xticks = [tick.format_data(x) if x != 0. else str(0) for x in np.flipud(xticks).astype(float)]
-        power2 = np.power(2, np.ceil(np.log(buckets.flatten().max())/np.log(2)))
+        power2 = np.power(2, np.ceil(np.log(buckets.flatten().max()) / np.log(2)))
         yticks = np.array([round_to_base(power2 / len(buckets) * (bucket + 1), power2 // num_y_ticks)
                            for bucket in range(len(buckets))],
                           dtype=np.int32)
@@ -188,7 +205,7 @@ def plot_histograms_per_step(
 
         if display_x_ticks:
             ax.set_xlabel("step")
-        if display_y_ticks:
+        if display_y_ticks and col == 'run':
             ax.set_ylabel("latent state")
         if ax_title is not None:
             ax.set_title(ax_title)
@@ -210,16 +227,24 @@ def plot_histograms_per_step(
             _axs = axs
         for row, axs_row in enumerate(_axs):
             for column, ax in enumerate(axs_row):
-                _df = df[df['event'] == df['event'].unique()[row]] if 'event' in df else df
-                _df = _df[_df['run'] == _df['run'].unique()[column]] if 'run' in _df else _df
+                _row = 'event' if col == 'run' else 'run'
+                _col = 'run' if col == 'run' else 'event'
+                _df = df[df[_row] == df[_row].unique()[row]] if _row in df else df
+                _df = _df[_df[_col] == _df[_col].unique()[column]] if _col in _df else _df
                 plot_histogram(
                     _df,
                     ax,
                     display_x_ticks=(row == nrows - 1),
                     display_y_ticks=(column == 0),
-                    ax_title='experience replay = {}'.format(df['run'].unique()[column])
-                    if 'run' in df and row == 0 else None)
-    plt.subplots_adjust(hspace=0.1, wspace=0.05)
+                    ax_title=('experience replay = {}'.format(df['run'].unique()[column if col == 'run' else row])
+                              if ('run' in df and row == 0 and _row == 'event') or
+                                 ('run' in df) else None))
+
+    # plt.tight_layout()
+    # fig.supylabel("latent state")
+    if display_ylabel and col == 'event':
+        fig.text(0.05 if col == 'run' else -0.02, 0.5, 'latent state', va='center', rotation='vertical')
+    plt.subplots_adjust(hspace=0.05 if col == 'run' else 0.15, wspace=0.05)
     return fig
 
 
@@ -233,7 +258,11 @@ def plot_policy_evaluation(
         original_policy_as_label: bool = True,
         policy_evaluation_avg_rewards_tag: str = 'policy_evaluation_avg_rewards',
         aspect: float = 2.5,
-        estimator: str = 'mean'
+        estimator: str = 'mean',
+        ci=0.9,
+        font_scale=1.35,
+        environment_hue: bool = True,
+        hide_title: bool = False,
 ):
     if estimator == 'median':
         estimator = np.median
@@ -278,6 +307,8 @@ def plot_policy_evaluation(
             df = df.append(df.assign(policy='original', value=original_policy_expected_rewards))
 
     if compare_experience_replay or compare_environments and relplot:
+        sns.set_context('paper')
+        sns.set(font_scale=font_scale)
         g = sns.relplot(
             data=df.rename(columns={
                 "value": "avg. rewards",
@@ -285,25 +316,29 @@ def plot_policy_evaluation(
                 "event": "environment"}),
             x='step',
             y='avg. rewards',
-            # hue='experience replay',
+            hue='environment' if environment_hue else None,
             style='policy' if original_policy_as_label else 'experience replay',
             row='experience replay' if compare_experience_replay else None,
             col='environment' if compare_environments else None,
             aspect=aspect,
             estimator=estimator,
-            ci=90 if estimator != 'mean' else 'sd',
+            ci=ci * 100 if estimator != 'mean' else 'sd',
             facet_kws=dict(sharex=False, sharey=False),
             kind='line',
             legend='brief',
             style_order=['distilled', 'original', 'distilled (best)'])
 
-        if plot_best:
-            for i, env in enumerate(df['event'].unique()):
-                _df = df[df['event'] == env]
-                _df = _df[_df['policy'] == 'distilled']
-                step = _df['step'][_df['value'] == _df['value'].max()]
-                g.axes[0, i].scatter(step.to_numpy(), [_df['value'].max()] * len(step.to_numpy()), marker='x')
-                # g.axes[0, i].legend()
+        #  if plot_best:
+        #      for i, env in enumerate(df['event'].unique()):
+        #          _df = df[df['event'] == env]
+        #          _df = _df[_df['policy'] == 'distilled']
+        #          step = _df['step'][_df['value'] == _df['value'].max()]
+        #          g.axes[0, i].scatter(step.to_numpy(), [_df['value'].max()] * len(step.to_numpy()), marker='x')
+        #          g.axes[0, i].legend()
+
+        if hide_title:
+            for ax in g.axes.flatten():
+                ax.set_title('')
         return g
     else:
         if compare_environments:
@@ -312,6 +347,7 @@ def plot_policy_evaluation(
             hue = 'experience replay'
         else:
             hue = None
+        sns.set(font_scale=font_scale)
         return sns.lineplot(
             data=df.rename(columns={
                 "value": "avg. rewards",
@@ -321,5 +357,5 @@ def plot_policy_evaluation(
             y='avg. rewards',
             hue=hue,
             estimator=estimator,
-            ci=90 if estimator != 'mean' else 'sd',
+            ci=ci * 100 if estimator != 'mean' else 'sd',
             style='policy' if (original_policy_as_label or plot_best) else 'experience replay', )
