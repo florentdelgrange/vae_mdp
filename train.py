@@ -258,11 +258,9 @@ def main(argv):
         specs.state_shape, specs.action_shape, specs.reward_shape, specs.label_shape, \
         specs.time_step_spec, specs.action_spec
 
-    if params['reward_lower_bound'] is None and params['reward_upper_bound'] is None:
+    if params['reward_lower_bound'] is None or params['reward_upper_bound'] is None:
         reward_bounds = None
     else:
-        for bound, value in zip(['lower', 'upper'], [-1. * np.inf, np.inf]):
-            params['reward_{}_bound'.format(bound)] = value
         reward_bounds = (params['reward_lower_bound'], params['reward_upper_bound'])
 
     def build_vae_model():
