@@ -146,7 +146,7 @@ class LunarLanderRewardShapingAugmented(LunarLander):
 
     def step(self, action):
         state, reward, done, d = super().step(action)
-        state = np.append(state, [self.prev_shaping], axis=-1)
+        state = np.append(state, [self.prev_shaping * 1e-2], axis=-1)
         return state, reward, done, d
 
 
