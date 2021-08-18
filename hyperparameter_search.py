@@ -61,17 +61,15 @@ def search(
 
         defaults = {}
         optimizer = trial.suggest_categorical('optimizer', ['Adam', 'SGD', 'RMSprop'])
-        learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
-        batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128, 256, 512])
+        learning_rate = trial.suggest_float('learning_rate', 1e-4, 1e-3, log=True)
+        batch_size = trial.suggest_categorical('batch_size', [64, 128, 256])
         neurons = trial.suggest_int('neurons', 16, 512, step=16)
         hidden = trial.suggest_int('hidden', 1, 5)
         activation = trial.suggest_categorical('activation', ['relu', 'leaky_relu'])
-        relaxed_state_encoder_temperature = trial.suggest_float('relaxed_state_encoder_temperature', 1e-6, 1.)
-        relaxed_state_prior_temperature = trial.suggest_float('relaxed_state_prior_temperature', 1e-6, 1.)
-        kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-6, 1e-3, log=True)
-        entropy_regularizer_decay_rate = trial.suggest_float('entropy_regularizer_decay_rate', 1e-6, 1e-3, log=True)
+        kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-6, 1e-4, log=True)
+        entropy_regularizer_decay_rate = trial.suggest_float('entropy_regularizer_decay_rate', 1e-6, 1e-4, log=True)
         epsilon_greedy = trial.suggest_float('epsilon_greedy', 0., 0.5)
-        epsilon_greedy_decay_rate = trial.suggest_float('epsilon_greedy_decay_rate', 1e-6, 1e-3, log=True)
+        epsilon_greedy_decay_rate = trial.suggest_float('epsilon_greedy_decay_rate', 1e-6, 1e-4, log=True)
 
         if fixed_parameters['time_stacked_states'] > 1:
             time_stacked_states = trial.suggest_int('time_stacked_states', 1, fixed_parameters['time_stacked_states'])
@@ -127,22 +125,17 @@ def search(
         if fixed_parameters['action_discretizer']:
             number_of_discrete_actions = trial.suggest_int(
                 'number_of_discrete_actions', 2, fixed_parameters['number_of_discrete_actions'])
-            encoder_temperature = trial.suggest_float(
-                'encoder_temperature', 1e-6, 1. / (number_of_discrete_actions - 1))
-            prior_temperature = trial.suggest_float(
-                'prior_temperature', 1e-6, 1. / (number_of_discrete_actions - 1))
-            one_output_per_action = trial.suggest_categorical('one_output_per_action', [True, False])
+            one_output_per_action = False  # trial.suggest_categorical('one_output_per_action', [True, False])
 
         for attr in ['learning_rate', 'batch_size', 'collect_steps_per_iteration', 'latent_state_size',
-                     'relaxed_state_encoder_temperature', 'relaxed_state_prior_temperature',
                      'kl_annealing_growth_rate', 'entropy_regularizer_decay_rate', 'prioritized_experience_replay',
                      'neurons', 'hidden', 'activation', 'priority_exponent', 'importance_sampling_exponent',
                      'importance_sampling_exponent_growth_rate', 'specs',
                      'buckets_based_priorities', 'epsilon_greedy', 'epsilon_greedy_decay_rate', 'time_stacked_states',
                      'state_encoder_pre_processing_network', 'state_decoder_pre_processing_network',
                      'optimizer'] + ([
-                        'encoder_temperature', 'prior_temperature', 'number_of_discrete_actions',
-                        'one_output_per_action'] if fixed_parameters['action_discretizer'] else []):
+                        'number_of_discrete_actions', 'one_output_per_action']
+                        if fixed_parameters['action_discretizer'] else []):
             defaults[attr] = locals()[attr]
 
         return defaults
@@ -178,10 +171,8 @@ def search(
             latent_policy_network=(network.discrete_policy if fixed_parameters['latent_policy'] else None),
             latent_state_size=hyperparameters['latent_state_size'],
             mixture_components=fixed_parameters['mixture_components'],
-            encoder_temperature=hyperparameters['relaxed_state_encoder_temperature'],
-            prior_temperature=hyperparameters['relaxed_state_prior_temperature'],
-            encoder_temperature_decay_rate=0.,
-            prior_temperature_decay_rate=0.,
+            encoder_temperature_decay_rate=fixed_parameters['encoder_temperature_decay_rate'],
+            prior_temperature_decay_rate=fixed_parameters['prior_temperature_decay_rate'],
             entropy_regularizer_scale_factor=fixed_parameters['entropy_regularizer_scale_factor'],
             entropy_regularizer_decay_rate=hyperparameters['entropy_regularizer_decay_rate'],
             entropy_regularizer_scale_factor_min_value=fixed_parameters['entropy_regularizer_scale_factor_min_value'],
@@ -205,10 +196,8 @@ def search(
                 transition_network=network.transition, action_label_transition_network=network.label_transition,
                 reward_network=network.reward, action_decoder_network=network.decoder,
                 latent_policy_network=network.discrete_policy,
-                encoder_temperature=hyperparameters['encoder_temperature'],
-                prior_temperature=hyperparameters['prior_temperature'],
-                encoder_temperature_decay_rate=0.,
-                prior_temperature_decay_rate=0.,
+                encoder_temperature_decay_rate=fixed_parameters['encoder_temperature_decay_rate'],
+                prior_temperature_decay_rate=fixed_parameters['prior_temperature_decay_rate'],
                 one_output_per_action=hyperparameters['one_output_per_action'],
                 relaxed_state_encoding=True,
                 full_optimization=True,
