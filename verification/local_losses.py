@@ -151,7 +151,7 @@ def estimate_local_losses_from_samples(
     local_reward_loss = estimate_local_reward_loss(
         state, label, latent_action, reward, next_state, next_label,
         latent_reward_function, latent_state, next_latent_state,
-        reward_scaling)
+        reward_scaling=reward_scaling)
 
     local_reward_loss_time = time.time() - local_reward_loss_time
 
