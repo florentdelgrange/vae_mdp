@@ -205,7 +205,8 @@ def search(
                 one_output_per_action=hyperparameters['one_output_per_action'],
                 relaxed_state_encoding=True,
                 full_optimization=True,
-                reconstruction_mixture_components=1, )
+                reconstruction_mixture_components=1,
+                action_entropy_regularizer_scaling=fixed_parameters['action_entropy_regularizer_scaling'])
 
         global_step = tf.Variable(0, trainable=False, dtype=tf.int64)
         if hyperparameters['optimizer'] == 'Adam':
