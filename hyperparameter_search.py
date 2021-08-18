@@ -63,13 +63,14 @@ def search(
         optimizer = trial.suggest_categorical('optimizer', ['Adam', 'SGD', 'RMSprop'])
         learning_rate = trial.suggest_float('learning_rate', 1e-4, 1e-3, log=True)
         batch_size = trial.suggest_categorical('batch_size', [64, 128, 256])
-        neurons = trial.suggest_int('neurons', 16, 512, step=16)
-        hidden = trial.suggest_int('hidden', 1, 5)
+        neurons = trial.suggest_categorical('neurons', [64, 128, 256, 512])
+        hidden = trial.suggest_int('hidden', 1, 3)
         activation = trial.suggest_categorical('activation', ['relu', 'leaky_relu'])
         kl_annealing_growth_rate = trial.suggest_float('kl_annealing_growth_rate', 1e-6, 1e-4, log=True)
         entropy_regularizer_decay_rate = trial.suggest_float('entropy_regularizer_decay_rate', 1e-6, 1e-4, log=True)
         epsilon_greedy = trial.suggest_float('epsilon_greedy', 0., 0.5)
         epsilon_greedy_decay_rate = trial.suggest_float('epsilon_greedy_decay_rate', 1e-6, 1e-4, log=True)
+        label_transition_function = trial.suggest_categorical('label_transition_function', [True, False])
 
         if fixed_parameters['time_stacked_states'] > 1:
             time_stacked_states = trial.suggest_int('time_stacked_states', 1, fixed_parameters['time_stacked_states'])
@@ -133,7 +134,7 @@ def search(
                      'importance_sampling_exponent_growth_rate', 'specs',
                      'buckets_based_priorities', 'epsilon_greedy', 'epsilon_greedy_decay_rate', 'time_stacked_states',
                      'state_encoder_pre_processing_network', 'state_decoder_pre_processing_network',
-                     'optimizer'] + ([
+                     'optimizer', 'label_transition_function'] + ([
                         'number_of_discrete_actions', 'one_output_per_action']
                         if fixed_parameters['action_discretizer'] else []):
             defaults[attr] = locals()[attr]
@@ -149,8 +150,8 @@ def search(
                 print("{}={}".format(key, hyperparameters[key]))
 
         for component_name in [
-                'encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy',
-                'state_encoder_pre_processing', 'state_decoder_pre_processing']:
+            'encoder', 'transition', 'label_transition', 'reward', 'decoder', 'discrete_policy',
+            'state_encoder_pre_processing', 'state_decoder_pre_processing']:
             hyperparameters[component_name + '_layers'] = hyperparameters['hidden'] * [hyperparameters['neurons']]
         network = generate_network_components(hyperparameters, name='variational_mdp')
 
@@ -160,7 +161,8 @@ def search(
             state_shape=specs.state_shape, action_shape=specs.action_shape,
             reward_shape=specs.reward_shape, label_shape=specs.label_shape,
             encoder_network=network.encoder,
-            transition_network=network.transition, label_transition_network=network.label_transition,
+            transition_network=network.transition,
+            label_transition_network=network.label_transition if hyperparameters['label_transition_function'] else None,
             reward_network=network.reward, decoder_network=network.decoder,
             state_encoder_pre_processing_network=(network.state_encoder_pre_processing
                                                   if hyperparameters['state_encoder_pre_processing_network']
@@ -185,7 +187,7 @@ def search(
             importance_sampling_exponent_growth_rate=hyperparameters['importance_sampling_exponent_growth_rate'],
             evaluation_window_size=evaluation_window_size,
             evaluation_criterion=variational_mdp.EvaluationCriterion.MAX,
-            time_stacked_states=hyperparameters['time_stacked_states'] > 1)
+            time_stacked_states=hyperparameters['time_stacked_states'] > 1,)
 
         if fixed_parameters['action_discretizer']:
             network = generate_network_components(hyperparameters, name='variational_action_discretizer')
@@ -193,7 +195,9 @@ def search(
                 vae_mdp=vae_mdp,
                 number_of_discrete_actions=hyperparameters['number_of_discrete_actions'],
                 action_encoder_network=network.encoder,
-                transition_network=network.transition, action_label_transition_network=network.label_transition,
+                transition_network=network.transition,
+                action_label_transition_network=(network.label_transition
+                                                 if hyperparameters['label_transition_function'] else None),
                 reward_network=network.reward, action_decoder_network=network.decoder,
                 latent_policy_network=network.discrete_policy,
                 encoder_temperature_decay_rate=fixed_parameters['encoder_temperature_decay_rate'],
