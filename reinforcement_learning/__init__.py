@@ -80,7 +80,7 @@ labeling_functions = {
         observation[..., 5] == 0.,  # angular velocity is 0
         tf.cast(observation[..., 6], dtype=tf.bool),  # left leg ground contact
         tf.cast(observation[..., 7], dtype=tf.bool)  # right leg ground contact
-    ], axi=-1),
+    ], axis=-1),
     'MountainCar-v0': lambda observation: tf.stack([
         observation[..., 0] >= 0.5,  # has reached the goal
         observation[..., 0] >= -.5,  # right-hand side -- positive slope
