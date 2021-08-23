@@ -6,6 +6,8 @@ from typing import Tuple, Optional, Callable, Dict, Iterator, NamedTuple
 import numpy as np
 import psutil
 
+from util.io.video import VideoEmbeddingObserver
+
 try:
     import reverb
 except ImportError as ie:
@@ -1256,7 +1258,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
             local_losses_evaluation: bool = False,
             local_losses_eval_steps: Optional[int] = 0,
             local_losses_eval_replay_buffer_size: Optional[int] = int(1e5),
-            local_losses_reward_scaling: Optional[float] = 1.
+            local_losses_reward_scaling: Optional[float] = 1.,
+            embed_video_policy_evaluation: bool = False,
+            video_path: str = 'video'
     ):
         # reverb replay buffers are not compatible with batched environments
         parallel_environments = parallel_environments and not use_prioritized_replay_buffer
@@ -1299,6 +1303,11 @@ class VariationalMarkovDecisionProcess(tf.Module):
             eval_env.reset()
             policy_evaluation_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
                 eval_env, self.get_latent_policy(), num_episodes=policy_evaluation_num_episodes)
+            if embed_video_policy_evaluation:
+                policy_evaluation_driver.observers.append(VideoEmbeddingObserver(
+                    py_env=py_env,
+                    file_name=os.path.join(video_path, policy_evaluation_env_name, 'distilled_policy_evaluation'),
+                    num_episodes=policy_evaluation_num_episodes))
         else:
             eval_env = None
             policy_evaluation_driver = None
@@ -1581,6 +1590,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             local_losses_eval_steps: Optional[int] = int(3e4),
             local_losses_eval_replay_buffer_size: Optional[int] = int(1e5),
             local_losses_reward_scaling: Optional[float] = 1.,
+            embed_video_evaluation: bool = False
     ):
         if wall_time is not None:
             if start_time is None:
@@ -1662,7 +1672,9 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 local_losses_evaluation=local_losses_evaluation,
                 local_losses_eval_steps=local_losses_eval_steps,
                 local_losses_eval_replay_buffer_size=local_losses_eval_replay_buffer_size,
-                local_losses_reward_scaling=local_losses_reward_scaling)
+                local_losses_reward_scaling=local_losses_reward_scaling,
+                embed_video_policy_evaluation=embed_video_evaluation,
+                video_path=os.path.join(save_directory, 'videos'))
 
             env = environment if environment is not None else environments.training
             policy_evaluation_driver = policy_evaluation_driver if policy_evaluation_driver is not None \
@@ -2088,7 +2100,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             num_eval_episodes: int = 30,
             train_summary_writer: Optional = None,
             global_step: Optional[tf.Variable] = None,
-            render: bool = False
+            render: bool = False,
     ):
         if (eval_env is None) == (eval_policy_driver is None):
             raise ValueError('Must either pass an eval_tf_env or an eval_tf_driver.')
@@ -2109,7 +2121,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         driver_run = eval_policy_driver.run
         driver_run_tf_fun = common.function(eval_policy_driver.run)
-        eval_policy_driver.run = driver_run_tf_fun if not render else eval_policy_driver.run
+        eval_policy_driver.run = driver_run_tf_fun if len(eval_policy_driver.observers) == 0 else eval_policy_driver.run
         eval_policy_driver.observers.append(eval_avg_rewards)
         try:
             eval_policy_driver.run()

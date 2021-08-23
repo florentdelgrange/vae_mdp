@@ -419,7 +419,8 @@ def main(argv):
             local_losses_evaluation=params['local_losses_evaluation'],
             local_losses_eval_steps=params['local_losses_evaluation_steps'],
             local_losses_eval_replay_buffer_size=params['local_losses_replay_buffer_size'],
-            local_losses_reward_scaling=reinforcement_learning.reward_scaling.get(environment_name, 1.))
+            local_losses_reward_scaling=reinforcement_learning.reward_scaling.get(environment_name, 1.),
+            embed_video_evaluation=params['generate_videos'])
 
     return 0
 
@@ -830,6 +831,11 @@ if __name__ == '__main__':
         "reward_lower_bound",
         default=None,
         help='minimum values that rewards can have'
+    )
+    flags.DEFINE_bool(
+        "generate_videos",
+        default=False,
+        help="whether to generate videos during the latent policy evaluation or not."
     )
     FLAGS = flags.FLAGS
 
