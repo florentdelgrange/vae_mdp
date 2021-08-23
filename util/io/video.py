@@ -16,25 +16,25 @@ class VideoEmbeddingObserver:
         self.cumulative_rewards = 0.
         self.num_episodes = num_episodes
         self.current_episode = 1
-        if not os.path.exists(os.path.sep.join(file_name.split(os.path.sep)[:-1])):
-            print('creating', os.path.sep.join(file_name.split(os.path.sep)[:-1]))
-            os.makedirs(os.path.sep.join(file_name.split(os.path.sep)[:-1]))
+        if len(file_name.split(os.path.sep)) > 1 \
+                and not os.path.exists(os.path.sep.join(file_name.split(os.path.sep)[:-1])):
+                os.makedirs(os.path.sep.join(file_name.split(os.path.sep)[:-1]))
 
     def __call__(self, time_step: TimeStep, *args, **kwargs):
         if self.writer is None:
             self.writer = imageio.get_writer('{}.mp4'.format(self.file_name), fps=self.fps)
-        if not time_step.is_last():
-            self.writer.append_data(self.py_env.render(mode='rgb_array'))
-            self.cumulative_rewards += time_step.reward
-        elif self.current_episode < self.num_episodes:
+        self.writer.append_data(self.py_env.render(mode='rgb_array'))
+        self.cumulative_rewards += time_step.reward
+        if time_step.is_last() and self.current_episode < self.num_episodes:
             self.current_episode += 1
-        else:
+        elif time_step.is_last():
             self.writer.close()
             self.writer = None
             avg_rewards = np.sum(self.cumulative_rewards / self.num_episodes)
             if avg_rewards >= self.best_rewards:
                 self.best_rewards = avg_rewards
-                os.rename(self.file_name, '{}_rewards={:.2f}.mp4'.format(self.file_name, self.best_rewards))
+                os.rename('{}.mp4'.format(self.file_name),
+                          '{}_rewards={:.2f}.mp4'.format(self.file_name, self.best_rewards))
             else:
                 os.remove('{}.mp4'.format(self.file_name))
             self.cumulative_rewards = 0.
