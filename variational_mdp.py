@@ -1674,7 +1674,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 local_losses_eval_replay_buffer_size=local_losses_eval_replay_buffer_size,
                 local_losses_reward_scaling=local_losses_reward_scaling,
                 embed_video_policy_evaluation=embed_video_evaluation,
-                video_path=os.path.join(save_directory, 'videos'))
+                video_path=os.path.join(save_directory, 'videos') if save_directory is not None else None)
 
             env = environment if environment is not None else environments.training
             policy_evaluation_driver = policy_evaluation_driver if policy_evaluation_driver is not None \
