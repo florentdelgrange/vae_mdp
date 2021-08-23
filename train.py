@@ -1,5 +1,6 @@
 import functools
 import importlib
+import json
 import os
 import random
 from collections import namedtuple
@@ -351,6 +352,10 @@ def main(argv):
 
     optimizer = getattr(tf.optimizers, params['optimizer'])(learning_rate=params['learning_rate'])
     step = tf.Variable(0, trainable=False, dtype=tf.int64)
+
+    if params['logs']:
+        with open(os.path.join(params['logdir'], 'parameters.json'), 'w') as fp:
+            json.dump(params, fp)
 
     for phase, vae_mdp_model in enumerate(models):
         checkpoint_directory = os.path.join(
