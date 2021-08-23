@@ -16,8 +16,9 @@ class VideoEmbeddingObserver:
         self.cumulative_rewards = 0.
         self.num_episodes = num_episodes
         self.current_episode = 1
-        if not os.path.exists(''.join(file_name.split(os.path.sep)[:-1])):
-            os.makedirs(''.join(file_name.split(os.path.sep)[:-1]))
+        if not os.path.exists(os.path.sep.join(file_name.split(os.path.sep)[:-1])):
+            print('creating', os.path.sep.join(file_name.split(os.path.sep)[:-1]))
+            os.makedirs(os.path.sep.join(file_name.split(os.path.sep)[:-1]))
 
     def __call__(self, time_step: TimeStep, *args, **kwargs):
         if self.writer is None:
