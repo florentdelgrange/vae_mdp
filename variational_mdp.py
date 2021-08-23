@@ -1305,7 +1305,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 eval_env, self.get_latent_policy(), num_episodes=policy_evaluation_num_episodes)
             if embed_video_policy_evaluation:
                 policy_evaluation_driver.observers.append(VideoEmbeddingObserver(
-                    py_env=py_env,
+                    py_env=py_eval_env,
                     file_name=os.path.join(video_path, 'distilled_policy_evaluation'),
                     num_episodes=policy_evaluation_num_episodes))
         else:
