@@ -1752,7 +1752,10 @@ class VariationalMarkovDecisionProcess(tf.Module):
                 tf.TensorSpec(shape=(None,) + tuple(tf.shape(reward)[1:]), dtype=tf.float32, name='reward'),
                 tf.TensorSpec(shape=(None,) + tuple(tf.shape(next_state)[1:]), dtype=tf.float32, name='next_state'),
                 tf.TensorSpec(shape=(None,) + tuple(tf.shape(next_label)[1:]), dtype=tf.float32, name='next_label'), )
-            tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name), signatures=call, )
+            try:
+                tf.saved_model.save(self, os.path.join(save_directory, 'models', model_name), signatures=call, )
+            except Exception as e:
+                print("The following exception occured while attempting to save the model:", e)
 
             self.priority_handler = _priority_handler
             self._optimizer = _optimizer
