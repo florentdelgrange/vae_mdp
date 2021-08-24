@@ -1,5 +1,6 @@
 import functools
 import importlib
+import json
 import os
 import random
 from collections import namedtuple
@@ -352,6 +353,10 @@ def main(argv):
     optimizer = getattr(tf.optimizers, params['optimizer'])(learning_rate=params['learning_rate'])
     step = tf.Variable(0, trainable=False, dtype=tf.int64)
 
+    if params['logs']:
+        with open(os.path.join(params['logdir'], 'parameters.json'), 'w') as fp:
+            json.dump(params, fp)
+
     for phase, vae_mdp_model in enumerate(models):
         checkpoint_directory = os.path.join(
             params['save_dir'], 'saves', environment_name, 'training_checkpoints', vae_name)
@@ -419,7 +424,8 @@ def main(argv):
             local_losses_evaluation=params['local_losses_evaluation'],
             local_losses_eval_steps=params['local_losses_evaluation_steps'],
             local_losses_eval_replay_buffer_size=params['local_losses_replay_buffer_size'],
-            local_losses_reward_scaling=reinforcement_learning.reward_scaling.get(environment_name, 1.))
+            local_losses_reward_scaling=reinforcement_learning.reward_scaling.get(environment_name, 1.),
+            embed_video_evaluation=params['generate_videos'])
 
     return 0
 
@@ -830,6 +836,11 @@ if __name__ == '__main__':
         "reward_lower_bound",
         default=None,
         help='minimum values that rewards can have'
+    )
+    flags.DEFINE_bool(
+        "generate_videos",
+        default=False,
+        help="whether to generate videos during the latent policy evaluation or not."
     )
     FLAGS = flags.FLAGS
 

@@ -142,12 +142,12 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             self.latent_policy_network = Dense(
                 units=self.number_of_discrete_actions,
                 activation=None,
-                name='latent_policy_exp_one_hot_logits'
+                name='action_discretizer_latent_policy_exp_one_hot_logits'
             )(self.latent_policy_network)
             self.latent_policy_network = Model(
                 inputs=latent_state,
                 outputs=self.latent_policy_network,
-                name='latent_policy_network')
+                name='action_discretizer_latent_policy_network')
 
             # discrete actions transition network
             if not one_output_per_action:
@@ -1061,6 +1061,8 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
         variables = []
         for network in [self.reconstruction_network, self.action_transition_network, self.action_reward_network]:
             variables += network.trainable_variables
+        # if self.full_optimization:
+        #     variables.append(self.latent_policy_network)
         return variables
 
     @property
