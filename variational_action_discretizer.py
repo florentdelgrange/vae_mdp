@@ -566,16 +566,16 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
             if not log_latent_action and disable_mixture_distribution:
                 # all actions are assumed to be given one-hot
-                _latent_action = tf.cast(tf.argmax(latent_action, axis=-1), dtype=tf.int32)
+                _latent_action = tf.cast(tf.stop_gradient(tf.argmax(latent_action, axis=-1)), dtype=tf.int32)
                 return tfd.MultivariateNormalDiag(
-                    loc=tf.map_fn(
+                    loc=tf.stop_gradient(tf.map_fn(
                         fn=lambda i: reward_mean[i, _latent_action[i], ...],
                         elems=tf.range(tf.shape(_latent_action)[0]),
-                        fn_output_signature=tf.float32),
-                    scale_diag=tf.map_fn(
+                        fn_output_signature=tf.float32)),
+                    scale_diag=tf.stop_gradient(tf.map_fn(
                         fn=lambda i: self.scale_activation(reward_raw_covariance[i, _latent_action[i], ...]),
                         elems=tf.range(tf.shape(_latent_action)[0]),
-                        fn_output_signature=tf.float32),
+                        fn_output_signature=tf.float32)),
                     allow_nan_stats=False)
             else:
                 return tfd.MixtureSameFamily(
@@ -621,16 +621,16 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             if self.mixture_components == 1:
                 if not log_latent_action and disable_mixture_distribution:
                     # all actions are assumed to be given one-hot
-                    _latent_action = tf.cast(tf.argmax(latent_action, axis=-1), dtype=tf.int32)
+                    _latent_action = tf.cast(tf.stop_gradient(tf.argmax(latent_action, axis=-1)), dtype=tf.int32)
                     return tfd.MultivariateNormalDiag(
-                        loc=tf.map_fn(
+                        loc=tf.stop_gradient(tf.map_fn(
                             fn=lambda i: action_mean[i, _latent_action[i], ...],
                             elems=tf.range(tf.shape(_latent_action)[0]),
-                            fn_output_signature=tf.float32),
-                        scale_diag=tf.map_fn(
+                            fn_output_signature=tf.float32)),
+                        scale_diag=tf.stop_gradient(tf.map_fn(
                             fn=lambda i: self.scale_activation(action_raw_covariance[i, _latent_action[i], ...]),
                             elems=tf.range(tf.shape(_latent_action)[0]),
-                            fn_output_signature=tf.float32),
+                            fn_output_signature=tf.float32)),
                         allow_nan_stats=False)
                 else:
                     return tfd.MixtureSameFamily(
@@ -749,20 +749,21 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         # priority support
         if self.priority_handler is not None and sample_key is not None:
-            self.priority_handler.update_priority(
-                keys=sample_key,
-                latent_states=tf.cast(tf.round(latent_state), tf.int32),
-                loss=distortion + rate)
+            tf.stop_gradient(
+                self.priority_handler.update_priority(
+                    keys=sample_key,
+                    latent_states=tf.stop_gradient(tf.cast(tf.round(latent_state), tf.int32)),
+                    loss=tf.stop_gradient(distortion + rate)))
 
         # metrics
-        self.loss_metrics['ELBO'](-1. * (distortion + rate))
-        self.loss_metrics['action_mse'](action, action_distribution.sample())
-        self.loss_metrics['reward_mse'](reward, reward_distribution.sample())
+        self.loss_metrics['ELBO'](tf.stop_gradient(-1. * (distortion + rate)))
+        self.loss_metrics['action_mse'](action, tf.stop_gradient(action_distribution.sample()))
+        self.loss_metrics['reward_mse'](reward, tf.stop_gradient(reward_distribution.sample()))
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         # self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
         self.loss_metrics['entropy_regularizer'](
-            self.entropy_regularizer_scale_factor * entropy_regularizer)
+            tf.stop_gradient(self.entropy_regularizer_scale_factor * entropy_regularizer))
         # if self.one_output_per_action:
         #     self.loss_metrics['decoder_divergence'](self._compute_decoder_jensen_shannon_divergence(z, a_1))
         self.loss_metrics['action_decoder_std'](action_distribution.stddev())
@@ -837,39 +838,41 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
 
         # priority support
         if self.priority_handler is not None and sample_key is not None:
+            tf.stop_gradient(
                 self.priority_handler.update_priority(
                     keys=sample_key,
-                    latent_states=tf.cast(tf.round(latent_state), tf.int32),
-                    loss=distortion + rate)
+                    latent_states=tf.stop_gradient(tf.cast(tf.round(latent_state), tf.int32)),
+                    loss=tf.stop_gradient(distortion + rate)))
 
         # metrics
         action_sample, reward_sample, next_state_sample = reconstruction_distribution.sample()
-        self.loss_metrics['ELBO'](-1. * (distortion + rate))
+        self.loss_metrics['ELBO'](tf.stop_gradient(-1. * (distortion + rate)))
         self.loss_metrics['action_mse'](action, action_sample)
         self.loss_metrics['reward_mse'](reward, reward_sample)
         self.loss_metrics['state_mse'](next_state, next_state_sample)
         # self.loss_metrics['state_rate'](state_encoder_rate)
         # self.loss_metrics['state_encoder_entropy'](self._state_vae.binary_encode(next_state, next_label).entropy())
         self.loss_metrics['action_encoder_entropy'](
-            self.discrete_action_encoding(latent_state, action).entropy())
+            tf.stop_gradient(self.discrete_action_encoding(latent_state, action).entropy()))
         #  self.loss_metrics['state_decoder_variance'](state_distribution.variance())
         # self.loss_metrics['action_rate'](action_encoder_rate)
         self.loss_metrics['distortion'](distortion)
         self.loss_metrics['rate'](rate)
         # self.loss_metrics['annealed_rate'](tf.stop_gradient(self.kl_scale_factor * rate))
         self.loss_metrics['entropy_regularizer'](
-            self.entropy_regularizer_scale_factor * entropy_regularizer)
+            tf.stop_gradient(self.entropy_regularizer_scale_factor * entropy_regularizer))
         self.loss_metrics['t_1_state'].reset_states()
         self.loss_metrics['t_1_state'](self._state_vae.encoder_temperature)
         self.loss_metrics['t_2_state'].reset_states()
         self.loss_metrics['t_2_state'](self._state_vae.prior_temperature)
         self.loss_metrics['transition_log_probs'](
+            tf.stop_gradient(
                 self.discrete_latent_transition_probability_distribution(
-                    tf.round(latent_state),
-                    tf.math.log(tf.round(tf.exp(log_latent_action)) + epsilon),
+                    tf.stop_gradient(tf.round(latent_state)),
+                    tf.stop_gradient(tf.math.log(tf.round(tf.exp(log_latent_action)) + epsilon)),
                     log_latent_action=True
-                ).log_prob(next_label, tf.round(tf.sigmoid(next_logistic_latent_state_no_label))))
-        self.loss_metrics['action_decoder_std'](action_distribution.stddev())
+                ).log_prob(next_label, tf.stop_gradient(tf.round(tf.sigmoid(next_logistic_latent_state_no_label))))))
+        self.loss_metrics['action_decoder_std'](tf.stop_gradient(action_distribution.stddev()))
 
         return {'distortion': distortion, 'rate': rate, 'entropy_regularizer': entropy_regularizer}
 
