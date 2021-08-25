@@ -354,7 +354,9 @@ def main(argv):
     step = tf.Variable(0, trainable=False, dtype=tf.int64)
 
     if params['logs']:
-        with open(os.path.join(params['logdir'], 'parameters.json'), 'w') as fp:
+        if not os.path.exists(params['logdir']):
+            os.makedirs(params['logdir'])
+        with open(os.path.join(params['logdir'], 'parameters.json'), 'w+') as fp:
             json.dump(params, fp)
 
     for phase, vae_mdp_model in enumerate(models):
