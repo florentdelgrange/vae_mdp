@@ -3,8 +3,6 @@ import json
 import os
 import sys
 
-from reinforcement_learning.environments.PerturbedEnvironment import PerturbedEnvironment
-
 path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, path + '/../')
 
@@ -43,6 +41,7 @@ from tf_agents.policies import policy_saver, py_tf_eager_policy
 import tf_agents.trajectories.time_step as ts
 
 from reinforcement_learning.environments import EnvironmentLoader
+from reinforcement_learning.environments.PerturbedEnvironment import PerturbedEnvironment
 
 from util.io import dataset_generator
 
@@ -246,8 +245,9 @@ class SACLearner:
 
         env_loader = EnvironmentLoader(env_suite, seed=seed)
         if state_perturbation > 0. or action_perturbation > 0.:
+            _load = env_loader.load
             env_loader.load = lambda env_name: PerturbedEnvironment(
-                env=env_loader.load(env_name),
+                env=_load(env_name),
                 state_noise=state_perturbation,
                 action_noise=action_perturbation)
 
