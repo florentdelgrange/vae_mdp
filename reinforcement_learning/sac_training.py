@@ -13,6 +13,8 @@ from typing import Tuple, Callable, Optional
 import threading
 import timeit
 import datetime
+import numpy as np
+import random
 
 import reverb
 import tf_agents
@@ -395,6 +397,12 @@ class SACLearner:
             num_steps=2).prefetch(3)
         self.iterator = iter(self.dataset)
 
+        self._policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'sac_policy', 'tmp')
+        self._policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
+        self.policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'sac_policy')
+        self.policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
+        self.score = tf.Variable(-1. * np.inf, trainable=False)
+
         self.checkpoint_dir = os.path.join(save_directory_location, 'saves', env_name, 'sac_training_checkpoint')
         self.train_checkpointer = common.Checkpointer(
             ckpt_dir=self.checkpoint_dir,
@@ -403,14 +411,14 @@ class SACLearner:
             policy=self.collect_policy,
             replay_buffer=self.replay_buffer,
             global_step=self.global_step,
-            observers=observers
+            observers=observers,
+            score=self.score
         )
-        self.stochastic_policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'sac_policy')
-        self.stochastic_policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
 
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         train_log_dir = os.path.join(
             save_directory_location, 'logs', 'gradient_tape', env_name, 'sac_agent_training', current_time)
+        print("logs are written to", train_log_dir)
         self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
         self.save_directory_location = os.path.join(save_directory_location, 'saves', env_name)
         self.save_exploration_dataset = save_exploration_dataset
@@ -433,16 +441,15 @@ class SACLearner:
             replay_buffer=self.replay_buffer,
             global_step=self.global_step
         )
-        stochastic_policy_dir = os.path.join(
+        _policy_dir = os.path.join(
             self.save_directory_location,
             'policy',
             'permissive_variance_policy-multiplier={}'.format(variance_multiplier))
-        stochastic_policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
 
         checkpointer.initialize_or_restore()
         self.global_step = tf.compat.v1.train.get_global_step()
         print("Checkpoint loaded! global_step={}".format(self.global_step.numpy()))
-        stochastic_policy_saver.save(stochastic_policy_dir)
+        _policy_saver.save(_policy_dir)
 
         self.actor_net._projection_networks = actual_projection_networks
 
@@ -503,8 +510,9 @@ class SACLearner:
             self.train_checkpointer.initialize_or_restore()
             self.global_step = tf.compat.v1.train.get_global_step()
             print("Checkpoint loaded! global_step={}".format(self.global_step.numpy()))
-        if not os.path.exists(self.stochastic_policy_dir):
-            os.makedirs(self.stochastic_policy_dir)
+        for policy_dir in [self.policy_dir, self._policy_dir]:
+            if not os.path.exists(policy_dir):
+                os.makedirs(policy_dir)
 
         def update_progress_bar(num_steps=1):
             if display_progressbar:
@@ -536,7 +544,9 @@ class SACLearner:
 
         update_progress_bar(self.global_step.numpy())
 
-        for _ in range(self.global_step.numpy(), self.num_iterations):
+        print("global_step:", self.global_step.numpy(), "\nnum_iterations:", self.num_iterations)
+
+        for step in tf.range(self.global_step, self.num_iterations):
 
             # Collect a few steps using collect_policy and save to the replay buffer.
             self.driver.run(env.current_time_step())
@@ -544,9 +554,6 @@ class SACLearner:
             # Use data from the buffer and update the agent's network.
             experience, info = next(self.iterator)
             if self.prioritized_experience_replay:
-                # assert (tf.reduce_all(info.key[:, 0, ...] == info.key[:, 1, ...]))
-                # assert (tf.reduce_all(info.probability[:, 0, ...] == info.probability[:, 1, ...]))
-
                 priorities = self._compute_priorities(experience)
                 self.replay_buffer.update_priorities(keys=info.key[:, 0, ...], priorities=priorities)
                 is_weights = tf.cast(
@@ -560,7 +567,7 @@ class SACLearner:
 
             train_loss = self.tf_agent.train(experience, weights=is_weights)
 
-            step = self.tf_agent.train_step_counter.numpy()
+            # step = self.tf_agent.train_step_counter.numpy()
 
             update_progress_bar()
 
@@ -568,7 +575,7 @@ class SACLearner:
                 self.train_checkpointer.save(self.global_step)
                 if self.prioritized_experience_replay:
                     self.replay_buffer.py_client.checkpoint()
-                self.stochastic_policy_saver.save(self.stochastic_policy_dir)
+                self._policy_saver.save(self._policy_dir)
                 with self.train_summary_writer.as_default():
                     tf.summary.scalar('loss', train_loss.loss, step=step)
                     tf.summary.scalar('training average returns', self.avg_return.result(), step=step)
@@ -587,7 +594,7 @@ class SACLearner:
     def eval(self, step: int = 0, progressbar: Optional = None):
         avg_eval_return = tf_metrics.AverageReturnMetric()
         avg_eval_episode_length = tf_metrics.AverageEpisodeLengthMetric()
-        saved_policy = tf.compat.v2.saved_model.load(self.stochastic_policy_dir)
+        saved_policy = tf.compat.v2.saved_model.load(self._policy_dir)
         self.eval_env.reset()
         dynamic_episode_driver.DynamicEpisodeDriver(
             self.eval_env,
@@ -612,6 +619,9 @@ class SACLearner:
             #  tf.summary.scalar('Number of safety violations for {} episodes'.format(self.num_eval_episodes),
             #                    num_safety_violations.result(),
             #                    step=step)
+        if avg_eval_return.result() >= self.score:
+            self.policy_saver.save(self.policy_dir)
+            self.score.assign(avg_eval_return.result())
 
     def save_observations(self, batch_size: int = 128000):
         observations_dataset = self.replay_buffer.as_dataset(
@@ -641,7 +651,12 @@ class SACLearner:
 def main(argv):
     del argv
     params = FLAGS.flag_values_dict()
-    tf.random.set_seed(params['seed'])
+    # set seed
+    seed = params['seed']
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
     try:
         import importlib
         env_suite = importlib.import_module('tf_agents.environments.' + params['env_suite'])
