@@ -1,6 +1,9 @@
 import functools
+import json
 import os
 import sys
+
+from reinforcement_learning.environments.PerturbedEnvironment import PerturbedEnvironment
 
 path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, path + '/../')
@@ -114,6 +117,18 @@ flags.DEFINE_integer(
     help='replay buffer size',
     default=int(1e6)
 )
+flags.DEFINE_float(
+    'state_perturbation',
+    help='add perturbations to the state space to train policies robust to state noise',
+    default=0.
+)
+flags.DEFINE_float(
+    'action_perturbation',
+    help='add perturbations to the action space to train policies robust to action noise',
+    default=0.
+)
+
+
 FLAGS = flags.FLAGS
 
 
@@ -181,7 +196,10 @@ class SACLearner:
             save_exploration_dataset: bool = False,
             prioritized_experience_replay: bool = False,
             priority_exponent: float = 0.6,
-            seed: Optional[int] = None):
+            state_perturbation: float = 0.,
+            action_perturbation: float = 0.,
+            seed: Optional[int] = None,
+    ):
 
         self.parallelization = parallelization and not prioritized_experience_replay
 
@@ -225,6 +243,11 @@ class SACLearner:
         self.prioritized_experience_replay = prioritized_experience_replay
 
         env_loader = EnvironmentLoader(env_suite, seed=seed)
+        if state_perturbation > 0. or action_perturbation > 0.:
+            env_loader.load = lambda env_name: PerturbedEnvironment(
+                env=env_loader.load(env_name),
+                state_noise=state_perturbation,
+                action_noise=action_perturbation)
 
         if parallelization:
             self.tf_env = tf_py_environment.TFPyEnvironment(parallel_py_environment.ParallelPyEnvironment(
@@ -644,8 +667,16 @@ def main(argv):
         alpha_learning_rate=params['learning_rate'],
         target_update_tau=params['target_update_tau'],
         replay_buffer_capacity=params['replay_buffer_size'],
+        state_perturbation=params['state_perturbation'],
+        action_perturbation=params['action_perturbation'],
         seed=params['seed'],
     )
+
+    if not os.path.exists(learner.policy_dir):
+        os.makedirs(learner.policy_dir)
+    with open(os.path.join(learner.policy_dir, 'params.json'), 'w+') as json_file:
+        json.dump(params, json_file)
+
     if params['permissive_policy_saver']:
         for variance_multiplier in params['variance']:
             learner.save_permissive_variance_policy(variance_multiplier)
