@@ -397,10 +397,14 @@ class SACLearner:
             num_steps=2).prefetch(3)
         self.iterator = iter(self.dataset)
 
-        self._policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'sac_policy', 'tmp')
-        self._policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
         self.policy_dir = os.path.join(save_directory_location, 'saves', env_name, 'sac_policy')
+        if state_perturbation > 0 or action_perturbation > 0:
+            self.policy_dir = os.path.join(
+                self.policy_dir,
+                'perturbation_robustness_state={:.2g}_action={:.2g}'.format(state_perturbation, action_perturbation))
         self.policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
+        self._policy_dir = os.path.join(self.policy_dir, 'tmp')
+        self._policy_saver = policy_saver.PolicySaver(self.tf_agent.policy)
         self.score = tf.Variable(-1. * np.inf, trainable=False)
 
         self.checkpoint_dir = os.path.join(save_directory_location, 'saves', env_name, 'sac_training_checkpoint')
@@ -449,7 +453,7 @@ class SACLearner:
         checkpointer.initialize_or_restore()
         self.global_step = tf.compat.v1.train.get_global_step()
         print("Checkpoint loaded! global_step={}".format(self.global_step.numpy()))
-        _policy_saver.save(_policy_dir)
+        self._policy_saver.save(_policy_dir)
 
         self.actor_net._projection_networks = actual_projection_networks
 
