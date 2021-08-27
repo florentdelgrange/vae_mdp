@@ -14,7 +14,7 @@ class PerturbedEnvironment(PyEnvironmentBaseWrapper):
         self.state_noise = state_noise
         self.action_noise = action_noise
 
-    def step(self, action: types.NestedArray) -> ts.TimeStep:
+    def _step(self, action: types.NestedArray) -> ts.TimeStep:
         if self.action_noise > 0:
             _action = tfd.MultivariateNormalDiag(loc=action, scale_identity_multiplier=self.action_noise).sample()
         else:
