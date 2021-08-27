@@ -26,7 +26,8 @@ class PerturbedEnvironment(PyEnvironmentBaseWrapper):
         if self.state_noise > 0:
             _observation = np.random.multivariate_normal(
                 mean=time_step.observation,
-                cov=np.diag(self.state_noise ** 2 * np.ones(shape=np.shape(time_step.observation))))
+                cov=np.diag(self.state_noise ** 2 * np.ones(shape=np.shape(time_step.observation)))
+            ).astype(time_step.observation.dtype)
         else:
             _observation = time_step.observation
 
