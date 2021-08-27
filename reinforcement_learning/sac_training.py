@@ -41,7 +41,7 @@ from tf_agents.policies import policy_saver, py_tf_eager_policy
 import tf_agents.trajectories.time_step as ts
 
 from reinforcement_learning.environments import EnvironmentLoader
-from reinforcement_learning.environments.PerturbedEnvironment import PerturbedEnvironment
+from reinforcement_learning.environments.perturbed_env import PerturbedEnvironment
 
 from util.io import dataset_generator
 
