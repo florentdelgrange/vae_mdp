@@ -115,7 +115,7 @@ labeling_functions = {
     #      tf.cast(observation[..., 6], dtype=tf.bool),  # left leg ground contact
     #      tf.cast(observation[..., 7], dtype=tf.bool)  # right leg ground contact
     #  ], axis=-1),
-    'LunarLander-v2': lambda observation: tf.stack([lunar_lander_labels(observation)], axis=-1),
+    'LunarLander-v2': lambda observation: tf.stack(lunar_lander_labels(observation), axis=-1),
     'MountainCar-v0': lambda observation: tf.stack([
         observation[..., 0] >= 0.5,  # has reached the goal
         observation[..., 0] >= -.5,  # right-hand side -- positive slope
