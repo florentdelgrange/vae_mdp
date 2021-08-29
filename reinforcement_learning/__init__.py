@@ -2,37 +2,36 @@ import tensorflow as tf
 import math
 
 
+@tf.function
 def lunar_lander_labels(s):
     """
     from LunarLander heuristic
     """
-
-
-    angle_targ = s[..., 0] * 0.5 + s[..., 2] * 1.0    # angle should point towards center
-    label1 = tf.logical_or(angle_targ > 0.4,   # more than 0.4 radians (22 degrees) is bad
-                           angle_targ < -0.4)
+    labels = []
+    angle_targ = s[..., 0] * 0.5 + s[..., 2] * 1.0  # angle should point towards center
+    labels.append(tf.logical_or(angle_targ > 0.4,  # more than 0.4 radians (22 degrees) is bad
+                                angle_targ < -0.4))
     angle_targ = tf.map_fn(lambda x: tf.cond(x > 0.4, lambda: 0.4, lambda: x), angle_targ)
     angle_targ = tf.map_fn(lambda x: tf.cond(x < -.4, lambda: -.4, lambda: x), angle_targ)
-    hover_targ = 0.55 * tf.abs(s[..., 0])           # target y should be proportional to horizontal offset
+    hover_targ = 0.55 * tf.abs(s[..., 0])  # target y should be proportional to horizontal offset
 
-    angle_todo = (angle_targ - s[..., 4]) * 0.5 - (s[..., 5])*1.0
-    hover_todo = (hover_targ - s[..., 1]) * 0.5 - (s[..., 3])*0.5
+    angle_todo = (angle_targ - s[..., 4]) * 0.5 - (s[..., 5]) * 1.0
+    hover_todo = (hover_targ - s[..., 1]) * 0.5 - (s[..., 3]) * 0.5
 
     # legs contact
-    label2 = tf.logical_or(tf.cast(s[..., 6], dtype=tf.bool), tf.cast(s[..., 7], dtype=tf.bool))
-    no_legs_contact = (1. - (s[..., 6] + s[..., 7]) / tf.maximum(s[..., 6] + s[..., 7], 1.))
-    angle_todo = angle_todo * no_legs_contact
+    labels.append(tf.logical_or(tf.cast(s[..., 6], dtype=tf.bool), tf.cast(s[..., 7], dtype=tf.bool)))
+    legs_contact = (s[..., 6] + s[..., 7]) / tf.maximum(s[..., 6] + s[..., 7], 1.)
+    angle_todo = angle_todo * (1. - legs_contact)
     # override to reduce fall speed, that's all we need after contact
-    hover_todo = hover_todo * no_legs_contact
-    hover_todo = tf.map_fn(lambda x: tf.cond(x == 0., lambda: -.5 * s[..., 3], lambda:  x), hover_todo)
+    hover_todo = hover_todo * (1. - legs_contact) - .5 * s[..., 3] * legs_contact
 
-    label3 = tf.logical_and(hover_todo > tf.abs(angle_todo), hover_todo > 0.05)
-    label4 = angle_todo < -0.05
-    label5 = angle_todo > 0.05
-    label6 = tf.logical_and(s[..., 2] == 0.,  # horizontal speed is 0
-                                 s[..., 3] == 0.)  # vertical speed is 0
+    labels.append(tf.logical_and(hover_todo > tf.abs(angle_todo), hover_todo > 0.05))
+    labels.append(angle_todo < -0.05)
+    labels.append(angle_todo > 0.05)
+    labels.append(tf.logical_and(s[..., 2] == 0.,  # horizontal speed is 0
+                                 s[..., 3] == 0.))  # vertical speed is 0
 
-    return [label1, label2, label3, label4, label5, label6]
+    return tf.stack(labels, axis=-1)
 
 
 labeling_functions = {
@@ -115,7 +114,7 @@ labeling_functions = {
     #      tf.cast(observation[..., 6], dtype=tf.bool),  # left leg ground contact
     #      tf.cast(observation[..., 7], dtype=tf.bool)  # right leg ground contact
     #  ], axis=-1),
-    'LunarLander-v2': lambda observation: tf.stack(lunar_lander_labels(observation), axis=-1),
+    'LunarLander-v2': lunar_lander_labels,
     'MountainCar-v0': lambda observation: tf.stack([
         observation[..., 0] >= 0.5,  # has reached the goal
         observation[..., 0] >= -.5,  # right-hand side -- positive slope
