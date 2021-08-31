@@ -4,11 +4,12 @@ import numpy as np
 
 import tensorflow as tf
 import tensorflow_probability as tfp
+import tf_agents
 from tensorflow.keras import Model
 from tensorflow.keras.models import Sequential, model_from_json
 from tensorflow.keras.layers import Input, Concatenate, Reshape, Dense, Lambda
 from tf_agents import trajectories, specs
-from tf_agents.environments import tf_environment, tf_py_environment
+from tf_agents.environments import tf_environment, tf_py_environment, py_environment
 from tf_agents.trajectories import time_step as ts
 
 import variational_mdp
@@ -1140,6 +1141,50 @@ class VariationalActionDiscretizer(VariationalMarkovDecisionProcess):
             estimate_transition_function_from_samples=estimate_transition_function_from_samples,
             replay_buffer_max_frames=replay_buffer_max_frames,
             reward_scaling=reward_scaling)
+
+    def eval_policy(
+            self,
+            eval_env: Optional[py_environment.PyEnvironment] = None,
+            eval_policy_driver: Optional[tf_agents.drivers.driver.Driver] = None,
+            labeling_function: Optional[Callable[[tf.Tensor], tf.Tensor]] = None,
+            num_eval_episodes: int = 30,
+            train_summary_writer: Optional = None,
+            global_step: Optional[tf.Variable] = None,
+            render: bool = False,
+    ):
+        if (eval_env is None) == (eval_policy_driver is None):
+            raise ValueError('Must either pass an eval_tf_env or an eval_tf_driver.')
+
+        eval_avg_rewards = tf_agents.metrics.tf_metrics.AverageReturnMetric()
+        if eval_env is not None:
+            if labeling_function is None:
+                raise ValueError('Must provide a labeling function if eval_env is provided.')
+            eval_tf_env = tf_py_environment.TFPyEnvironment(eval_env)
+            if self.time_stacked_states:
+                latent_eval_env = self.wrap_tf_environment(eval_tf_env, lambda x: labeling_function(x)[:, -1, ...])
+            else:
+                latent_eval_env = self.wrap_tf_environment(eval_tf_env, labeling_function)
+            latent_eval_env.reset()
+            eval_policy_driver = tf_agents.drivers.dynamic_episode_driver.DynamicEpisodeDriver(
+                latent_eval_env, self.get_latent_policy(), num_episodes=num_eval_episodes,
+                observers=[] if not render else [lambda _: eval_env.render(mode='human')])
+
+        eval_policy_driver.observers.append(eval_avg_rewards)
+        try:
+            eval_policy_driver.run()
+        except Exception as e:
+            tf.print("NaN values occurred in the environment while the driver was running:")
+            tf.print(e)
+            eval_avg_rewards.result = lambda: -1. * np.inf
+
+        eval_policy_driver.observers.remove(eval_avg_rewards)
+
+        if train_summary_writer is not None:
+            with train_summary_writer.as_default():
+                tf.summary.scalar('policy_evaluation_avg_rewards', eval_avg_rewards.result(), step=global_step)
+        tf.print('eval policy', eval_avg_rewards.result())
+
+        return eval_avg_rewards.result()
 
 
 def load(tf_model_path: str, full_optimization: bool = False,
