@@ -17,7 +17,7 @@ class PerturbedEnvironment(PyEnvironmentBaseWrapper):
         if self.action_noise > 0:
             _action = np.random.multivariate_normal(
                 mean=action,
-                cov=np.diag(self.action_noise * np.ones(shape=np.shape(action))))
+                cov=np.diag(self.action_noise ** 2 * np.ones(shape=np.shape(action))))
         else:
             _action = action
 
@@ -26,7 +26,7 @@ class PerturbedEnvironment(PyEnvironmentBaseWrapper):
         if self.state_noise > 0:
             _observation = np.random.multivariate_normal(
                 mean=time_step.observation,
-                cov=np.diag(self.state_noise * np.ones(shape=np.shape(time_step.observation)))
+                cov=np.diag(self.state_noise ** 2 * np.ones(shape=np.shape(time_step.observation)))
             ).astype(time_step.observation.dtype)
         else:
             _observation = time_step.observation
