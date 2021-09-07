@@ -1,4 +1,5 @@
 import os
+import sys
 from collections import namedtuple
 from typing import Collection, List, Optional, Dict, Tuple, Union
 import glob
@@ -329,14 +330,6 @@ def plot_policy_evaluation(
             kind='line',
             legend='brief',
             style_order=['distilled', 'original', 'distilled (best)'])
-
-        #  if plot_best:
-        #      for i, env in enumerate(df['event'].unique()):
-        #          _df = df[df['event'] == env]
-        #          _df = _df[_df['policy'] == 'distilled']
-        #          step = _df['step'][_df['value'] == _df['value'].max()]
-        #          g.axes[0, i].scatter(step.to_numpy(), [_df['value'].max()] * len(step.to_numpy()), marker='x')
-        #          g.axes[0, i].legend()
 
         if hide_title:
             for ax in g.axes.flatten():
