@@ -94,7 +94,8 @@ def plot_elbo_evaluation(
         relplot: bool = False,
         eval_elbo_tag: str = 'eval_elbo',
         aspect: float = 2.5,
-        estimator: str = 'mean'
+        estimator: str = 'mean',
+        ci: float = 0.9,
 ):
     if estimator == 'median':
         estimator = np.median
@@ -116,7 +117,7 @@ def plot_elbo_evaluation(
             kind='line',
             facet_kws=dict(sharex=False, sharey=False),
             estimator=estimator,
-            ci=90 if estimator != 'mean' else 'sd')
+            ci=ci * 100 if estimator != 'mean' else 'sd')
     else:
         if compare_environments:
             hue = 'environment'
@@ -134,7 +135,7 @@ def plot_elbo_evaluation(
             legend='brief',
             hue=hue,
             estimator=estimator,
-            ci=90 if estimator != 'mean' else 'sd')
+            ci=ci * 100 if estimator != 'mean' else 'sd')
 
 
 def plot_histograms_per_step(
@@ -146,6 +147,7 @@ def plot_histograms_per_step(
         col: str = 'run',
         display_ylabel: bool = True
 ):
+    df = df.sort_values(by='step')
     tick = ticker.ScalarFormatter(useOffset=True, useMathText=use_math_text)
     tick.set_powerlimits((0, 0))
 
