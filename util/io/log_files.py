@@ -42,8 +42,7 @@ def get_event_dataframe(
                       "{}".format(log_dir) + (" \\ {}".format(exclude_pattern)
                                               if exclude_pattern is not None else ""))
 
-    for filename in files:
-        event_file = os.path.join(log_dir, filename)
+    for event_file in files:
         tagged_events = TaggedEvent(x_axis=[], y_axis=[], tags=[])
 
         for event in summary_iterator(event_file):
