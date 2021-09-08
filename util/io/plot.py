@@ -19,7 +19,7 @@ def main(argv):
     enforce_legend = params['enforce_legend']
 
     for i, dir in enumerate(log_dirs):
-        log_dirs[i] = os.path.join(dir, '*.v2')
+        log_dirs[i] = os.path.join(dir, '**', '*.v2')
 
     if params['rl_policy_return'] is not None:
         original_policy_expected_rewards = {
