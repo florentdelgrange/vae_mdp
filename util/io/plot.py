@@ -3,7 +3,8 @@ import numpy as np
 import seaborn as sns
 from absl import flags, app
 from matplotlib import pyplot as plt
-from log_files import get_event_dataframe, plot_policy_evaluation
+from log_files import get_event_dataframe, plot_policy_evaluation, plot_histograms_per_step
+
 
 def main(argv):
     del argv
@@ -23,7 +24,7 @@ def main(argv):
     if params['rl_policy_return'] is not None:
         original_policy_expected_rewards = {
             event_name: rewards for event_name, rewards in zip(
-                event_names[len(params['rl_policy_return']):],
+                event_names[:len(params['rl_policy_return'])],
                 params['rl_policy_return'])
         }
     else:
@@ -36,15 +37,15 @@ def main(argv):
     if params['plot_histograms'] and len(uniform_log_dirs) < len(log_dirs):
         raise ValueError("A uniform replay log directory should be provided for each (PER) log directory.")
 
-    if not params['plot_histograms']:
-        sns.set(rc={"figure.dpi": 150, 'savefig.dpi': 300})
-        sns.set_context('paper')
+    sns.set(rc={"figure.dpi": 150, 'savefig.dpi': 300})
+    sns.set_context('paper')
 
     if not os.path.exists(os.path.join('evaluation', 'plots')):
         os.makedirs(os.path.join('evaluation', 'plots'))
 
     print("Generating dataframes...")
     logs = {event_name: log_dir for event_name, log_dir in zip(event_names, log_dirs)}
+
     df = None
 
     for env, log_dir in logs.items():
@@ -56,81 +57,116 @@ def main(argv):
             run_name='prioritized replay',
             event_name=env, )
         df = _df if df is None else df.append(_df)
-    print("Done.\n")
 
-    print("Plotting Distortion/Rate/ELBO...")
-    _df = df[df['tag'] == 'eval_distortion']
-    _df = _df.append(df[df['tag'] == 'eval_rate'])
-    _df = _df.append(df[df['tag'] == 'eval_elbo'])
-    # remove outliers
-    _df = _df.drop(_df[np.abs(_df['value']) > 100].index)
+    if not params['plot_histograms']:
+        print("Done.\n")
+        print("Plotting Distortion/Rate/ELBO...")
+        _df = df[df['tag'] == 'eval_distortion']
+        _df = _df.append(df[df['tag'] == 'eval_rate'])
+        _df = _df.append(df[df['tag'] == 'eval_elbo'])
+        # remove outliers
+        _df = _df.drop(_df[np.abs(_df['value']) > 100].index)
 
-    sns.set_context('paper')
-    sns.set(font_scale=1.8)
-    g = sns.relplot(
-        data=_df.replace(
-            {'tag': {'eval_distortion': 'distortion', 'eval_rate': 'rate', 'eval_elbo': 'ELBO'}}
-        ).rename(columns={'tag': 'metric', 'event': 'environment'})[_df['step'] <= int(1e6)],
-        x='step',
-        y='value',
-        hue='environment',
-        col='metric',
-        estimator=estimator,
-        ci=85 if estimator != 'mean' else 'sd',
-        legend=enforce_legend,
-        facet_kws=dict(sharey=False),
-        kind='line',
-        seed=42,
-        aspect=1.25, )
+        sns.set_context('paper')
+        sns.set(font_scale=1.8)
+        g = sns.relplot(
+            data=_df.replace(
+                {'tag': {'eval_distortion': 'distortion', 'eval_rate': 'rate', 'eval_elbo': 'ELBO'}}
+            ).rename(columns={'tag': 'metric', 'event': 'environment'})[_df['step'] <= int(1e6)],
+            x='step',
+            y='value',
+            hue='environment',
+            col='metric',
+            estimator=estimator,
+            ci=85 if estimator != 'mean' else 'sd',
+            legend=enforce_legend,
+            facet_kws=dict(sharey=False),
+            kind='line',
+            seed=42,
+            aspect=1.25, )
 
-    g.set(ylabel=None)
-    plt.savefig(os.path.join('evaluation', 'plots', 'distortion_rate_elbo.pdf'), bbox_inches='tight')
-    print("Done.\n")
+        g.set(ylabel=None)
+        plt.savefig(os.path.join('evaluation', 'plots', 'distortion_rate_elbo.pdf'), bbox_inches='tight')
+        print("Done.\n")
 
-    print("Plotting PAC local losses bounds...")
-    _df = df[df['tag'] == 'local_probability_loss']
-    _df = _df.append(df[df['tag'] == 'local_reward_loss'])
-    _df = _df[_df['value'] <= 1]
-    _df = _df.replace({
-        'tag': {'local_probability_loss': 'transition',
-                'local_reward_loss': 'reward'}}
-    ).rename(columns={
-        'tag': 'local loss',
-        'value': 'PAC bound',
-        'event': 'environment'})
-    _df = _df[_df['step'] <= int(1e6)]
+        print("Plotting PAC local losses bounds...")
+        _df = df[df['tag'] == 'local_probability_loss']
+        _df = _df.append(df[df['tag'] == 'local_reward_loss'])
+        _df = _df[_df['value'] <= 1]
+        _df = _df.replace({
+            'tag': {'local_probability_loss': 'transition',
+                    'local_reward_loss': 'reward'}}
+        ).rename(columns={
+            'tag': 'local loss',
+            'value': 'PAC bound',
+            'event': 'environment'})
+        _df = _df[_df['step'] <= int(1e6)]
 
-    plt.figure(figsize=(8, 6.5))
-    sns.lineplot(
-        data=_df,
-        x='step',
-        y='PAC bound',
-        hue='environment',
-        style='local loss',
-        estimator=estimator,
-        ci=88 if estimator != 'mean' else 'sd',
-        legend=False)
+        plt.figure(figsize=(8, 6.5))
+        sns.lineplot(
+            data=_df,
+            x='step',
+            y='PAC bound',
+            hue='environment',
+            style='local loss',
+            estimator=estimator,
+            ci=90 if estimator != 'mean' else 'sd',
+            legend=False)
 
-    plt.savefig(os.path.join("evaluation", "plots", "local_losses_2.pdf"), bbox_inches='tight')
-    print("Done.\n")
+        plt.savefig(os.path.join("evaluation", "plots", "local_losses_2.pdf"), bbox_inches='tight')
+        print("Done.\n")
 
-    print("Plotting policy evaluation...")
-    plot_policy_evaluation(
-        df[df['step'] <= int(1e6)],
-        plot_best=True,
-        original_policy_expected_rewards=original_policy_expected_rewards,
-        compare_environments=True,
-        aspect=1.0197503069995908,
-        relplot=True,
-        estimator=estimator,
-        ci=0.9 if estimator != 'mean' else 'sd',
-        font_scale=1.8,
-        environment_hue=True,
-        hide_title=True)
+        print("Plotting policy evaluation...")
+        plot_policy_evaluation(
+            df[df['step'] <= int(1e6)],
+            plot_best=True,
+            original_policy_expected_rewards=original_policy_expected_rewards,
+            compare_environments=True,
+            aspect=1.0197503069995908,
+            relplot=True,
+            estimator=estimator,
+            ci=0.9 if estimator != 'mean' else 'sd',
+            font_scale=1.8,
+            environment_hue=True,
+            hide_title=True)
 
-    # tikzplotlib.save("eval_policy.tex")
-    plt.savefig(os.path.join('evaluation', 'plots', "eval_policy.pdf"))
-    print("Done.\n")
+        plt.savefig(os.path.join('evaluation', 'plots', "eval_policy.pdf"))
+        print("Done.\n")
+    else:
+        for key in event_names:
+            logs[key + '_PER'] = logs[key]
+        for key, value in zip(event_names, uniform_log_dirs):
+            logs[key + '_uniform'] = value
+
+        hist = None
+        for environment in event_names:
+            _df = get_event_dataframe(
+                logs[environment + '_PER'],
+                tags=['state_frequency'],
+                run_name='prioritized',
+                event_name=environment,
+                value_dtype=None)
+            _df = _df.append(
+                get_event_dataframe(
+                    os.path.join(logs[environment + '_uniform'], '**', '*.v2'),
+                    exclude_pattern=os.path.join(logs[environment + '_uniform'], '**', '*PER*', '**', '*.v2'),
+                    tags=['state_frequency'],
+                    run_name='uniform',
+                    event_name=environment,
+                    value_dtype=None))
+            hist = _df if hist is None else hist.append(_df)
+
+        hist = hist[hist['step'] <= int(1e6)]
+        print("Done.\n")
+
+        plt.rcParams['figure.dpi'] = 300
+
+        print("Plotting latent space histograms...")
+        for environment in event_names:
+            plot_histograms_per_step(hist[hist['event'] == environment], num_x_ticks=5, num_y_ticks=4, aspect=2)
+            plt.savefig(
+                os.path.join('evaluation', 'plots', '{}_histogram.pdf'.format(environment)), bbox_inches='tight')
+        print("Done.")
 
 
 if __name__ == '__main__':
