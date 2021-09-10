@@ -60,12 +60,13 @@ You can run all the experiments as follows:
 ./run_all_experiments.sh
 ```
 Then, you can vizualize the experiments via TensorBoard or reproduce the paper plots via:
-````shell
+```shell
 # plot distortion/rate/elbo, the PAC bounds, and the policy evaluation
 python util/io/plot.py --flagfile inputs/plots
 # plot the latent space vizualization
 python util/io/plot.py --flagfile inputs/plot_histograms
-````
+```
+The plots are stored in `evaluation/plots`.
 
 ## Additional installation instructions 
 - (Optional) Alternatively, you can indicate manually the environment variable `LD_LIBRARY_PATH` to conda as follows:
