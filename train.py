@@ -731,7 +731,7 @@ if __name__ == '__main__':
     )
     flags.DEFINE_integer(
         'collect_steps_per_iteration',
-        help='Collect steps per iteration. If set to a value <= 0, then collect_steps is set to batch_size / 8',
+        help='Collect steps per iteration. If the provided value is <= 0, then collect_steps is set to batch_size / 8',
         default=0
     )
     flags.DEFINE_bool(
