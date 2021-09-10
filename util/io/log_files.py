@@ -1,4 +1,5 @@
 import os
+import sys
 from collections import namedtuple
 from typing import Collection, List, Optional, Dict, Tuple, Union
 import glob
@@ -41,8 +42,7 @@ def get_event_dataframe(
                       "{}".format(log_dir) + (" \\ {}".format(exclude_pattern)
                                               if exclude_pattern is not None else ""))
 
-    for filename in files:
-        event_file = os.path.join(log_dir, filename)
+    for event_file in files:
         tagged_events = TaggedEvent(x_axis=[], y_axis=[], tags=[])
 
         for event in summary_iterator(event_file):
@@ -94,7 +94,8 @@ def plot_elbo_evaluation(
         relplot: bool = False,
         eval_elbo_tag: str = 'eval_elbo',
         aspect: float = 2.5,
-        estimator: str = 'mean'
+        estimator: str = 'mean',
+        ci: float = 0.9,
 ):
     if estimator == 'median':
         estimator = np.median
@@ -116,7 +117,7 @@ def plot_elbo_evaluation(
             kind='line',
             facet_kws=dict(sharex=False, sharey=False),
             estimator=estimator,
-            ci=90 if estimator != 'mean' else 'sd')
+            ci=ci * 100 if estimator != 'mean' else 'sd')
     else:
         if compare_environments:
             hue = 'environment'
@@ -134,7 +135,7 @@ def plot_elbo_evaluation(
             legend='brief',
             hue=hue,
             estimator=estimator,
-            ci=90 if estimator != 'mean' else 'sd')
+            ci=ci * 100 if estimator != 'mean' else 'sd')
 
 
 def plot_histograms_per_step(
@@ -146,6 +147,7 @@ def plot_histograms_per_step(
         col: str = 'run',
         display_ylabel: bool = True
 ):
+    df = df.sort_values(by='step')
     tick = ticker.ScalarFormatter(useOffset=True, useMathText=use_math_text)
     tick.set_powerlimits((0, 0))
 
@@ -327,14 +329,6 @@ def plot_policy_evaluation(
             kind='line',
             legend='brief',
             style_order=['distilled', 'original', 'distilled (best)'])
-
-        #  if plot_best:
-        #      for i, env in enumerate(df['event'].unique()):
-        #          _df = df[df['event'] == env]
-        #          _df = _df[_df['policy'] == 'distilled']
-        #          step = _df['step'][_df['value'] == _df['value'].max()]
-        #          g.axes[0, i].scatter(step.to_numpy(), [_df['value'].max()] * len(step.to_numpy()), marker='x')
-        #          g.axes[0, i].legend()
 
         if hide_title:
             for ax in g.axes.flatten():

@@ -2312,7 +2312,8 @@ def load(tf_model_path: str, discrete_action=False, step: Optional[int] = None) 
             mixture_components=tf.shape(tf_model.reconstruction_network.variables[-1])[-1],
             pre_loaded_model=True,
             action_label_transition_network=tf_model.action_label_transition_network,
-            action_transition_network=tf_model.action_transition_network)
+            action_transition_network=tf_model.action_transition_network,
+            evaluation_window_size=tf.shape(tf_model.evaluation_window)[0],)
 
     else:
         model = VariationalMarkovDecisionProcess(
