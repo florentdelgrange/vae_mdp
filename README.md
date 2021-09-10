@@ -37,7 +37,7 @@ To use [`reverb`](https://github.com/deepmind/reverb) replay buffers, we need
    The `vae_mdp` environment should now work properly on your machine.
 
 ## Run the experiments
-We provide the exact set of hyper-parameters used for during our experiments in the `inputs` directory.
+We provide the exact set of hyper-parameters used during our experiments in the `inputs` directory.
 ### Quick start
 - Each individual experiments can be run via:
     ```shell
