@@ -56,64 +56,18 @@ labeling_functions = {
         lambda observation: tf.stack([
             # cos(θ) >= cos(π / 3 rad) = cos(2 π - π / 3 rad) = cos(60°) = cos(-60°)
             observation[..., 0] >= tf.math.cos(math.pi / 3),
-            # cos(θ) >= cos(π / 4 rad) = cos(2 π - π / 4 rad) = cos(45°) = cos(-45°)
-            # observation[..., 0] >= tf.math.cos(math.pi / 4),
-            # cos(θ) >= cos(π / 6 rad) = cos(2 π - π / 6 rad) = cos(30°) = cos(-30°)
-            # observation[..., 0] >= tf.math.cos(math.pi / 6),
-            # cos(θ) >= cos(π / 9 rad) = cos(2 π - π / 9 rad) = cos(20°) = cos(-20°)
-            # observation[..., 0] >= tf.math.cos(math.pi / 9),
             # push direction
             observation[..., 2] >= 0,
             # cos(θ) >= 0, i.e., the pendulum is at the top of the screen
             observation[..., 0] >= 0.,
             # sin(θ) >= 0, i.e., the pendulum is at the left side of the screen
             observation[..., 1] >= 0.,
-            # first quadrant -- up right
-            # tf.logical_and(observation[..., 0] >= 0., observation[..., 1] >= 0.),
-            # second quadrant -- down left
-            # tf.logical_and(observation[..., 0] < 0., observation[..., 1] >= 0.),
-            # third quadrant -- down right
-            # tf.logical_and(observation[..., 0] < 0., observation[..., 1] < 0.),
-            # fourth quadrant -- up right
-            # tf.logical_and(observation[..., 0] >= 0., observation[..., 1] < 0.),
         ], axis=-1),
     'CartPole-v0':  # safe labels
         lambda observation: tf.stack([
             tf.abs(observation[..., 0]) < 1.5,  # cart position is less than 1.5
             tf.abs(observation[..., 2]) < 0.15,  # pole angle is inferior to 9 degrees
         ], axis=-1),
-    #  'LunarLander-v2':
-    #      lambda observation: tf.stack([
-    #          tf.abs(observation[..., 0]) <= 0.15,  # land along the lunar pad x-position
-    #          tf.abs(observation[..., 1]) <= 0.02,  # land along the lunar pad y-position
-    #          # tf.abs(observation[..., 0]) >= 0.8,  # close to the edge of the frame
-    #          # close to the lunar pad
-    #          tf.math.logical_and(tf.abs(observation[..., 1]) <= 0.3, tf.abs(observation[..., 0]) <= 0.3),
-    #          tf.logical_and(observation[..., 2] == 0.,  # horizontal speed is 0
-    #                         observation[..., 3] == 0.),  # vertical speed is 0
-    #          # tf.abs(observation[..., 2] + observation[..., 3]) <= 1e-4,  # speed is almost 0
-    #          # observation[..., 3] <= -0.5,  # fast vertical (landing) speed
-    #          # tf.abs(observation[..., 4]) <= math.pi / 3,  # lander angle is safe
-    #          # tf.abs(observation[..., 4]) <= math.pi / 6,  # weak lander angle
-    #          # observation[..., 5] == 0.,  # angular velocity is 0
-    #          tf.logical_and(tf.cast(observation[..., 6], dtype=tf.bool),
-    #                         tf.cast(observation[..., 7], dtype=tf.bool))  # ground contact
-    #      ], axis=-1),
-    #  'LunarLander-v2': lambda observation: tf.stack([
-    #      tf.abs(observation[..., 0]) <= 0.15,  # land along the lunar pad x-position
-    #      tf.abs(observation[..., 0]) >= 0.8,  # close to the edge of the frame
-    #      # close to the lunar pad
-    #      tf.math.logical_and(tf.abs(observation[..., 1]) <= 0.3, tf.abs(observation[..., 0]) <= 0.3),
-    #      tf.abs(observation[..., 1]) <= 0.02,  # land along the lunar pad y-position
-    #      observation[..., 2] == 0.,  # horizontal speed is 0
-    #      observation[..., 3] == 0.,  # vertical speed is 0
-    #      observation[..., 3] <= -0.5,  # fast vertical (landing) speed
-    #      tf.abs(observation[..., 4]) <= math.pi / 3,  # lander angle is safe
-    #      tf.abs(observation[..., 4]) <= math.pi / 6,  # weak lander angle
-    #      observation[..., 5] == 0.,  # angular velocity is 0
-    #      tf.cast(observation[..., 6], dtype=tf.bool),  # left leg ground contact
-    #      tf.cast(observation[..., 7], dtype=tf.bool)  # right leg ground contact
-    #  ], axis=-1),
     'LunarLander-v2': lunar_lander_labels,
     'MountainCar-v0': lambda observation: tf.stack([
         observation[..., 0] >= 0.5,  # has reached the goal
