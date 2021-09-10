@@ -22,10 +22,12 @@ LunarLanderContinuous-v2
 --env_suite
 suite_gym
 --parallel_env
-8
+1
+--collect_steps_per_iteration
+128
 --entropy_regularizer_scale_factor
 10
 --entropy_regularizer_decay_rate
-1e-2
---entropy_regularizer_scale_factor_min_value
-0
+1e-5
+--checkpoint=False
+logs=False
