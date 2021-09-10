@@ -43,19 +43,7 @@ dict_value {
         values {
           key: "policy_info"
           value {
-            named_tuple_value {
-              name: "PolicyInfo"
-              values {
-                key: "log_probability"
-                value {
-                  tensor_spec_value {
-                    name: "log_probability"
-                    shape {
-                    }
-                    dtype: DT_FLOAT
-                  }
-                }
-              }
+            tuple_value {
             }
           }
         }
