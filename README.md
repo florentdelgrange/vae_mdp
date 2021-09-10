@@ -54,7 +54,7 @@ We provide the exact set of hyper-parameters used for during our experiments in 
   (by default set to 0, use 1 to save the best model encountered during training).
   
 ### Reproduce the paper results
-We provide a script for each environment in `inputs/[environment].sh`, containing the exact command to run, as well as the seeds we used.
+We provide a script for each environment in `inputs/[environment].sh`, containing the exact commands to run, as well as the seeds we used.
 You can run all the experiments as follows:
 ```shell
 ./run_all_experiments.sh
