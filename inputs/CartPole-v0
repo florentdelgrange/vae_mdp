@@ -16,7 +16,7 @@ leaky_relu
 5e-5
 --latent_policy
 --policy_path
-/data/brussel/102/vsc10293/rl_policies/CartPole-v0/policy/
+reinforcement_learning/saves/CartPole-v0/policy/
 --environment
 CartPole-v0
 --env_suite
@@ -27,12 +27,8 @@ suite_gym
 1e-5
 --entropy_regularizer_scale_factor_min_value
 0.
---logdir=/theia/data/brussel/102/vsc10293/vae_mdp/log/2021-08-25
---save_dir
-/theia/data/brussel/102/vsc10293/vae_mdp/
 --checkpoint=True
---evaluation_window_size
-1
+--evaluation_window_size=0
 --prioritized_experience_replay=True
 --buckets_based_priority=True
 --priority_exponent

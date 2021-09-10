@@ -28,10 +28,6 @@ suite_gym
 --action_entropy_regularizer_scaling
 1e-1
 --policy_path=reinforcement_learning/saves/LunarLanderContinuous-v2/sac_policy
---logdir
-/theia/data/brussel/102/vsc10293/vae_mdp/log/2021-08-31
---save_dir
-/theia/data/brussel/102/vsc10293/vae_mdp/
 --prioritized_experience_replay
 --priority_exponent
 0.3
@@ -43,8 +39,7 @@ suite_gym
 --epsilon_greedy
 0.
 --checkpoint=True
---evaluation_window_size
-1
+--evaluation_window_size=0
 --local_losses_evaluation
 --local_losses_evaluation_steps
 34000

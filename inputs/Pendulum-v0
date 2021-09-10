@@ -24,12 +24,8 @@ suite_gym
 7.5e-5
 --policy_path
 reinforcement_learning/saves/PendulumRandomInit-v0/sac_policy
---save_dir
-/theia/data/brussel/102/vsc10293/vae_mdp/2021-08-31
---logdir=/theia/data/brussel/102/vsc10293/vae_mdp/log/2021-08-31
 --checkpoint=True
---evaluation_window_size
-1
+--evaluation_window_size=0
 --max_steps
 1000000
 --prioritized_experience_replay=True

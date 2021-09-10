@@ -35,12 +35,8 @@ suite_gym
 0.4
 --importance_sampling_exponent_growth_rate
 7.5e-5
---logdir=/theia/data/brussel/102/vsc10293/vae_mdp/log/2021-08-25
 --checkpoint=True
---evaluation_window_size
-1
---save_dir
-/theia/data/brussel/102/vsc10293/vae_mdp/
+--evaluation_window_size=0
 --local_losses_evaluation
 --local_losses_evaluation_steps
 34000

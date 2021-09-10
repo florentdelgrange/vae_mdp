@@ -23,11 +23,8 @@ suite_gym
 --latent_policy
 --policy_path
 reinforcement_learning/saves/AcrobotRandomInit-v1/dqn_policy
---logdir=/theia/data/brussel/102/vsc10293/vae_mdp/log/2021-08-25
---save_dir
-/theia/data/brussel/102/vsc10293/vae_mdp/
 --checkpoint=True
---evaluation_window_size=1
+--evaluation_window_size=0
 --prioritized_experience_replay=True
 --buckets_based_priority=True
 --priority_exponent
