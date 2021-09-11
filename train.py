@@ -490,7 +490,7 @@ if __name__ == '__main__':
     flags.DEFINE_bool(
         "latent_policy",
         default=False,
-        help="If set, VAEs for state discretization will learn a abstraction of the input policy conditioned on"
+        help="If set, VAEs for state discretization will learn an abstraction of the input policy conditioned on"
              "latent states."
              "Only works for environment with discrete actions."
              "Remark: action discretizer VAEs always learn a latent policy."
@@ -725,7 +725,7 @@ if __name__ == '__main__':
     flags.DEFINE_bool(
         'buckets_based_priority',
         default=True,
-        help='If set, the priority of the replay buffer use a bucket based priority scheme (where each bucket '
+        help='If set, prioritized replay buffers use a bucket-based priority scheme (where each bucket '
              'corresponds '
              'to a discrete latent state). If not, the loss is used '
     )
@@ -818,7 +818,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer(
         'evaluation_interval',
         default=int(1e4),
-        help='Number of training steps to perform between evaluating the VAE.'
+        help='Number of training steps to perform between the evaluations.'
     )
     flags.DEFINE_bool(
         'label_transition_function',
