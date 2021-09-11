@@ -510,7 +510,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
             self, state: tf.Tensor, temperature: float, label: Optional[tf.Tensor] = None
     ) -> tfd.Distribution:
         """
-        Embed the input state along with its label into a Binary Concrete probability distribution over
+        Embed the input state and its label (if given) into a Binary Concrete probability distribution over
         a relaxed binary latent representation of the latent state space.
         Note: the Binary Concrete distribution is replaced by a Logistic distribution to avoid underflow issues:
               z ~ BinaryConcrete(logits, temperature) = sigmoid(z_logistic)
@@ -518,8 +518,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
         """
         logits = self.encoder_network(state)
         if label is not None:
-            # change label = 1 to 100 and label = 0 to -100 so that
-            # sigmoid(logistic_z[-1]) ~= 1 if label = 1 and sigmoid(logistic_z[-1]) ~= 0 if label = 0
             logits = tf.concat([(label * 2. - 1.) * 1e2, logits], axis=-1)
         return tfd.Independent(
             tfd.Logistic(
@@ -529,7 +527,7 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
     def binary_encode(self, state: tf.Tensor, label: Optional[tf.Tensor] = None) -> tfd.Distribution:
         """
-        Embed the input state along with its label into a Bernoulli probability distribution over the binary
+        Embed the input state and its label (if given) into a Bernoulli probability distribution over the binary
         representation of the latent state space.
         """
         logits = self.encoder_network(state)
@@ -716,7 +714,8 @@ class VariationalMarkovDecisionProcess(tf.Module):
     def reward_probability_distribution(
             self, latent_state: tf.Tensor, action: tf.Tensor, next_latent_state: tf.Tensor) -> tfd.Distribution:
         """
-        Retrieves a probability distribution P(r|z, a, z') over rewards obtained when action a is chosen in z.
+        Retrieves a probability distribution P(r|z, a, z') over the rewards obtained when the transition z, a, z'
+        has been performed.
         """
         [reward_mean, reward_raw_covariance] = self.reward_network([latent_state, action, next_latent_state])
         return tfd.MultivariateNormalDiag(
@@ -826,7 +825,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
         entropy_regularizer = self.entropy_regularizer(
             next_state,
-            # use_marginal_entropy=self.priority_handler is None or sample_key is None,
             use_marginal_entropy=True,
             latent_states=next_latent_state)
 
@@ -2021,8 +2019,6 @@ class VariationalMarkovDecisionProcess(tf.Module):
 
             for step in range(eval_steps):
                 x = next(dataset_iterator)
-
-                tf.print('shape', x[0].shape)
 
                 if len(x) >= 8:
                     is_weights = tf.reduce_min(x[7]) / x[7]  # we consider is_exponent=1 for evaluation
