@@ -19,7 +19,7 @@ but you can easily create an environment for GPU by replacing `environment.yml` 
 `environment_gpu.yml`.
 1. Create the environment from `environment.yml`:
    ```shell
-   cd conda_environment
+   cd conda_environments
    conda env create -f environment.yml
    ```
 2. The environment ``vae_mdp`` (or `vae_mdp_gpu`) is now created.
