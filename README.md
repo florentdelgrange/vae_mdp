@@ -1,4 +1,7 @@
 # VAE-MDPs
+Implementation of the VAE-MDP framework introduced in the paper ["*Distillation of RL Policies with Formal Guarantees via Variational Abstraction of Markov Decision Processes*"](https://arxiv.org/abs/2112.09655) (AAAI-22).
+This framework allows (i) the variational abstraction of environments under which RL agents operate, as well as (ii) the distillation of their policy over the new abstract spaces learned, the two with verifiable bisimulation guarantees.
+These enable the application of formal methods techniques developped for discrete MDPs such as probabilistic model checkers.
 
 ## Installation
 We provide two `conda` environment files that can be used to re-create our `python` 
@@ -95,3 +98,23 @@ The plots are stored in `evaluation/plots`.
    export LD_LIBRARY_PATH=${OLD_LD_LIBRARY_PATH}
    unset OLD_LD_LIBRARY_PATH
    ```
+## Cite
+If you use this code, please cite it as:
+```
+@article{delgrange2021distillation,
+  author    = {Florent Delgrange and
+               Ann Now{\'{e}} and
+               Guillermo A. P{\'{e}}rez},
+  title     = {Distillation of {RL} Policies with Formal Guarantees via Variational
+               Abstraction of Markov Decision Processes (Technical Report)},
+  journal   = {CoRR},
+  volume    = {abs/2112.09655},
+  year      = {2021},
+  url       = {https://arxiv.org/abs/2112.09655},
+  eprinttype = {arXiv},
+  eprint    = {2112.09655},
+  timestamp = {Tue, 04 Jan 2022 10:59:22 +0100},
+  biburl    = {https://dblp.org/rec/journals/corr/abs-2112-09655.bib},
+  bibsource = {dblp computer science bibliography, https://dblp.org}
+}
+```
