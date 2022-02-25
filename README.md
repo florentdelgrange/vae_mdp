@@ -1,7 +1,7 @@
 # VAE-MDPs
 Implementation of the VAE-MDP framework introduced in the paper ["*Distillation of RL Policies with Formal Guarantees via Variational Abstraction of Markov Decision Processes*"](https://arxiv.org/abs/2112.09655) (AAAI-22).
 This framework allows (i) the variational abstraction of environments under which RL agents operate, as well as (ii) the distillation of their policy over the new abstract spaces learned, the two with verifiable bisimulation guarantees.
-These enable the application of formal methods techniques developped for discrete MDPs such as probabilistic model checkers.
+These enable the application of formal methods and tools developped for discrete MDPs such as probabilistic model checkers.
 
 ## Installation
 We provide two `conda` environment files that can be used to re-create our `python` 
