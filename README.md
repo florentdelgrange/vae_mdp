@@ -101,8 +101,7 @@ The plots are stored in `evaluation/plots`.
 ## Cite
 If you use this code, please cite it as:
 ```
-@article{
-   Delgrange_Nowé_Pérez_2022,
+@article{Delgrange22,
    title={Distillation of RL Policies with Formal Guarantees via Variational Abstraction of Markov Decision Processes},
    volume={36},
    url={https://ojs.aaai.org/index.php/AAAI/article/view/20602},
