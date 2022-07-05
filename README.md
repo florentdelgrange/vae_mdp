@@ -101,20 +101,17 @@ The plots are stored in `evaluation/plots`.
 ## Cite
 If you use this code, please cite it as:
 ```
-@article{delgrange2021distillation,
-  author    = {Florent Delgrange and
-               Ann Now{\'{e}} and
-               Guillermo A. P{\'{e}}rez},
-  title     = {Distillation of {RL} Policies with Formal Guarantees via Variational
-               Abstraction of Markov Decision Processes (Technical Report)},
-  journal   = {CoRR},
-  volume    = {abs/2112.09655},
-  year      = {2021},
-  url       = {https://arxiv.org/abs/2112.09655},
-  eprinttype = {arXiv},
-  eprint    = {2112.09655},
-  timestamp = {Tue, 04 Jan 2022 10:59:22 +0100},
-  biburl    = {https://dblp.org/rec/journals/corr/abs-2112-09655.bib},
-  bibsource = {dblp computer science bibliography, https://dblp.org}
+@article{
+   Delgrange_Nowé_Pérez_2022,
+   title={Distillation of RL Policies with Formal Guarantees via Variational Abstraction of Markov Decision Processes},
+   volume={36},
+   url={https://ojs.aaai.org/index.php/AAAI/article/view/20602},
+   DOI={10.1609/aaai.v36i6.20602},
+   number={6},
+   journal={Proceedings of the AAAI Conference on Artificial Intelligence},
+   author={Delgrange, Florent and Nowé, Ann and Pérez, Guillermo A.},
+   year={2022},
+   month={Jun.},
+   pages={6497-6505}
 }
 ```
